@@ -2,6 +2,24 @@
 
 `ts-skillsd` is a private Agent Skill registry served through an embedded Tailscale node. It accepts ZIP or browser-directory uploads, keeps immutable publications, and exposes the current publication to `ts-skills`. The daemon listens only through `tsnet`; it does not open port 443 on the host network.
 
+## Test the code locally
+
+The automated suite needs Go 1.26.5 or newer and no Tailnet credentials:
+
+```console
+go test ./...
+go test -race ./...
+go vet ./...
+```
+
+Check that both commands build without writing binaries into the repository:
+
+```console
+go build ./cmd/ts-skills ./cmd/ts-skillsd
+```
+
+For a one-machine browser and CLI check, follow [Test ts-skills locally](docs/local-development.md). It uses the bundled [`example-skill`](examples/example-skill). The daemon has no localhost mode; interactive requests pass through `tsnet` so actor identity comes from the Tailnet connection.
+
 ## Tailnet requirements
 
 Before starting the daemon:
@@ -76,20 +94,30 @@ The client must run on a Tailnet machine whose identity can reach the daemon on 
 Use Machine A for curation and Machine B for installation. Both machines must pass the tailnet policy check for the daemon.
 
 1. On Machine A, open `https://ts-skillsd.example-tailnet.ts.net/upload` in a browser.
-2. Upload an Agent Skill ZIP, review its escaped `SKILL.md` and file list, publish it, and confirm it becomes current. Uploading the same files through browser directory selection should show the same tree digest.
-3. On Machine B, create the client config above and an explicit project directory, then install current:
+2. Upload [`examples/example-skill`](examples/example-skill) under namespace `team`, review its escaped `SKILL.md` and file list, publish it, and confirm it becomes current. Uploading the same files as a ZIP and through browser directory selection should show the same tree digest.
+3. On Machine B, create a unique workspace with a temporary config and project, then install current. Replace the registry hostname with the daemon’s assigned MagicDNS name:
 
    ```console
-   mkdir -p /tmp/skill-smoke-project
-   go run ./cmd/ts-skills install --project /tmp/skill-smoke-project team/example-skill
+   TS_SKILLS_SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/ts-skills-smoke.XXXXXXXX")" || exit 1
+   [ -n "$TS_SKILLS_SMOKE_ROOT" ] || exit 1
+   export TS_SKILLS_SMOKE_ROOT
+   mkdir "$TS_SKILLS_SMOKE_ROOT/project"
+   printf '%s\n' 'registry = "https://ts-skillsd.example-tailnet.ts.net"' \
+     > "$TS_SKILLS_SMOKE_ROOT/config.toml"
+   go run ./cmd/ts-skills install \
+     --project "$TS_SKILLS_SMOKE_ROOT/project" \
+     --config "$TS_SKILLS_SMOKE_ROOT/config.toml" \
+     team/example-skill
    ```
 
-4. Inspect `/tmp/skill-smoke-project/.agents/skills/example-skill/` and `/tmp/skill-smoke-project/.agents/ts-skills.lock`. The lock records the published digest.
+4. Inspect `$TS_SKILLS_SMOKE_ROOT/project/.agents/skills/example-skill/` and `$TS_SKILLS_SMOKE_ROOT/project/.agents/ts-skills.lock`. The lock records the published digest.
 5. On Machine A, publish different content for the same skill and select it as current.
 6. On Machine B, restore the existing lock:
 
    ```console
-   go run ./cmd/ts-skills restore --project /tmp/skill-smoke-project
+   go run ./cmd/ts-skills restore \
+     --project "$TS_SKILLS_SMOKE_ROOT/project" \
+     --config "$TS_SKILLS_SMOKE_ROOT/config.toml"
    ```
 
    Restore keeps the digest already recorded on Machine B rather than following the new current publication.
@@ -97,6 +125,16 @@ Use Machine A for curation and Machine B for installation. Both machines must pa
 
    ```console
    go test ./internal/tailnet -run 'TestActorResolver'
+   ```
+
+8. On Machine B, remove the smoke-test workspace:
+
+   ```console
+   case "$TS_SKILLS_SMOKE_ROOT" in
+     */ts-skills-smoke.*) rm -rf -- "$TS_SKILLS_SMOKE_ROOT" ;;
+     *) printf 'refusing to remove unexpected path: %s\n' "$TS_SKILLS_SMOKE_ROOT" ;;
+   esac
+   unset TS_SKILLS_SMOKE_ROOT
    ```
 
 Stop after local verification if a corrupt-transfer test needs a modified test server. Do not alter a live tailnet or production registry to inject corruption.

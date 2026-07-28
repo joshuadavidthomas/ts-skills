@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"testing"
 	"testing/fstest"
 )
@@ -245,6 +246,16 @@ func TestSumTreeFixedVectors(t *testing.T) {
 				t.Fatalf("digest = %q, want %q", digest.String(), test.want)
 			}
 		})
+	}
+}
+
+func TestBundledExampleSkillIsValid(t *testing.T) {
+	directory, err := LoadDir(filepath.Join("..", "..", "examples", "example-skill"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := directory.Document().Name.String(); got != "example-skill" {
+		t.Fatalf("example name = %q", got)
 	}
 }
 
