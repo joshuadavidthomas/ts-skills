@@ -9,9 +9,15 @@ import (
 	"syscall"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/daemon"
+	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
 
 func main() {
+	if len(os.Args) > 1 && (os.Args[1] == "version" || os.Args[1] == "--version") {
+		fmt.Printf("ts-skillsd %s\n", version.Version)
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

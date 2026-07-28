@@ -91,3 +91,15 @@ func TestRunRejectsMissingProjectAndInvalidDigest(t *testing.T) {
 		t.Fatalf("invalid digest error = %v", err)
 	}
 }
+
+func TestRunVersionReportsBuildVersion(t *testing.T) {
+	for _, command := range []string{"version", "--version"} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), []string{command}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("Run(%q) = %v", command, err)
+		}
+		if got := stdout.String(); got != "ts-skills dev\n" {
+			t.Fatalf("Run(%q) output = %q", command, got)
+		}
+	}
+}

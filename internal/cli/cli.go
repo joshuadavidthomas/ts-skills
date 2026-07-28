@@ -17,6 +17,7 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -27,15 +28,18 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return fmt.Errorf("command input and output streams must be provided")
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("choose a command: install or restore")
+		return fmt.Errorf("choose a command: install, restore, or version")
 	}
 	switch args[0] {
 	case "install":
 		return runInstall(ctx, args[1:], stdout, stderr)
 	case "restore":
 		return runRestore(ctx, args[1:], stdout, stderr)
+	case "version", "--version":
+		_, err := fmt.Fprintf(stdout, "ts-skills %s\n", version.Version)
+		return err
 	default:
-		return fmt.Errorf("unknown command %q; choose install or restore", args[0])
+		return fmt.Errorf("unknown command %q; choose install, restore, or version", args[0])
 	}
 }
 
