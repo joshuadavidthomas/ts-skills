@@ -1,0 +1,59 @@
+@import "tailwindcss";
+@source "./templates";
+
+@theme {
+  --color-gray-50: #f9f7f6;
+  --color-gray-100: #f7f5f4;
+  --color-gray-200: #eeebea;
+  --color-gray-300: #dad6d5;
+  --color-gray-400: #afacab;
+  --color-gray-500: #706e6d;
+  --color-gray-600: #444342;
+  --color-gray-700: #2e2d2d;
+  --color-gray-800: #232222;
+  --color-gray-900: #1f1e1e;
+
+  --color-blue-50: #cedefd;
+  --color-blue-100: #adc7fc;
+  --color-blue-200: #85aaf5;
+  --color-blue-300: #6c94ec;
+  --color-blue-400: #5a82de;
+  --color-blue-500: #4b70cc;
+  --color-blue-600: #3f5db3;
+  --color-blue-700: #324994;
+  --color-blue-800: #253570;
+  --color-blue-900: #19224a;
+
+  --color-red-50: #ffd3cf;
+  --color-red-100: #ffb1ab;
+  --color-red-200: #f68f87;
+  --color-red-300: #e46c63;
+  --color-red-400: #d04841;
+  --color-red-500: #b22d30;
+  --color-red-600: #940821;
+  --color-red-700: #760012;
+  --color-red-800: #5a0000;
+  --color-red-900: #420000;
+
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
+  --font-mono: "SF Mono", SFMono-Regular, Consolas, Menlo, monospace;
+}
+
+@layer base {
+  @font-face {
+    font-family: "Inter";
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+    src: url("/static/fonts/Inter.var.latin.woff2") format("woff2-variations");
+  }
+
+  body {
+    @apply bg-white font-sans text-gray-800 antialiased;
+    letter-spacing: -0.015em;
+  }
+
+  button {
+    letter-spacing: inherit;
+  }
+}

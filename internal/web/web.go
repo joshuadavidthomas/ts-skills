@@ -3,6 +3,7 @@ package web
 import (
 	"archive/zip"
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,12 @@ import (
 )
 
 const maxRequestBytes int64 = 32 << 20
+
+//go:embed templates
+var templatesFS embed.FS
+
+//go:embed static
+var staticFS embed.FS
 
 type Catalog interface {
 	Capture(context.Context, registry.CaptureRequest) (registry.Candidate, error)
@@ -96,12 +103,17 @@ func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Ha
 	if !info.IsDir() {
 		return nil, fmt.Errorf("web staging parent must be a directory")
 	}
-	pages, err := template.New("pages").Parse(pageTemplates)
+	pages, err := template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("parse web templates: %w", err)
 	}
+	staticFiles, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		return nil, fmt.Errorf("open embedded web assets: %w", err)
+	}
 	h := &handler{catalog: catalog, actors: actors, options: options, pages: pages}
 	mux := http.NewServeMux()
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
 	mux.HandleFunc("GET /upload", h.uploadPage)
 	mux.HandleFunc("POST /candidates", h.createCandidate)
@@ -639,14 +651,3 @@ func (h *handler) render(w http.ResponseWriter, status int, name string, data an
 func (h *handler) renderError(w http.ResponseWriter, status int, title, action string) {
 	h.render(w, status, "error", struct{ Title, Action string }{title, action})
 }
-
-const pageTemplates = `
-{{define "head"}}<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ts-skills</title></head><body><nav><a href="/">Catalog</a> <a href="/upload">Upload</a></nav>{{end}}
-{{define "catalog"}}{{template "head" .}}<main><h1>Published skills</h1>{{if .Skills}}<ul>{{range .Skills}}<li><strong>{{.Skill}}</strong> <code>{{.Digest}}</code></li>{{end}}</ul>{{else}}<p>No skills have been published.</p>{{end}}</main></body></html>{{end}}
-{{define "upload"}}{{template "head" .}}<meta name="csrf-token" content="{{.CSRFToken}}"><main><h1>Upload a skill</h1><p>Choose one ZIP file or one directory. Uploaded files are stored for review and are never run.</p><form id="upload-form"><label>Namespace <input name="namespace" required maxlength="256"></label><fieldset><legend>Upload type</legend><label><input type="radio" name="kind" value="zip" checked> ZIP</label><label><input type="radio" name="kind" value="directory"> Directory</label></fieldset><label>ZIP file <input type="file" id="archive" accept=".zip,application/zip"></label><label>Directory <input type="file" id="directory" webkitdirectory multiple></label><button type="submit">Stage for review</button></form><p id="upload-status" role="status"></p></main><script>
-const form=document.getElementById('upload-form');
-form.addEventListener('submit',async(event)=>{event.preventDefault();const data=new FormData();data.append('namespace',form.elements.namespace.value);const kind=form.elements.kind.value;data.append('kind',kind);if(kind==='zip'){const archive=document.getElementById('archive').files[0];if(!archive){document.getElementById('upload-status').textContent='Choose a ZIP file.';return;}data.append('archive',archive,archive.name);}else{const files=Array.from(document.getElementById('directory').files).sort((a,b)=>a.webkitRelativePath.localeCompare(b.webkitRelativePath));if(files.length===0){document.getElementById('upload-status').textContent='Choose a directory.';return;}const manifest=files.map((file,index)=>({index:index,path:file.webkitRelativePath,size:file.size}));data.append('manifest',JSON.stringify(manifest));files.forEach((file,index)=>data.append('file-'+index,file,file.name));}document.getElementById('upload-status').textContent='Uploading…';const response=await fetch('/candidates',{method:'POST',headers:{'X-CSRF-Token':document.querySelector('meta[name="csrf-token"]').content},body:data});if(response.redirected){window.location=response.url;return;}document.open();document.write(await response.text());document.close();});
-</script></body></html>{{end}}
-{{define "review"}}{{template "head" .}}<main><h1>Review {{.Skill}}</h1><dl><dt>Candidate</dt><dd><code>{{.CandidateID}}</code></dd><dt>Digest</dt><dd><code>{{.Digest}}</code></dd><dt>Source</dt><dd>{{.Source}}</dd><dt>Submitted by</dt><dd>{{.SubmittedBy}}</dd><dt>Submitted at</dt><dd>{{.SubmittedAt}}</dd></dl><h2>Files</h2><ul>{{range .Files}}<li><code>{{.}}</code></li>{{end}}</ul><h2>SKILL.md</h2><pre>{{.SkillMD}}</pre>{{if .Published}}<p>This candidate is published.</p><form method="post" action="/current">{{.CSRFField}}<input type="hidden" name="skill" value="{{.Skill}}"><input type="hidden" name="digest" value="{{.Digest}}"><button type="submit">Make current</button></form>{{else}}<form method="post" action="/candidates/{{.CandidateID}}/publish">{{.CSRFField}}<button type="submit">Publish</button></form>{{end}}</main></body></html>{{end}}
-{{define "error"}}{{template "head" .}}<main><h1>{{.Title}}</h1><p>{{.Action}}</p></main></body></html>{{end}}
-`

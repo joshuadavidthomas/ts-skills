@@ -259,6 +259,30 @@ func postForm(t *testing.T, fixture *webFixture, path string, values url.Values)
 
 var digestPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
+func TestStaticAssetsAreServedAheadOfCatalogCatchAll(t *testing.T) {
+	fixture := newWebFixture(t)
+	for _, test := range []struct {
+		path    string
+		content string
+	}{
+		{path: "/static/style.css", content: "#4b70cc"},
+		{path: "/static/upload.js", content: "document.getElementById('upload-form')"},
+	} {
+		response, err := fixture.client.Get(fixture.server.URL + test.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK || !strings.Contains(string(body), test.content) {
+			t.Fatalf("GET %s status/body = %d/%s", test.path, response.StatusCode, body)
+		}
+	}
+}
+
 func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	fixture := newWebFixture(t)
 	firstPath := fixture.uploadZIP("<script>globalThis.pwned = true</script>\n")

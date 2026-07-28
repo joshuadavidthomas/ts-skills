@@ -51,6 +51,16 @@ Dev mode never enrolls a Tailnet node, refuses to start if `TS_SKILLSD_AUTHKEY_F
 
 Testing against a real tailnet is a deployment concern; see the [deployment guide](deployment.md), including its two-machine smoke test.
 
+## Web UI
+
+Page templates live in `internal/web/templates`. The daemon embeds them and the static files in `internal/web/static` at build time. The compiled CSS is committed; rebuild it after changing a template or `internal/web/tailwind.css`:
+
+```console
+npm install && npm run build:css
+```
+
+The UI self-hosts Inter from `internal/web/static/fonts` under the SIL Open Font License included beside the font.
+
 ## The bundled example skill
 
 [`examples/example-skill`](../examples/example-skill) is a minimal valid Agent Skill used by the quickstart and smoke tests. `TestBundledExampleSkillIsValid` in `internal/agentskill` keeps it loadable, so change it deliberately.

@@ -1,0 +1,37 @@
+{{define "head"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ts-skills</title>
+  <link rel="stylesheet" href="/static/style.css">
+{{end}}
+
+{{define "header"}}
+</head>
+<body class="flex min-h-screen flex-col">
+<header class="bg-gray-100 border-b border-gray-200">
+  <div class="mx-auto max-w-5xl px-4 py-4">
+    <div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <div>
+        <h1 class="text-2xl font-bold"><a href="/">ts-skills/</a></h1>
+        <p class="mt-1 text-sm text-gray-500">A private Agent Skills registry for your tailnet</p>
+      </div>
+      <nav aria-label="Main navigation">
+        <ul class="flex items-center gap-5 text-sm font-medium">
+          <li><a class="rounded-sm text-blue-500 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" href="/">Catalog</a></li>
+          <li><a class="rounded-sm text-blue-500 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" href="/upload">Upload</a></li>
+        </ul>
+      </nav>
+    </div>
+  </div>
+</header>
+{{end}}
+
+{{define "footer"}}
+<footer class="border-t border-gray-200 bg-gray-100 text-sm text-gray-500">
+  <div class="mx-auto max-w-5xl px-4 py-4">ts-skills — served over Tailscale</div>
+</footer>
+</body>
+</html>
+{{end}}
