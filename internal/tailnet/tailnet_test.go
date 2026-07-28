@@ -3,11 +3,14 @@ package tailnet
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
@@ -63,15 +66,9 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		}
 		request.RemoteAddr = "100.64.0.7:51820"
 		request.Header = headers
-		identity, err := resolver.Identify(request)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if identity.Actor.ID() != "42" || identity.Actor.Display() != "alice@example.com" {
-			t.Fatalf("actor = (%q, %q), want stable user identity", identity.Actor.ID(), identity.Actor.Display())
-		}
-		if identity.CanCurate {
-			t.Fatal("identity without capability can curate")
+		_, err = resolver.Curator(request)
+		if !errors.Is(err, registry.ErrCurationDenied) {
+			t.Fatalf("curator error = %v, want permission denial", err)
 		}
 	}
 
@@ -108,18 +105,15 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 	}
 	request.RemoteAddr = "[fd7a:115c:a1e0::7]:44321"
 
-	identity, err := resolver.Identify(request)
+	curator, err := resolver.Curator(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if identity.Actor.ID() != "n123CNTRL" {
-		t.Fatalf("actor ID = %q, want stable node ID", identity.Actor.ID())
+	if curator.Actor().ID() != "n123CNTRL" {
+		t.Fatalf("actor ID = %q, want stable node ID", curator.Actor().ID())
 	}
-	if identity.Actor.Display() != "automation.example.ts.net [tag:ci, tag:publisher]" {
-		t.Fatalf("actor display = %q", identity.Actor.Display())
-	}
-	if !identity.CanCurate {
-		t.Fatal("tagged identity with capability cannot curate")
+	if curator.Actor().Display() != "automation.example.ts.net [tag:ci, tag:publisher]" {
+		t.Fatalf("actor display = %q", curator.Actor().Display())
 	}
 	if len(addresses) != 1 || addresses[0] != request.RemoteAddr {
 		t.Fatalf("WhoIs addresses = %v, want %q", addresses, request.RemoteAddr)
@@ -167,31 +161,51 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 			}
 			request.RemoteAddr = "100.64.0.7:51820"
 
-			identity, err := resolver.Identify(request)
+			_, err = resolver.Curator(request)
 			if test.wantError {
 				if err == nil {
-					t.Fatal("Identify succeeded with malformed capability rule")
+					t.Fatal("Curator succeeded with malformed capability rule")
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
+			if test.wantCurate {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
 			}
-			if identity.CanCurate != test.wantCurate {
-				t.Fatalf("CanCurate = %v, want %v", identity.CanCurate, test.wantCurate)
+			if !errors.Is(err, registry.ErrCurationDenied) {
+				t.Fatalf("curator error = %v, want permission denial", err)
 			}
 		})
 	}
 }
 
+func TestActorResolverValidatesIdentityBeforeCapability(t *testing.T) {
+	var addresses []string
+	resolver, err := NewActorResolver(localClientForWhoIs(t, &apitype.WhoIsResponse{
+		Node: &tailcfg.Node{StableID: "node-human", Name: "human.example.ts.net."},
+	}, &addresses))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "https://registry.example.ts.net/candidates", nil)
+	request.RemoteAddr = "100.64.0.7:51820"
+	if _, err := resolver.Curator(request); err == nil || errors.Is(err, registry.ErrCurationDenied) {
+		t.Fatalf("curator error = %v, want incomplete identity failure", err)
+	}
+}
+
 func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 	tests := map[string]*apitype.WhoIsResponse{
-		"missing node": {},
+		"missing node": {CapMap: tailcfg.PeerCapMap{skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)}}},
 		"missing human profile": {
-			Node: &tailcfg.Node{StableID: "node-human", Name: "human.example.ts.net."},
+			Node:   &tailcfg.Node{StableID: "node-human", Name: "human.example.ts.net."},
+			CapMap: tailcfg.PeerCapMap{skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)}},
 		},
 		"tagged node without stable ID": {
-			Node: &tailcfg.Node{Name: "automation.example.ts.net.", Tags: []string{"tag:ci"}},
+			Node:   &tailcfg.Node{Name: "automation.example.ts.net.", Tags: []string{"tag:ci"}},
+			CapMap: tailcfg.PeerCapMap{skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)}},
 		},
 	}
 	for name, response := range tests {
@@ -206,8 +220,8 @@ func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.RemoteAddr = "100.64.0.8:1234"
-			if _, err := resolver.Identify(request); err == nil {
-				t.Fatal("Identify succeeded with incomplete WhoIs identity")
+			if _, err := resolver.Curator(request); err == nil {
+				t.Fatal("Curator succeeded with incomplete WhoIs identity")
 			}
 		})
 	}

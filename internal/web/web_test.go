@@ -27,9 +27,14 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/storage"
 )
 
-type fixedActorResolver struct{ identity Identity }
+type fixedCuratorResolver struct {
+	curator registry.Curator
+	err     error
+}
 
-func (r *fixedActorResolver) Identify(*http.Request) (Identity, error) { return r.identity, nil }
+func (r *fixedCuratorResolver) Curator(*http.Request) (registry.Curator, error) {
+	return r.curator, r.err
+}
 
 type webFixture struct {
 	t        *testing.T
@@ -40,7 +45,7 @@ type webFixture struct {
 	storage  *storage.Catalog
 	state    string
 	staging  string
-	resolver *fixedActorResolver
+	resolver *fixedCuratorResolver
 	key      CSRFKey
 }
 
@@ -65,7 +70,7 @@ func newWebFixture(t *testing.T) *webFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := &fixedActorResolver{identity: Identity{Actor: actor, CanCurate: true}}
+	resolver := &fixedCuratorResolver{curator: registry.NewCurator(actor)}
 	handler, err := NewHandler(catalog, resolver, Options{
 		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
@@ -363,7 +368,7 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	}
 	unpublishedPath := fixture.uploadDirectory("Unpublished for permission check.\n")
 
-	fixture.resolver.identity.CanCurate = false
+	fixture.resolver.err = registry.ErrCurationDenied
 	readPaths := []string{
 		"/",
 		unpublishedPath,
@@ -398,6 +403,24 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 				t.Fatalf("permission error is missing guidance: %s", body)
 			}
 		})
+	}
+}
+
+func TestCurationResolverFailureIsUnauthorized(t *testing.T) {
+	fixture := newWebFixture(t)
+	fixture.resolver.err = errors.New("Tailnet LocalAPI unavailable")
+
+	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", skillDirectoryParts("Denied upload.\n")), true)
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401: %s", response.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "Identity could not be verified") {
+		t.Fatalf("identity error is missing guidance: %s", body)
 	}
 }
 
@@ -773,7 +796,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHandler(errListSkillsCatalog{}, &fixedActorResolver{}, Options{
+	handler, err := NewHandler(errListSkillsCatalog{}, &fixedCuratorResolver{}, Options{
 		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {

@@ -42,6 +42,13 @@ func TestIdentityAndEntityInvariants(t *testing.T) {
 	}
 }
 
+func TestCuratorCarriesAuthorizedActor(t *testing.T) {
+	_, _, actor, _ := testValues(t)
+	if got := NewCurator(actor).Actor(); got != actor {
+		t.Fatalf("curator actor = %#v, want %#v", got, actor)
+	}
+}
+
 func TestCandidateIDRejectsZeroAcrossConstructors(t *testing.T) {
 	if !((CandidateID{}).IsZero()) {
 		t.Fatal("zero value CandidateID is not reported zero")

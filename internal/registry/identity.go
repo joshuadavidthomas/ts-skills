@@ -15,9 +15,10 @@ import (
 )
 
 var (
-	ErrNotFound     = errors.New("registry value not found")
-	ErrConflict     = errors.New("registry conflict")
-	ErrTreeMismatch = errors.New("stored tree does not match its digest")
+	ErrNotFound       = errors.New("registry value not found")
+	ErrConflict       = errors.New("registry conflict")
+	ErrCurationDenied = errors.New("curation permission denied")
+	ErrTreeMismatch   = errors.New("stored tree does not match its digest")
 )
 
 type Namespace struct{ canonical string }
@@ -27,6 +28,9 @@ type Actor struct {
 	id      string
 	display string
 }
+
+// Curator is an Actor authorized to mutate the catalog.
+type Curator struct{ actor Actor }
 
 type SkillID struct {
 	namespace Namespace
@@ -171,6 +175,10 @@ func NewActor(id, display string) (Actor, error) {
 
 func (a Actor) ID() string      { return a.id }
 func (a Actor) Display() string { return a.display }
+
+func NewCurator(actor Actor) Curator { return Curator{actor: actor} }
+
+func (c Curator) Actor() Actor { return c.actor }
 
 func NewUploadSource(label string) (UploadSource, error) {
 	if err := validateBoundedText("upload source label", label); err != nil {

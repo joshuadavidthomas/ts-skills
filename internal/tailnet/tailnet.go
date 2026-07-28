@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/web"
 	"tailscale.com/client/local"
 	"tailscale.com/hostinfo"
 	"tailscale.com/tailcfg"
@@ -41,56 +40,54 @@ func NewActorResolver(client *local.Client) (*ActorResolver, error) {
 	return &ActorResolver{local: client}, nil
 }
 
-func (r *ActorResolver) Identify(request *http.Request) (web.Identity, error) {
+func (r *ActorResolver) Curator(request *http.Request) (registry.Curator, error) {
 	if r == nil || r.local == nil {
-		return web.Identity{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
+		return registry.Curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
 	}
 	if request == nil {
-		return web.Identity{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
+		return registry.Curator{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
 	}
 
 	who, err := r.local.WhoIs(request.Context(), request.RemoteAddr)
 	if err != nil {
-		return web.Identity{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
+		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
 	}
 	if who == nil || who.Node == nil {
-		return web.Identity{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
+		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
 	}
-	rules, err := tailcfg.UnmarshalCapJSON[capabilityRule](who.CapMap, skillsCapabilityName)
-	if err != nil {
-		return web.Identity{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
-	}
-	canCurate := false
-	for _, rule := range rules {
-		if rule.Curate {
-			canCurate = true
-			break
-		}
-	}
-
+	var actor registry.Actor
 	if len(who.Node.Tags) != 0 {
 		if who.Node.StableID.IsZero() || strings.TrimSpace(who.Node.Name) == "" {
-			return web.Identity{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
+			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
 		}
 		display := strings.TrimSuffix(who.Node.Name, ".") + " [" + strings.Join(who.Node.Tags, ", ") + "]"
-		actor, err := registry.NewActor(string(who.Node.StableID), display)
+		actor, err = registry.NewActor(string(who.Node.StableID), display)
 		if err != nil {
-			return web.Identity{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
+			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
-		return web.Identity{Actor: actor, CanCurate: canCurate}, nil
+	} else {
+		if who.UserProfile == nil || who.UserProfile.ID.IsZero() || strings.TrimSpace(who.UserProfile.LoginName) == "" {
+			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
+		}
+		actor, err = registry.NewActor(
+			strconv.FormatInt(int64(who.UserProfile.ID), 10),
+			who.UserProfile.LoginName,
+		)
+		if err != nil {
+			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
+		}
 	}
 
-	if who.UserProfile == nil || who.UserProfile.ID.IsZero() || strings.TrimSpace(who.UserProfile.LoginName) == "" {
-		return web.Identity{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
-	}
-	actor, err := registry.NewActor(
-		strconv.FormatInt(int64(who.UserProfile.ID), 10),
-		who.UserProfile.LoginName,
-	)
+	rules, err := tailcfg.UnmarshalCapJSON[capabilityRule](who.CapMap, skillsCapabilityName)
 	if err != nil {
-		return web.Identity{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
+		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
 	}
-	return web.Identity{Actor: actor, CanCurate: canCurate}, nil
+	for _, rule := range rules {
+		if rule.Curate {
+			return registry.NewCurator(actor), nil
+		}
+	}
+	return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, registry.ErrCurationDenied)
 }
 
 type ServerConfig struct {

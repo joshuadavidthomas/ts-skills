@@ -50,11 +50,11 @@ func (s *staleCurrentStore) CurrentPublication(ctx context.Context, skill regist
 	return s.CatalogStore.CurrentPublication(ctx, skill)
 }
 
-func newCatalogFixture(t *testing.T) (*registry.Catalog, *storage.Catalog, string, registry.Namespace, registry.Actor, registry.Provenance) {
+func newCatalogFixture(t *testing.T) (*registry.Catalog, *storage.Catalog, string, registry.Namespace, registry.Curator, registry.UploadSource, time.Time) {
 	return newCatalogFixtureWithStore(t, func(store registry.CatalogStore) registry.CatalogStore { return store })
 }
 
-func newCatalogFixtureWithStore(t *testing.T, decorate func(registry.CatalogStore) registry.CatalogStore) (*registry.Catalog, *storage.Catalog, string, registry.Namespace, registry.Actor, registry.Provenance) {
+func newCatalogFixtureWithStore(t *testing.T, decorate func(registry.CatalogStore) registry.CatalogStore) (*registry.Catalog, *storage.Catalog, string, registry.Namespace, registry.Curator, registry.UploadSource, time.Time) {
 	t.Helper()
 	store, err := storage.OpenCatalog(context.Background(), t.TempDir())
 	if err != nil {
@@ -82,11 +82,8 @@ func newCatalogFixtureWithStore(t *testing.T, decorate func(registry.CatalogStor
 	if err != nil {
 		t.Fatal(err)
 	}
-	provenance, err := registry.NewProvenance(source, actor, time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("test", 3600)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return catalog, store, staging, namespace, actor, provenance
+	submittedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("test", 3600))
+	return catalog, store, staging, namespace, registry.NewCurator(actor), source, submittedAt
 }
 
 func skillSource(instructions, asset string) fstest.MapFS {
@@ -97,9 +94,9 @@ func skillSource(instructions, asset string) fstest.MapFS {
 	}
 }
 
-func capture(t *testing.T, catalog *registry.Catalog, namespace registry.Namespace, provenance registry.Provenance, source fs.FS) registry.Candidate {
+func capture(t *testing.T, catalog *registry.Catalog, namespace registry.Namespace, curator registry.Curator, source registry.UploadSource, submittedAt time.Time, tree fs.FS) registry.Candidate {
 	t.Helper()
-	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), source, "sample", safetree.PrototypeLimits())
+	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), tree, "sample", safetree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,11 +105,8 @@ func capture(t *testing.T, catalog *registry.Catalog, namespace registry.Namespa
 			t.Error(err)
 		}
 	}()
-	candidate, err := catalog.Capture(context.Background(), registry.CaptureRequest{
-		Namespace:  namespace,
-		Staged:     snapshot,
-		Root:       "sample",
-		Provenance: provenance,
+	candidate, err := catalog.Capture(context.Background(), curator, registry.CaptureRequest{
+		Namespace: namespace, Staged: snapshot, Root: "sample", Source: source, SubmittedAt: submittedAt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -143,10 +137,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provenance, err := registry.NewProvenance(source, actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	curator := registry.NewCurator(actor)
 	observed := observingCatalogStore{CatalogStore: store}
 	observed.beforeRecord = func() {
 		entries, err := os.ReadDir(staging)
@@ -174,8 +165,8 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := catalog.Capture(context.Background(), registry.CaptureRequest{
-		Namespace: namespace, Staged: snapshot, Root: "sample", Provenance: provenance,
+	candidate, err := catalog.Capture(context.Background(), curator, registry.CaptureRequest{
+		Namespace: namespace, Staged: snapshot, Root: "sample", Source: source, SubmittedAt: time.Now(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,23 +174,26 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 	if candidate.Tree() != inspection.Digest() {
 		t.Fatalf("candidate digest = %s, want staged digest %s", candidate.Tree(), inspection.Digest())
 	}
+	if got := candidate.Provenance().SubmittedBy(); got != curator.Actor() {
+		t.Fatalf("candidate submitter = %#v, want curator actor %#v", got, curator.Actor())
+	}
 	if _, err := fs.ReadFile(snapshot.FS(), "sample/SKILL.md"); err != nil {
 		t.Fatalf("Capture closed its borrowed snapshot: %v", err)
 	}
 }
 
 func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
-	catalog, _, _, namespace, actor, provenance := newCatalogFixture(t)
+	catalog, _, _, namespace, curator, source, submittedAt := newCatalogFixture(t)
 	ctx := context.Background()
 	missingCandidate, err := registry.NewCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.Publish(ctx, missingCandidate, actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Publish(ctx, missingCandidate, curator, time.Now()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("publish unknown candidate error = %v", err)
 	}
 	original := skillSource("# First\n", "first")
-	firstCandidate := capture(t, catalog, namespace, provenance, original)
+	firstCandidate := capture(t, catalog, namespace, curator, source, submittedAt, original)
 
 	original["sample/assets/data.txt"].Data = []byte("mutated after capture")
 	candidateTree, err := catalog.OpenCandidateTree(ctx, firstCandidate.ID())
@@ -218,7 +212,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	}
 
 	publishedAt := time.Date(2026, 1, 3, 4, 5, 6, 0, time.UTC)
-	firstPublish, err := catalog.Publish(ctx, firstCandidate.ID(), actor, publishedAt)
+	firstPublish, err := catalog.Publish(ctx, firstCandidate.ID(), curator, publishedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,15 +224,15 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repeated, err := catalog.Publish(ctx, firstCandidate.ID(), laterActor, publishedAt.Add(time.Hour))
+	repeated, err := catalog.Publish(ctx, firstCandidate.ID(), registry.NewCurator(laterActor), publishedAt.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if repeated != firstPublish {
 		t.Fatalf("repeated publish returned %#v, want original %#v", repeated, firstPublish)
 	}
-	equivalentCandidate := capture(t, catalog, namespace, provenance, skillSource("# First\n", "first"))
-	equivalent, err := catalog.Publish(ctx, equivalentCandidate.ID(), laterActor, publishedAt.Add(2*time.Hour))
+	equivalentCandidate := capture(t, catalog, namespace, curator, source, submittedAt, skillSource("# First\n", "first"))
+	equivalent, err := catalog.Publish(ctx, equivalentCandidate.ID(), registry.NewCurator(laterActor), publishedAt.Add(2*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +240,8 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 		t.Fatalf("equivalent candidate returned %#v, want original %#v", equivalent, firstPublish)
 	}
 
-	secondCandidate := capture(t, catalog, namespace, provenance, skillSource("# Second\n", "second"))
-	secondPublish, err := catalog.Publish(ctx, secondCandidate.ID(), actor, publishedAt.Add(3*time.Hour))
+	secondCandidate := capture(t, catalog, namespace, curator, source, submittedAt, skillSource("# Second\n", "second"))
+	secondPublish, err := catalog.Publish(ctx, secondCandidate.ID(), curator, publishedAt.Add(3*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +255,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if current.ID() != firstPublish.ID() {
 		t.Fatalf("second publish moved current to %s", current.ID().Tree())
 	}
-	if err := catalog.SetCurrent(ctx, secondPublish.ID(), laterActor, publishedAt.Add(4*time.Hour)); err != nil {
+	if err := catalog.SetCurrent(ctx, secondPublish.ID(), registry.NewCurator(laterActor), publishedAt.Add(4*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	current, err = catalog.ResolveCurrent(ctx, firstCandidate.Skill())
@@ -308,7 +302,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := catalog.SetCurrent(ctx, unknownPublication, actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
+	if err := catalog.SetCurrent(ctx, unknownPublication, curator, time.Now()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("select unpublished identity error = %v", err)
 	}
 }
@@ -317,12 +311,12 @@ func TestCatalogConcurrentFirstPublicationsChooseOneCurrent(t *testing.T) {
 	arrived := make(chan struct{}, 2)
 	release := make(chan struct{})
 	barrier := &staleCurrentStore{arrived: arrived, release: release, remaining: 2}
-	catalog, _, _, namespace, actor, provenance := newCatalogFixtureWithStore(t, func(store registry.CatalogStore) registry.CatalogStore {
+	catalog, _, _, namespace, curator, source, submittedAt := newCatalogFixtureWithStore(t, func(store registry.CatalogStore) registry.CatalogStore {
 		barrier.CatalogStore = store
 		return barrier
 	})
-	first := capture(t, catalog, namespace, provenance, skillSource("# First\n", "first"))
-	second := capture(t, catalog, namespace, provenance, skillSource("# Second\n", "second"))
+	first := capture(t, catalog, namespace, curator, source, submittedAt, skillSource("# First\n", "first"))
+	second := capture(t, catalog, namespace, curator, source, submittedAt, skillSource("# Second\n", "second"))
 
 	type result struct {
 		publication registry.Publication
@@ -336,7 +330,7 @@ func TestCatalogConcurrentFirstPublicationsChooseOneCurrent(t *testing.T) {
 		go func(index int, candidate registry.Candidate) {
 			defer wait.Done()
 			<-start
-			publication, err := catalog.Publish(context.Background(), candidate.ID(), actor, time.Date(2026, 1, 3, 4, 5, 6+index, 0, time.UTC))
+			publication, err := catalog.Publish(context.Background(), candidate.ID(), curator, time.Date(2026, 1, 3, 4, 5, 6+index, 0, time.UTC))
 			results <- result{publication: publication, err: err}
 		}(index, candidate)
 	}
@@ -411,13 +405,13 @@ func (r catalogRemote) Fetch(ctx context.Context, requirement install.Requiremen
 }
 
 func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
-	catalog, _, _, namespace, actor, provenance := newCatalogFixture(t)
+	catalog, _, _, namespace, curator, uploadSource, submittedAt := newCatalogFixture(t)
 	source := skillSource("# Install me\n", "captured asset")
-	candidate := capture(t, catalog, namespace, provenance, source)
+	candidate := capture(t, catalog, namespace, curator, uploadSource, submittedAt, source)
 
 	source["sample/SKILL.md"].Data = []byte("destroyed")
 	source["sample/assets/data.txt"].Data = []byte("mutated asset")
-	published, err := catalog.Publish(context.Background(), candidate.ID(), actor, time.Now())
+	published, err := catalog.Publish(context.Background(), candidate.ID(), curator, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -39,24 +39,19 @@ var templatesFS embed.FS
 var staticFS embed.FS
 
 type Catalog interface {
-	Capture(context.Context, registry.CaptureRequest) (registry.Candidate, error)
+	Capture(context.Context, registry.Curator, registry.CaptureRequest) (registry.Candidate, error)
 	Candidate(context.Context, registry.CandidateID) (registry.Candidate, error)
 	OpenCandidateTree(context.Context, registry.CandidateID) (registry.Tree, error)
-	Publish(context.Context, registry.CandidateID, registry.Actor, time.Time) (registry.Publication, error)
-	SetCurrent(context.Context, registry.PublicationID, registry.Actor, time.Time) error
+	Publish(context.Context, registry.CandidateID, registry.Curator, time.Time) (registry.Publication, error)
+	SetCurrent(context.Context, registry.PublicationID, registry.Curator, time.Time) error
 	ListSkills(context.Context) ([]registry.SkillSummary, error)
 	ResolveCurrent(context.Context, registry.SkillID) (registry.Publication, error)
 	Publication(context.Context, registry.PublicationID) (registry.Publication, error)
 	OpenPublicationTree(context.Context, registry.PublicationID) (registry.Tree, error)
 }
 
-type Identity struct {
-	Actor     registry.Actor
-	CanCurate bool
-}
-
-type ActorResolver interface {
-	Identify(*http.Request) (Identity, error)
+type CuratorResolver interface {
+	Curator(*http.Request) (registry.Curator, error)
 }
 
 type CSRFKey [32]byte
@@ -84,18 +79,18 @@ type Options struct {
 }
 
 type handler struct {
-	catalog Catalog
-	actors  ActorResolver
-	options Options
-	pages   *template.Template
+	catalog  Catalog
+	curators CuratorResolver
+	options  Options
+	pages    *template.Template
 }
 
-func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Handler, error) {
+func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (http.Handler, error) {
 	if catalog == nil {
 		return nil, fmt.Errorf("web catalog must be provided")
 	}
-	if actors == nil {
-		return nil, fmt.Errorf("actor resolver must be provided")
+	if curators == nil {
+		return nil, fmt.Errorf("curator resolver must be provided")
 	}
 	if options.CSRFKey == (CSRFKey{}) {
 		return nil, fmt.Errorf("CSRF key must be provided")
@@ -121,7 +116,7 @@ func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Ha
 	if err != nil {
 		return nil, fmt.Errorf("open embedded web assets: %w", err)
 	}
-	h := &handler{catalog: catalog, actors: actors, options: options, pages: pages}
+	h := &handler{catalog: catalog, curators: curators, options: options, pages: pages}
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
@@ -256,13 +251,8 @@ func (h *handler) uploadPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
-	identity, err := h.actors.Identify(r)
-	if err != nil {
-		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
-		return
-	}
-	if !identity.CanCurate {
-		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+	curator, ok := h.resolveCurator(w, r)
+	if !ok {
 		return
 	}
 	mediaType, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -302,13 +292,8 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the selected directory and try again.")
 		return
 	}
-	provenance, err := registry.NewProvenance(source, identity.Actor, time.Now().UTC())
-	if err != nil {
-		h.handleError(w, r, err)
-		return
-	}
-	candidate, err := h.catalog.Capture(r.Context(), registry.CaptureRequest{
-		Namespace: namespace, Staged: submission.Snapshot(), Root: submission.Root(), Provenance: provenance,
+	candidate, err := h.catalog.Capture(r.Context(), curator, registry.CaptureRequest{
+		Namespace: namespace, Staged: submission.Snapshot(), Root: submission.Root(), Source: source, SubmittedAt: time.Now().UTC(),
 	})
 	if err != nil {
 		h.handleError(w, r, err)
@@ -395,16 +380,11 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
 	}
-	identity, err := h.actors.Identify(r)
-	if err != nil {
-		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
+	curator, ok := h.resolveCurator(w, r)
+	if !ok {
 		return
 	}
-	if !identity.CanCurate {
-		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
-		return
-	}
-	if _, err := h.catalog.Publish(r.Context(), id, identity.Actor, time.Now().UTC()); err != nil {
+	if _, err := h.catalog.Publish(r.Context(), id, curator, time.Now().UTC()); err != nil {
 		h.handleError(w, r, err)
 		return
 	}
@@ -412,13 +392,8 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
-	identity, err := h.actors.Identify(r)
-	if err != nil {
-		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
-		return
-	}
-	if !identity.CanCurate {
-		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+	curator, ok := h.resolveCurator(w, r)
+	if !ok {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -444,11 +419,24 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	if err := h.catalog.SetCurrent(r.Context(), publication, identity.Actor, time.Now().UTC()); err != nil {
+	if err := h.catalog.SetCurrent(r.Context(), publication, curator, time.Now().UTC()); err != nil {
 		h.handleError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+func (h *handler) resolveCurator(w http.ResponseWriter, r *http.Request) (registry.Curator, bool) {
+	curator, err := h.curators.Curator(r)
+	switch {
+	case errors.Is(err, registry.ErrCurationDenied):
+		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+	case err != nil:
+		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
+	default:
+		return curator, true
+	}
+	return registry.Curator{}, false
 }
 
 func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {

@@ -19,10 +19,11 @@ type Tree interface {
 }
 
 type CaptureRequest struct {
-	Namespace  Namespace
-	Staged     *safetree.Snapshot
-	Root       string
-	Provenance Provenance
+	Namespace   Namespace
+	Staged      *safetree.Snapshot
+	Root        string
+	Source      UploadSource
+	SubmittedAt time.Time
 }
 
 // CatalogStore persists catalog facts and keeps each write atomic. Registry
@@ -67,9 +68,13 @@ func NewCatalog(store CatalogStore, stagingParent string, limits safetree.Limits
 	return &Catalog{store: store, stagingParent: stagingParent, limits: limits}, nil
 }
 
-func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidate, error) {
-	if request.Namespace.canonical == "" || request.Staged == nil || request.Provenance.source.label == "" {
-		return Candidate{}, fmt.Errorf("capture requires namespace, staged tree, and provenance")
+func (c *Catalog) Capture(ctx context.Context, curator Curator, request CaptureRequest) (Candidate, error) {
+	if request.Namespace.canonical == "" || request.Staged == nil || request.Source.label == "" || request.SubmittedAt.IsZero() {
+		return Candidate{}, fmt.Errorf("capture requires namespace, staged tree, source, and submission time")
+	}
+	provenance, err := NewProvenance(request.Source, curator.Actor(), request.SubmittedAt)
+	if err != nil {
+		return Candidate{}, err
 	}
 	inspection, err := agentskill.Inspect(ctx, request.Staged.FS(), request.Root)
 	if err != nil {
@@ -83,7 +88,7 @@ func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidat
 	if err != nil {
 		return Candidate{}, err
 	}
-	candidate, err := NewCandidate(id, skill, inspection.Digest(), request.Provenance)
+	candidate, err := NewCandidate(id, skill, inspection.Digest(), provenance)
 	if err != nil {
 		return Candidate{}, err
 	}
@@ -99,7 +104,7 @@ func (c *Catalog) Candidate(ctx context.Context, id CandidateID) (Candidate, err
 func (c *Catalog) OpenCandidateTree(ctx context.Context, id CandidateID) (Tree, error) {
 	return c.store.OpenCandidateTree(ctx, id)
 }
-func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at time.Time) (Publication, error) {
+func (c *Catalog) Publish(ctx context.Context, id CandidateID, curator Curator, at time.Time) (Publication, error) {
 	candidate, err := c.store.Candidate(ctx, id)
 	if err != nil {
 		return Publication{}, err
@@ -108,7 +113,7 @@ func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at t
 	if err != nil {
 		return Publication{}, err
 	}
-	publication, err := NewPublication(publicationID, id, actor, at)
+	publication, err := NewPublication(publicationID, id, curator.Actor(), at)
 	if err != nil {
 		return Publication{}, err
 	}
@@ -117,7 +122,7 @@ func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at t
 		if !errors.Is(err, ErrNotFound) {
 			return Publication{}, err
 		}
-		selection, err := NewCurrentPublication(publicationID, actor, at)
+		selection, err := NewCurrentPublication(publicationID, curator.Actor(), at)
 		if err != nil {
 			return Publication{}, err
 		}
@@ -132,8 +137,8 @@ func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at t
 	}
 	return c.store.Publication(ctx, publicationID)
 }
-func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, actor Actor, at time.Time) error {
-	selection, err := NewCurrentPublication(id, actor, at)
+func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, curator Curator, at time.Time) error {
+	selection, err := NewCurrentPublication(id, curator.Actor(), at)
 	if err != nil {
 		return err
 	}
