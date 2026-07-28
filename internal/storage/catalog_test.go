@@ -94,7 +94,7 @@ func closeCatalog(t *testing.T, catalog *Catalog) {
 	}
 }
 
-func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
+func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	state := t.TempDir()
 	firstFixture := newFixture(t, "# First\n", "first asset")
@@ -109,14 +109,9 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ID() != first.ID() || stored.Skill() != first.Skill() || stored.Tree() != first.Tree() {
+	if stored != first {
 		t.Fatalf("stored candidate = %#v, want %#v", stored, first)
 	}
-	if stored.Provenance().Source().Label() != "sample" || stored.Provenance().SubmittedBy() != firstFixture.actor ||
-		!stored.Provenance().SubmittedAt().Equal(first.Provenance().SubmittedAt()) {
-		t.Fatalf("stored provenance = %#v, want %#v", stored.Provenance(), first.Provenance())
-	}
-
 	candidateTree, err := catalog.OpenCandidateTree(ctx, first.ID())
 	if err != nil {
 		t.Fatal(err)
@@ -125,64 +120,68 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(asset) != "first asset" {
-		t.Fatalf("candidate asset = %q", asset)
-	}
 	if err := candidateTree.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if string(asset) != "first asset" {
+		t.Fatalf("candidate asset = %q", asset)
+	}
 
 	publishedAt := time.Date(2026, 2, 4, 5, 6, 7, 8, time.FixedZone("offset", 3600))
-	firstPublished, err := catalog.PublishCandidate(ctx, first.ID(), firstFixture.actor, publishedAt)
+	firstID, err := registry.NewPublicationID(first.Skill(), first.Tree())
 	if err != nil {
 		t.Fatal(err)
 	}
-	currentAfterFirst, err := catalog.ResolveCurrent(ctx, first.Skill())
+	firstPublished, err := registry.NewPublication(firstID, first.ID(), firstFixture.actor, publishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCurrent, err := registry.NewCurrentPublication(firstID, firstFixture.actor, publishedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inserted, err := catalog.PersistPublication(ctx, firstPublished, &firstCurrent)
+	if err != nil || !inserted {
+		t.Fatalf("persist first publication = inserted %t, err %v", inserted, err)
+	}
+	if inserted, err := catalog.PersistPublication(ctx, firstPublished, &firstCurrent); err != nil || inserted {
+		t.Fatalf("persist repeated publication = inserted %t, err %v", inserted, err)
+	}
+	currentAfterFirst, err := catalog.CurrentPublication(ctx, first.Skill())
 	if err != nil || currentAfterFirst != firstPublished {
-		t.Fatalf("first publication did not become current (%#v, %v)", currentAfterFirst, err)
-	}
-	repeated, err := catalog.PublishCandidate(ctx, first.ID(), firstFixture.actor, publishedAt.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repeated != firstPublished {
-		t.Fatalf("repeated publication = %#v, want %#v", repeated, firstPublished)
-	}
-
-	equivalent := firstFixture.candidate(t)
-	if err := catalog.RecordCandidate(ctx, equivalent, firstFixture.directory); err != nil {
-		t.Fatal(err)
-	}
-	equivalentPublished, err := catalog.PublishCandidate(ctx, equivalent.ID(), firstFixture.actor, publishedAt.Add(2*time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if equivalentPublished.ID() != firstPublished.ID() || equivalentPublished.Candidate() != first.ID() {
-		t.Fatalf("equivalent publication = %#v", equivalentPublished)
+		t.Fatalf("stored initial current = %#v, %v", currentAfterFirst, err)
 	}
 
 	second := secondFixture.candidate(t)
 	if err := catalog.RecordCandidate(ctx, second, secondFixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	secondPublished, err := catalog.PublishCandidate(ctx, second.ID(), firstFixture.actor, publishedAt.Add(3*time.Hour))
+	secondID, err := registry.NewPublicationID(second.Skill(), second.Tree())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondPublished.ID() == firstPublished.ID() {
-		t.Fatalf("second publication reused the first publication: %#v", secondPublished)
-	}
-	currentAfterSecond, err := catalog.ResolveCurrent(ctx, first.Skill())
-	if err != nil || currentAfterSecond != firstPublished {
-		t.Fatalf("second publication moved current to %#v (%v)", currentAfterSecond, err)
-	}
-	selectedAt := publishedAt.Add(4 * time.Hour)
-	if err := catalog.SelectCurrent(ctx, secondPublished.ID(), firstFixture.actor, selectedAt); err != nil {
+	secondPublished, err := registry.NewPublication(secondID, second.ID(), firstFixture.actor, publishedAt.Add(time.Hour))
+	if err != nil {
 		t.Fatal(err)
 	}
-	selectedNow, err := catalog.ResolveCurrent(ctx, first.Skill())
+	if inserted, err := catalog.PersistPublication(ctx, secondPublished, nil); err != nil || !inserted {
+		t.Fatalf("persist second publication = inserted %t, err %v", inserted, err)
+	}
+	currentAfterSecond, err := catalog.CurrentPublication(ctx, first.Skill())
+	if err != nil || currentAfterSecond != firstPublished {
+		t.Fatalf("second publication changed current to %#v (%v)", currentAfterSecond, err)
+	}
+	selectedAt := publishedAt.Add(2 * time.Hour)
+	selected, err := registry.NewCurrentPublication(secondID, firstFixture.actor, selectedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.PersistCurrent(ctx, selected); err != nil {
+		t.Fatal(err)
+	}
+	selectedNow, err := catalog.CurrentPublication(ctx, first.Skill())
 	if err != nil || selectedNow != secondPublished {
-		t.Fatalf("explicit selection resolved to %#v (%v)", selectedNow, err)
+		t.Fatalf("stored current selection = %#v (%v)", selectedNow, err)
 	}
 
 	closeCatalog(t, catalog)
@@ -194,18 +193,12 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 		t.Fatalf("candidate after restart = %#v, %v", stored, err)
 	}
 	exact, err := catalog.Publication(ctx, firstPublished.ID())
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || exact != firstPublished {
+		t.Fatalf("publication after restart = %#v, %v", exact, err)
 	}
-	if exact != firstPublished {
-		t.Fatalf("publication after restart = %#v, want %#v", exact, firstPublished)
-	}
-	current, err := catalog.ResolveCurrent(ctx, first.Skill())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.ID() != secondPublished.ID() {
-		t.Fatalf("current after restart = %#v", current.ID())
+	current, err := catalog.CurrentPublication(ctx, first.Skill())
+	if err != nil || current != secondPublished {
+		t.Fatalf("current after restart = %#v, %v", current, err)
 	}
 	summaries, err := catalog.ListPublishedSkills(ctx)
 	if err != nil {
@@ -818,9 +811,6 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	if _, err := catalog.OpenCandidateTree(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("OpenCandidateTree error = %v", err)
 	}
-	if _, err := catalog.PublishCandidate(ctx, candidate.ID(), fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
-		t.Fatalf("PublishCandidate error = %v", err)
-	}
 	if _, err := catalog.Publication(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) ||
 		!strings.Contains(err.Error(), candidate.Skill().String()) || !strings.Contains(err.Error(), candidate.Tree().String()) {
 		t.Fatalf("Publication error = %v", err)
@@ -828,11 +818,8 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	if _, err := catalog.OpenPublicationTree(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("OpenPublicationTree error = %v", err)
 	}
-	if _, err := catalog.ResolveCurrent(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill().String()) {
-		t.Fatalf("ResolveCurrent error = %v", err)
-	}
-	if err := catalog.SelectCurrent(ctx, publicationID, fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
-		t.Fatalf("SelectCurrent error = %v", err)
+	if _, err := catalog.CurrentPublication(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill().String()) {
+		t.Fatalf("CurrentPublication error = %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
@@ -841,21 +828,30 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	}
 }
 
-func TestPublishCandidateReportsRollbackFailure(t *testing.T) {
+func TestPersistPublicationReportsRollbackFailure(t *testing.T) {
 	catalog := openCatalog(t, t.TempDir())
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Missing\n", "asset")
 	candidate := fixture.candidate(t)
+	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	injected := errors.New("injected rollback failure")
 	catalog.rollbackTx = func(tx *sql.Tx) error {
 		return errors.Join(tx.Rollback(), injected)
 	}
-	_, err := catalog.PublishCandidate(context.Background(), candidate.ID(), fixture.actor, time.Now())
-	if !errors.Is(err, registry.ErrNotFound) {
-		t.Fatalf("PublishCandidate error = %v, want ErrNotFound", err)
-	}
+	_, err = catalog.PersistPublication(context.Background(), publication, &current)
 	if !errors.Is(err, injected) {
-		t.Fatalf("PublishCandidate error = %v, want rollback failure joined", err)
+		t.Fatalf("PersistPublication error = %v, want rollback failure joined", err)
 	}
 }
 
@@ -876,7 +872,7 @@ func TestCandidateIDBlobRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPublishCandidateIgnoresPostCommitRollbackError(t *testing.T) {
+func TestPersistPublicationRollsBackWhenInitialCurrentFails(t *testing.T) {
 	catalog := openCatalog(t, t.TempDir())
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Sample\n", "asset")
@@ -884,16 +880,67 @@ func TestPublishCandidateIgnoresPostCommitRollbackError(t *testing.T) {
 	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
+	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.db.Exec(`
+		CREATE TRIGGER fail_initial_current
+		BEFORE INSERT ON current_publications
+		BEGIN
+			SELECT RAISE(ABORT, 'injected initial-current failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.PersistPublication(context.Background(), publication, &current); err == nil {
+		t.Fatal("PersistPublication succeeded despite a current-publication failure")
+	}
+	if _, err := catalog.Publication(context.Background(), id); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("publication survived failed initial current insert: %v", err)
+	}
+	if _, err := catalog.CurrentPublication(context.Background(), candidate.Skill()); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("current publication survived failed initial current insert: %v", err)
+	}
+}
+
+func TestPersistPublicationIgnoresPostCommitRollbackError(t *testing.T) {
+	catalog := openCatalog(t, t.TempDir())
+	defer closeCatalog(t, catalog)
+	fixture := newFixture(t, "# Sample\n", "asset")
+	candidate := fixture.candidate(t)
+	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
+		t.Fatal(err)
+	}
+	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	if err != nil {
+		t.Fatal(err)
+	}
+	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// After a successful commit Rollback reports sql.ErrTxDone; that must not
 	// be joined into the result. This seam returns it even on the post-commit
 	// rollback to prove the deferred rollback filters it.
 	catalog.rollbackTx = func(*sql.Tx) error { return sql.ErrTxDone }
-	published, err := catalog.PublishCandidate(context.Background(), candidate.ID(), fixture.actor, time.Now())
-	if err != nil {
-		t.Fatalf("PublishCandidate error = %v, want post-commit sql.ErrTxDone ignored", err)
+	inserted, err := catalog.PersistPublication(context.Background(), publication, &selection)
+	if err != nil || !inserted {
+		t.Fatalf("PersistPublication = inserted %t, err %v; want post-commit sql.ErrTxDone ignored", inserted, err)
 	}
-	current, err := catalog.ResolveCurrent(context.Background(), candidate.Skill())
-	if err != nil || current != published {
+	current, err := catalog.CurrentPublication(context.Background(), candidate.Skill())
+	if err != nil || current != publication {
 		t.Fatalf("publication not current after ignored rollback error (%#v, %v)", current, err)
 	}
 }

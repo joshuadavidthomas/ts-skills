@@ -137,7 +137,7 @@ func (c *Catalog) Publication(ctx context.Context, id registry.PublicationID) (r
 	return queryPublication(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *Catalog) ResolveCurrent(ctx context.Context, skill registry.SkillID) (registry.Publication, error) {
+func (c *Catalog) CurrentPublication(ctx context.Context, skill registry.SkillID) (registry.Publication, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return registry.Publication{}, err

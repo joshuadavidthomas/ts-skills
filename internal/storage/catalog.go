@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
@@ -19,7 +18,7 @@ var ErrTreesOpen = errors.New("registry trees remain open")
 // Catalog stores registry facts in SQLite and tree contents in digest-addressed
 // directories. Its lifetime lock makes the state directory a single-writer,
 // single-process resource.
-var _ registry.CatalogRecords = (*Catalog)(nil)
+var _ registry.CatalogStore = (*Catalog)(nil)
 
 // closePhase states which owned resource Close releases next, so a failed
 // Close can be retried and resumes exactly where it stopped. The legal
@@ -263,81 +262,69 @@ func (c *Catalog) Candidate(ctx context.Context, id registry.CandidateID) (regis
 	return queryCandidate(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (_ registry.Publication, err error) {
+func (c *Catalog) PersistPublication(ctx context.Context, publication registry.Publication, initialCurrent *registry.CurrentPublication) (_ bool, err error) {
+	if initialCurrent != nil && initialCurrent.Publication() != publication.ID() {
+		return false, fmt.Errorf("initial current publication must match publication")
+	}
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.Publication{}, err
+		return false, err
 	}
 	defer done()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("begin publish transaction: %w", err)
+		return false, fmt.Errorf("begin publication transaction: %w", err)
 	}
 	defer func() {
 		err = c.rollbackTransaction(tx, err)
 	}()
 
-	candidate, err := queryCandidate(ctx, tx.QueryRowContext, id)
-	if err != nil {
-		return registry.Publication{}, err
-	}
-	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
-	if err != nil {
-		return registry.Publication{}, err
-	}
-	publication, err := registry.NewPublication(publicationID, id, actor, at)
-	if err != nil {
-		return registry.Publication{}, err
-	}
-
+	id := publication.ID()
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO publications(
 			namespace, name, tree_digest, candidate_id,
 			published_actor_id, published_actor_display, published_at_ns
 		) VALUES(?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, name, tree_digest) DO NOTHING`,
-		candidate.Skill().Namespace().String(), candidate.Skill().Name().String(), digestBlob(candidate.Tree()), candidateIDBlob(id),
-		actor.ID(), actor.Display(), at.UnixNano(),
+		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()), candidateIDBlob(publication.Candidate()),
+		publication.PublishedBy().ID(), publication.PublishedBy().Display(), publication.PublishedAt().UnixNano(),
 	)
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("insert publication: %w", err)
+		return false, fmt.Errorf("insert publication: %w", err)
 	}
 	inserted, err := exactlyZeroOrOne(result)
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("insert publication: %w", err)
+		return false, fmt.Errorf("insert publication: %w", err)
 	}
 	if !inserted {
-		publication, err = queryPublication(ctx, tx.QueryRowContext, publicationID)
-		if err != nil {
-			return registry.Publication{}, err
-		}
 		if err := tx.Commit(); err != nil {
-			return registry.Publication{}, fmt.Errorf("commit repeated publication: %w", err)
+			return false, fmt.Errorf("commit repeated publication: %w", err)
 		}
-		return publication, nil
+		return false, nil
 	}
 
-	// A first publication for the skill becomes current immediately; the
-	// conflict clause leaves any earlier selection in place.
-	currentResult, err := tx.ExecContext(ctx, `
-		INSERT INTO current_publications(
-			namespace, name, tree_digest,
-			selected_actor_id, selected_actor_display, selected_at_ns
-		) VALUES(?, ?, ?, ?, ?, ?)
-		ON CONFLICT(namespace, name) DO NOTHING`,
-		candidate.Skill().Namespace().String(), candidate.Skill().Name().String(), digestBlob(candidate.Tree()),
-		actor.ID(), actor.Display(), at.UnixNano(),
-	)
-	if err != nil {
-		return registry.Publication{}, fmt.Errorf("insert first current publication: %w", err)
-	}
-	if _, err := exactlyZeroOrOne(currentResult); err != nil {
-		return registry.Publication{}, fmt.Errorf("insert first current publication: %w", err)
+	if initialCurrent != nil {
+		currentID := initialCurrent.Publication()
+		currentResult, err := tx.ExecContext(ctx, `
+			INSERT INTO current_publications(
+				namespace, name, tree_digest,
+				selected_actor_id, selected_actor_display, selected_at_ns
+			) VALUES(?, ?, ?, ?, ?, ?)
+			ON CONFLICT(namespace, name) DO NOTHING`,
+			currentID.Skill().Namespace().String(), currentID.Skill().Name().String(), digestBlob(currentID.Tree()),
+			initialCurrent.SelectedBy().ID(), initialCurrent.SelectedBy().Display(), initialCurrent.SelectedAt().UnixNano(),
+		)
+		if err != nil {
+			return false, fmt.Errorf("insert initial current publication: %w", err)
+		}
+		if _, err := exactlyZeroOrOne(currentResult); err != nil {
+			return false, fmt.Errorf("insert initial current publication: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return registry.Publication{}, fmt.Errorf("commit publication: %w", err)
+		return false, fmt.Errorf("commit publication: %w", err)
 	}
-	return publication, nil
+	return true, nil
 }
 
 // rollbackTransaction always rolls the transaction back so a panic cannot leak
@@ -354,29 +341,14 @@ func (c *Catalog) rollbackTransaction(tx *sql.Tx, err error) error {
 	return err
 }
 
-func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) (err error) {
+func (c *Catalog) PersistCurrent(ctx context.Context, selection registry.CurrentPublication) error {
 	done, err := c.withOpenState()
 	if err != nil {
 		return err
 	}
 	defer done()
-	// Selections are persisted as stored audit data only through the
-	// validated shape; the transition itself has no read model.
-	if _, err := registry.NewCurrentPublication(id, actor, at); err != nil {
-		return err
-	}
-
-	tx, err := c.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin current selection transaction: %w", err)
-	}
-	defer func() {
-		err = c.rollbackTransaction(tx, err)
-	}()
-	if _, err := queryPublication(ctx, tx.QueryRowContext, id); err != nil {
-		return err
-	}
-	_, err = tx.ExecContext(ctx, `
+	id := selection.Publication()
+	_, err = c.db.ExecContext(ctx, `
 		INSERT INTO current_publications(
 			namespace, name, tree_digest,
 			selected_actor_id, selected_actor_display, selected_at_ns
@@ -387,13 +359,10 @@ func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, 
 			selected_actor_display = excluded.selected_actor_display,
 			selected_at_ns = excluded.selected_at_ns`,
 		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()),
-		actor.ID(), actor.Display(), at.UnixNano(),
+		selection.SelectedBy().ID(), selection.SelectedBy().Display(), selection.SelectedAt().UnixNano(),
 	)
 	if err != nil {
-		return fmt.Errorf("select current publication: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit current selection: %w", err)
+		return fmt.Errorf("persist current publication: %w", err)
 	}
 	return nil
 }

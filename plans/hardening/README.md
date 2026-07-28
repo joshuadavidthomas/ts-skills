@@ -41,7 +41,7 @@ never reused or renumbered.)
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | DONE |
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | DONE |
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | DONE |
-| 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | TODO |
+| 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | DONE |
 | 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | TODO |
 | 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | TODO |
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | TODO |
@@ -79,6 +79,19 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 010 landed — `registry.Catalog` now owns publication and
+  current-selection decisions. Its narrowed `CatalogStore` port records
+  candidates, publications, selections, and reads; `PersistPublication`
+  atomically writes a new publication and the registry-selected initial
+  current entry. SQLite keeps uniqueness and transaction guarantees, including
+  the concurrent first-publication race. `SetCurrent` checks that the target
+  publication exists before it asks storage to persist the selection. The
+  in-memory policy fake is gone: registry integration tests use SQLite, force
+  two publishers to observe no current selection before either write, and
+  prove one current publication survives. Storage tests cover restart facts
+  and roll back a publication when its initial selection fails. `just test`
+  passed. Deviations: none. Next: 011.
 
 - **2026-07-28**: 012 landed — `upload.StageBrowserDirectory` now owns the
   untouched multipart reader after web reads `namespace`, including the
