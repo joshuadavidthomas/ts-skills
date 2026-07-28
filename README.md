@@ -82,7 +82,7 @@ Dev mode serves plain HTTP on loopback and attributes every request to `dev@loca
 
 ## Deploying on a tailnet
 
-See the [deployment guide](docs/deployment.md). In short: enable MagicDNS and HTTPS certificates on your tailnet, enroll the daemon once with an auth key, point each client's `config.toml` at the daemon's MagicDNS name, and Tailscale ACLs decide who can reach it.
+See the [deployment guide](docs/deployment.md). In short: enable MagicDNS and HTTPS certificates on your tailnet, enroll the daemon once with an auth key, point each client's `config.toml` at the daemon's MagicDNS name, and Tailscale ACLs decide who can reach it. The guide includes ready-to-use systemd and Docker setups — tsnet needs no open host ports, no TUN device, and no root.
 
 ## Development
 

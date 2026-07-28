@@ -48,7 +48,7 @@ install -m 0600 /path/from/secret-store/ts-skillsd.authkey /run/ts-skillsd.authk
 export TS_SKILLSD_STATE_DIR=/var/lib/ts-skillsd
 export TS_SKILLSD_AUTHKEY_FILE=/run/ts-skillsd.authkey
 export TS_SKILLSD_TAG=tag:skills-registry
-go run ./cmd/ts-skillsd
+ts-skillsd
 ```
 
 Watch the log for enrollment, then check the Tailscale Machines page: confirm the machine name (a name collision adds a numeric suffix — use whatever full MagicDNS name was actually assigned), the tag, and approval state.
@@ -70,6 +70,84 @@ On startup the daemon migrates `registry.sqlite` forward to its current schema a
 
 Treat `tsnet/tailscaled.state` like a private key: it *is* the machine identity. Never point two live daemons at the same state directory, and never copy it to a second machine. Losing it means enrolling again with a new key.
 
+## Run as a service
+
+tsnet runs entirely in the daemon process — userspace networking, no TUN device, no root, no sidecar — so anything that can run a static binary and persist one directory can host the registry. Two worked paths follow; whatever you use instead, the invariants are the same: **persist the state directory** and provide the auth key only for first enrollment.
+
+### systemd
+
+Install the `ts-skillsd` binary (for example to `/usr/local/bin`) and create `/etc/systemd/system/ts-skillsd.service`:
+
+```ini
+[Unit]
+Description=ts-skills registry daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/ts-skillsd
+DynamicUser=yes
+StateDirectory=ts-skillsd
+Environment=TS_SKILLSD_STATE_DIR=/var/lib/ts-skillsd
+Environment=TS_SKILLSD_TAG=tag:skills-registry
+Restart=on-failure
+
+# First enrollment only. Remove both lines once the machine appears
+# on the tailnet, then daemon-reload and restart.
+LoadCredential=authkey:/etc/ts-skillsd/authkey
+Environment=TS_SKILLSD_AUTHKEY_FILE=%d/authkey
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`DynamicUser` runs the daemon as an unprivileged transient user, `StateDirectory` gives it `/var/lib/ts-skillsd` owned by that user, and `LoadCredential` hands the auth key to just this service — `%d` expands to the per-service credentials directory, which `TS_SKILLSD_AUTHKEY_FILE` already knows how to read.
+
+```console
+install -d -m 0700 /etc/ts-skillsd
+install -m 0600 /path/from/secret-store/authkey /etc/ts-skillsd/authkey
+systemctl enable --now ts-skillsd
+journalctl -u ts-skillsd -f
+```
+
+After enrollment succeeds, delete `/etc/ts-skillsd/authkey`, remove the two credential lines from the unit, and `systemctl daemon-reload && systemctl restart ts-skillsd`.
+
+### Docker
+
+The repository ships a [`Dockerfile`](../Dockerfile) that builds a distroless image running as a non-root user, with `TS_SKILLSD_STATE_DIR` preset to `/state`. The container publishes no ports — the daemon serves only on its tailnet address — so all it needs is a volume for `/state` and the auth key on first run:
+
+```console
+docker build -t ts-skillsd .
+docker run -d --name ts-skillsd \
+  -v ts-skillsd-state:/state \
+  -e TS_AUTHKEY=tskey-auth-... \
+  -e TS_SKILLSD_TAG=tag:skills-registry \
+  ts-skillsd
+```
+
+Or with Compose:
+
+```yaml
+services:
+  ts-skillsd:
+    build: .
+    environment:
+      TS_SKILLSD_TAG: tag:skills-registry
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+    volumes:
+      - state:/state
+    restart: unless-stopped
+
+volumes:
+  state:
+```
+
+```console
+TS_AUTHKEY=tskey-auth-... docker compose up -d
+```
+
+After enrollment, recreate the container without `TS_AUTHKEY`; the identity lives in the `/state` volume from then on. Losing that volume means enrolling again as a new machine.
+
 ## Configure clients
 
 On each machine that installs skills, create `${XDG_CONFIG_HOME:-$HOME/.config}/ts-skills/config.toml`:
@@ -89,12 +167,12 @@ Use machine A for curation and machine B for installation.
 
    ```console
    mkdir -p /tmp/demo
-   go run ./cmd/ts-skills install --project /tmp/demo team/example-skill
+   ts-skills install --project /tmp/demo team/example-skill
    ```
 
    Check `/tmp/demo/.agents/skills/example-skill/` and the digest recorded in `/tmp/demo/.agents/ts-skills.lock`.
 3. On A, publish different content for the same skill and make it current.
-4. On B, run `go run ./cmd/ts-skills restore --project /tmp/demo`. Restore keeps the digest recorded in the lock — it does not follow the newer publication.
+4. On B, run `ts-skills restore --project /tmp/demo`. Restore keeps the digest recorded in the lock — it does not follow the newer publication.
 5. Optional identity check: add a forged `X-Forwarded-User` header with a browser extension and publish a throwaway candidate. Its provenance must still show your real Tailnet identity; the daemon derives actors from the connection, never from headers.
 
 ## Troubleshooting

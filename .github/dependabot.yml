@@ -23,3 +23,11 @@ updates:
       timezone: America/Chicago
     cooldown:
       default-days: 7
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      timezone: America/Chicago
+    cooldown:
+      default-days: 7

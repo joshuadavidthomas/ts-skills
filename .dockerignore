@@ -1,0 +1,11 @@
+.git
+.github
+.agents
+node_modules
+dist
+docs
+ts-skills
+ts-skillsd
+*.test
+*.out
+.env
