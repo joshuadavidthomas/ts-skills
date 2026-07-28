@@ -77,8 +77,8 @@ func TestFinishTransfersOwnership(t *testing.T) {
 	if err := snapshot.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.Stat(snapshot.FS(), "."); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("snapshot remains after Close: %v", err)
+	if _, err := snapshot.FS().Open("."); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("closed snapshot FS = %v, want fs.ErrClosed", err)
 	}
 }
 
@@ -139,8 +139,43 @@ func TestSnapshotCloseRetainsStagingAfterRemovalFailure(t *testing.T) {
 	if !snapshot.closed {
 		t.Fatal("successful Close did not mark snapshot closed")
 	}
-	if _, err := fs.Stat(snapshot.FS(), "."); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("staging after retried Close: %v", err)
+	if _, err := snapshot.FS().Open("."); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("snapshot FS after retried Close = %v, want fs.ErrClosed", err)
+	}
+}
+
+func TestSnapshotFSNilZeroAndClosedNeverResolveAmbientFiles(t *testing.T) {
+	var nilSnapshot *Snapshot
+	if _, err := nilSnapshot.FS().Open("SKILL.md"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("nil snapshot FS = %v, want fs.ErrClosed", err)
+	}
+	var zeroSnapshot Snapshot
+	if _, err := zeroSnapshot.FS().Open("SKILL.md"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("zero snapshot FS = %v, want fs.ErrClosed", err)
+	}
+	if err := zeroSnapshot.Close(); err != nil {
+		t.Fatalf("zero snapshot Close = %v", err)
+	}
+
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddFile(context.Background(), "SKILL.md", 4, bytes.NewReader([]byte("data"))); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := fs.ReadFile(snapshot.FS(), "SKILL.md"); err != nil || string(got) != "data" {
+		t.Fatalf("live snapshot file = %q, %v", got, err)
+	}
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.Stat(snapshot.FS(), "SKILL.md"); !errors.Is(err, fs.ErrClosed) {
+		t.Fatalf("closed snapshot FS = %v, want fs.ErrClosed", err)
 	}
 }
 

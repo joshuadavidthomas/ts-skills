@@ -39,7 +39,7 @@ type SkillSummary struct {
 }
 
 func NewCandidate(id CandidateID, skill SkillID, tree agentskill.TreeDigest, provenance Provenance) (Candidate, error) {
-	if id == (CandidateID{}) || skill.String() == "" || provenance.source.label == "" {
+	if id.IsZero() || skill.String() == "" || provenance.source.label == "" {
 		return Candidate{}, fmt.Errorf("candidate requires valid identity, skill, and provenance")
 	}
 	return Candidate{id: id, skill: skill, tree: tree, provenance: provenance}, nil
@@ -51,7 +51,7 @@ func (c Candidate) Tree() agentskill.TreeDigest { return c.tree }
 func (c Candidate) Provenance() Provenance      { return c.provenance }
 
 func NewPublication(id PublicationID, candidate CandidateID, actor Actor, publishedAt time.Time) (Publication, error) {
-	if id.skill.String() == "" || candidate == (CandidateID{}) || actor.id == "" || publishedAt.IsZero() {
+	if id.skill.String() == "" || candidate.IsZero() || actor.id == "" || publishedAt.IsZero() {
 		return Publication{}, fmt.Errorf("publication requires valid identity, candidate, actor, and publication time")
 	}
 	return Publication{id: id, candidate: candidate, publishedBy: actor, publishedAt: canonicalTime(publishedAt)}, nil

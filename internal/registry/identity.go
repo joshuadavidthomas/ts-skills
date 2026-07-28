@@ -21,7 +21,7 @@ var (
 )
 
 type Namespace struct{ canonical string }
-type CandidateID [16]byte
+type CandidateID struct{ id [16]byte }
 
 type Actor struct {
 	id      string
@@ -116,8 +116,19 @@ func (p PublicationID) Tree() agentskill.TreeDigest { return p.tree }
 
 func NewCandidateID() (CandidateID, error) {
 	var id CandidateID
-	if _, err := rand.Read(id[:]); err != nil {
+	if _, err := rand.Read(id.id[:]); err != nil {
 		return CandidateID{}, fmt.Errorf("generate candidate identity: %w", err)
+	}
+	return id, nil
+}
+
+// CandidateIDFromBytes constructs a candidate identity from its persisted
+// 16-byte form. It is the persistence seam for storage; other construction
+// should go through NewCandidateID or ParseCandidateID.
+func CandidateIDFromBytes(raw [16]byte) (CandidateID, error) {
+	id := CandidateID{id: raw}
+	if id.IsZero() {
+		return CandidateID{}, fmt.Errorf("candidate identity must not be zero")
 	}
 	return id, nil
 }
@@ -132,16 +143,21 @@ func ParseCandidateID(src string) (CandidateID, error) {
 			return id, fmt.Errorf("candidate identity must use lowercase hexadecimal characters")
 		}
 	}
-	if _, err := hex.Decode(id[:], []byte(src)); err != nil {
+	if _, err := hex.Decode(id.id[:], []byte(src)); err != nil {
 		return CandidateID{}, fmt.Errorf("parse candidate identity: %w", err)
 	}
-	if id == (CandidateID{}) {
+	if id.IsZero() {
 		return CandidateID{}, fmt.Errorf("candidate identity must not be zero")
 	}
 	return id, nil
 }
 
-func (id CandidateID) String() string { return hex.EncodeToString(id[:]) }
+func (id CandidateID) String() string { return hex.EncodeToString(id.id[:]) }
+
+// Bytes returns the identity's persisted 16-byte form.
+func (id CandidateID) Bytes() [16]byte { return id.id }
+
+func (id CandidateID) IsZero() bool { return id.id == ([16]byte{}) }
 
 func NewActor(id, display string) (Actor, error) {
 	if err := validateBoundedText("actor id", id); err != nil {

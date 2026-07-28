@@ -38,7 +38,7 @@ never reused or renumbered.)
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | DONE |
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | DONE |
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | DONE |
-| 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | TODO |
+| 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | DONE |
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | TODO |
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | TODO |
 | 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | TODO |
@@ -79,6 +79,26 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 017 landed — `Snapshot.FS` returns an unexported
+  `closedFS{}` (opens fail `fs.ErrClosed`) for nil, zero-value, and
+  successfully closed snapshots; live snapshots unchanged. `Close` also
+  treats the zero value (`path == ""`) as already closed, extending the
+  nil-safe convention to the zero value as the plan's maintenance notes
+  direct. `CandidateID` is now `struct{ id [16]byte }` with `IsZero`,
+  `Bytes`, and `CandidateIDFromBytes([16]byte)` (zero-rejecting, documented
+  as the storage-only persistence seam); the two `id == (CandidateID{})`
+  checks in entities.go moved to `IsZero()`. Storage's
+  `candidateIDBlob`/`candidateIDFromBlob` map bytes↔value directly — no
+  more BLOB→hex→parser round-trip. New tests: safetree nil/zero/closed FS
+  forms (the two pre-existing post-Close `fs.ErrNotExist` assertions in
+  `TestFinishTransfersOwnership` and
+  `TestSnapshotCloseRetainsStagingAfterRemovalFailure` were re-pointed at
+  `fs.ErrClosed` — same ownership claim, new matchable class),
+  registry zero-rejection across `ParseCandidateID` and
+  `CandidateIDFromBytes` plus text/bytes round-trips, and a storage BLOB
+  round-trip rejecting short and zero blobs. Deviations from the plan text:
+  none beyond the zero-value Close guard noted above. Next: 018.
 
 - **2026-07-28**: 006 landed — `cli.parseFlags` wraps non-help parse
   failures in an unexported `reportedError{}` (the FlagSet already printed

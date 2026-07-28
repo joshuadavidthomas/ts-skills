@@ -835,6 +835,23 @@ func TestPublishCandidateReportsRollbackFailure(t *testing.T) {
 	}
 }
 
+func TestCandidateIDBlobRoundTrip(t *testing.T) {
+	id, err := registry.NewCandidateID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := candidateIDFromBlob(candidateIDBlob(id))
+	if err != nil || decoded != id {
+		t.Fatalf("BLOB round-trip = %v, %v", decoded, err)
+	}
+	if _, err := candidateIDFromBlob(make([]byte, 15)); err == nil {
+		t.Fatal("candidateIDFromBlob accepted a short blob")
+	}
+	if _, err := candidateIDFromBlob(make([]byte, 16)); err == nil {
+		t.Fatal("candidateIDFromBlob accepted a zero identity")
+	}
+}
+
 func TestPublishCandidateIgnoresPostCommitRollbackError(t *testing.T) {
 	catalog := openCatalog(t, t.TempDir())
 	defer closeCatalog(t, catalog)

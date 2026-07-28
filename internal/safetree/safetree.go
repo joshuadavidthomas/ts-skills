@@ -247,15 +247,27 @@ type Snapshot struct {
 	removeAll func(string) error
 }
 
+// FS returns the staged tree as an fs.FS rooted at the snapshot's staging
+// directory. A nil Snapshot, a zero value, or a successfully closed Snapshot
+// has no tree behind it: FS returns a filesystem whose opens always fail
+// with fs.ErrClosed rather than resolving paths against the process working
+// directory.
 func (s *Snapshot) FS() fs.FS {
-	if s == nil {
-		return os.DirFS("")
+	if s == nil || s.path == "" || s.closed {
+		return closedFS{}
 	}
 	return os.DirFS(s.path)
 }
 
+// closedFS is the filesystem view of a snapshot with no tree behind it.
+// Every open fails with fs.ErrClosed so callers get a matchable error class
+// instead of ambient access to unrelated process files.
+type closedFS struct{}
+
+func (closedFS) Open(string) (fs.File, error) { return nil, fs.ErrClosed }
+
 func (s *Snapshot) Close() error {
-	if s == nil || s.closed {
+	if s == nil || s.closed || s.path == "" {
 		return nil
 	}
 	removeAll := s.removeAll

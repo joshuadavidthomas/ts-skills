@@ -231,16 +231,15 @@ func skillFromText(namespaceText, nameText string) (registry.SkillID, error) {
 }
 
 func candidateIDBlob(id registry.CandidateID) []byte {
-	blob := make([]byte, len(id))
-	copy(blob, id[:])
-	return blob
+	raw := id.Bytes()
+	return raw[:]
 }
 
 func candidateIDFromBlob(blob []byte) (registry.CandidateID, error) {
 	if len(blob) != 16 {
 		return registry.CandidateID{}, fmt.Errorf("stored candidate identity has %d bytes, want 16", len(blob))
 	}
-	id, err := registry.ParseCandidateID(hex.EncodeToString(blob))
+	id, err := registry.CandidateIDFromBytes([16]byte(blob))
 	if err != nil {
 		return registry.CandidateID{}, fmt.Errorf("decode candidate identity: %w", err)
 	}
