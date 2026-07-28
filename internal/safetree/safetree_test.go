@@ -76,6 +76,68 @@ func TestFinishTransfersOwnership(t *testing.T) {
 	}
 }
 
+func TestBuilderCloseRetainsStagingAfterRemovalFailure(t *testing.T) {
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := builder.path
+	injected := errors.New("injected removal failure")
+	builder.removeAll = func(string) error { return injected }
+	if err := builder.Close(); !errors.Is(err, injected) {
+		t.Fatalf("first Close error = %v, want injected failure", err)
+	}
+	if builder.closed || builder.path != staging {
+		t.Fatal("failed Close released builder staging ownership")
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging after failed Close: %v", err)
+	}
+	builder.removeAll = os.RemoveAll
+	if err := builder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !builder.closed || builder.path != "" {
+		t.Fatal("successful Close retained builder staging ownership")
+	}
+	if _, err := os.Stat(staging); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("staging after retried Close: %v", err)
+	}
+}
+
+func TestSnapshotCloseRetainsStagingAfterRemovalFailure(t *testing.T) {
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staging := snapshot.path
+	injected := errors.New("injected removal failure")
+	snapshot.removeAll = func(string) error { return injected }
+	if err := snapshot.Close(); !errors.Is(err, injected) {
+		t.Fatalf("first Close error = %v, want injected failure", err)
+	}
+	if snapshot.closed || snapshot.path != staging {
+		t.Fatal("failed Close released snapshot staging ownership")
+	}
+	if _, err := fs.Stat(snapshot.FS(), "."); err != nil {
+		t.Fatalf("snapshot after failed Close: %v", err)
+	}
+	snapshot.removeAll = os.RemoveAll
+	if err := snapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.closed {
+		t.Fatal("successful Close did not mark snapshot closed")
+	}
+	if _, err := fs.Stat(snapshot.FS(), "."); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("staging after retried Close: %v", err)
+	}
+}
+
 func TestStageFSPreservesRootAndRejectsLinks(t *testing.T) {
 	source := fstest.MapFS{"skill/SKILL.md": &fstest.MapFile{Data: []byte("data")}}
 	snapshot, err := StageFS(context.Background(), t.TempDir(), source, "skill", PrototypeLimits())

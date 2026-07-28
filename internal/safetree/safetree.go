@@ -59,12 +59,14 @@ func (e *LimitError) Error() string {
 func (e *LimitError) Unwrap() error { return ErrLimitExceeded }
 
 type Builder struct {
-	path     string
-	limits   Limits
-	files    map[string]struct{}
-	bytes    int64
-	finished bool
-	closed   bool
+	path        string
+	limits      Limits
+	files       map[string]struct{}
+	directories map[string]string
+	bytes       int64
+	finished    bool
+	closed      bool
+	removeAll   func(string) error
 }
 
 func NewBuilder(parent string, limits Limits) (*Builder, error) {
@@ -82,7 +84,9 @@ func NewBuilder(parent string, limits Limits) (*Builder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create tree staging: %w", err)
 	}
-	return &Builder{path: staging, limits: limits, files: make(map[string]struct{})}, nil
+	return &Builder{
+		path: staging, limits: limits, files: make(map[string]struct{}), directories: make(map[string]string), removeAll: os.RemoveAll,
+	}, nil
 }
 
 func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, source io.Reader) error {
@@ -107,10 +111,19 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 	if _, exists := b.files[name]; exists {
 		return fmt.Errorf("%w: duplicate file %q", ErrInvalidPath, name)
 	}
-	for existing := range b.files {
-		if strings.HasPrefix(name, existing+"/") || strings.HasPrefix(existing, name+"/") {
-			return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, existing)
+	if descendant, exists := b.directories[name]; exists {
+		return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, descendant)
+	}
+	var ancestor string
+	visitPathParents(name, func(parent string) bool {
+		if _, exists := b.files[parent]; exists {
+			ancestor = parent
+			return false
 		}
+		return true
+	})
+	if ancestor != "" {
+		return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, ancestor)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -144,8 +157,29 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 		return fmt.Errorf("normalize staged file %q: %w", name, err)
 	}
 	b.files[name] = struct{}{}
+	visitPathParents(name, func(parent string) bool {
+		if _, exists := b.directories[parent]; !exists {
+			b.directories[parent] = name
+		}
+		return true
+	})
 	b.bytes += written
 	return nil
+}
+
+func visitPathParents(name string, visit func(string) bool) {
+	start := 0
+	for {
+		relative := strings.IndexByte(name[start:], '/')
+		if relative < 0 {
+			return
+		}
+		separator := start + relative
+		if !visit(name[:separator]) {
+			return
+		}
+		start = separator + 1
+	}
 }
 
 func copyContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
@@ -185,23 +219,31 @@ func (b *Builder) Finish() (*Snapshot, error) {
 	b.finished = true
 	staging := b.path
 	b.path = ""
-	return &Snapshot{path: staging}, nil
+	return &Snapshot{path: staging, removeAll: b.removeAll}, nil
 }
 
 func (b *Builder) Close() error {
 	if b == nil || b.closed {
 		return nil
 	}
-	b.closed = true
-	if b.path == "" {
-		return nil
+	if b.path != "" {
+		removeAll := b.removeAll
+		if removeAll == nil {
+			removeAll = os.RemoveAll
+		}
+		if err := removeAll(b.path); err != nil {
+			return err
+		}
+		b.path = ""
 	}
-	return os.RemoveAll(b.path)
+	b.closed = true
+	return nil
 }
 
 type Snapshot struct {
-	path   string
-	closed bool
+	path      string
+	closed    bool
+	removeAll func(string) error
 }
 
 func (s *Snapshot) FS() fs.FS {
@@ -215,8 +257,15 @@ func (s *Snapshot) Close() error {
 	if s == nil || s.closed {
 		return nil
 	}
+	removeAll := s.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	if err := removeAll(s.path); err != nil {
+		return err
+	}
 	s.closed = true
-	return os.RemoveAll(s.path)
+	return nil
 }
 
 func StageFS(ctx context.Context, parent string, source fs.FS, root string, limits Limits) (_ *Snapshot, err error) {
@@ -282,9 +331,13 @@ func validatePath(name string, limits Limits) error {
 		return &LimitError{Limit: "path depth", Max: int64(limits.MaxDepth), Actual: int64(depth)}
 	}
 	for _, part := range strings.Split(name, "/") {
-		if part == "" || part == "." || part == ".." || path.Clean(part) != part {
+		if part == "" || part == "." || part == ".." || path.Clean(part) != part || invalidPlatformPathComponent(part) {
 			return fmt.Errorf("%w: %q", ErrInvalidPath, name)
 		}
 	}
 	return nil
+}
+
+func hasWindowsAlternateDataStream(component string) bool {
+	return strings.Contains(component, ":")
 }

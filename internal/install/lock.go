@@ -101,14 +101,15 @@ func DecodeLock(source io.Reader) (Lock, error) {
 	skills := make([]LockedSkill, 0, len(document.Skills))
 	previousSkill := ""
 	for index, entry := range document.Skills {
-		if index > 0 && entry.Skill <= previousSkill {
-			return Lock{}, fmt.Errorf("decode project lock: skills must be sorted by canonical identity")
-		}
-		previousSkill = entry.Skill
 		identity, err := registry.ParseSkillID(entry.Skill)
 		if err != nil {
 			return Lock{}, fmt.Errorf("decode project lock skill %d: %w", index+1, err)
 		}
+		canonicalSkill := identity.String()
+		if index > 0 && canonicalSkill <= previousSkill {
+			return Lock{}, fmt.Errorf("decode project lock: skills must be sorted by canonical identity")
+		}
+		previousSkill = canonicalSkill
 		digest, err := agentskill.ParseTreeDigest(entry.Digest)
 		if err != nil {
 			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)

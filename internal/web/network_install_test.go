@@ -3,17 +3,21 @@ package web
 import (
 	"bytes"
 	"context"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/client"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/install"
+	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
 )
@@ -32,11 +36,16 @@ func publishWebCandidate(t *testing.T, fixture *webFixture, instructions string)
 
 func networkInstaller(t *testing.T, fixture *webFixture) (*install.Installer, registry.SkillID) {
 	t.Helper()
+	return networkInstallerWithClient(t, fixture, &http.Client{Timeout: 10 * time.Second})
+}
+
+func networkInstallerWithClient(t *testing.T, fixture *webFixture, httpClient *http.Client) (*install.Installer, registry.SkillID) {
+	t.Helper()
 	origin, err := url.Parse(fixture.server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote, err := client.NewRemote(origin, &http.Client{Timeout: 10 * time.Second}, t.TempDir(), safetree.PrototypeLimits())
+	remote, err := client.NewRemote(origin, httpClient, t.TempDir(), safetree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +60,52 @@ func networkInstaller(t *testing.T, fixture *webFixture) (*install.Installer, re
 	return installer, skill
 }
 
-func TestReadOnlyAPIInstallsCurrentAndExactPublications(t *testing.T) {
+type recordingTransport struct {
+	mu       sync.Mutex
+	delegate http.RoundTripper
+	requests []string
+}
+
+func (r *recordingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.requests = append(r.requests, request.Method+" "+request.URL.Path)
+	r.mu.Unlock()
+	return r.delegate.RoundTrip(request)
+}
+
+func (r *recordingTransport) takeRequests() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	requests := append([]string(nil), r.requests...)
+	r.requests = nil
+	return requests
+}
+
+func readTreeBytes(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	tree := os.DirFS(root)
+	files := make(map[string][]byte)
+	err := fs.WalkDir(tree, ".", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		contents, err := fs.ReadFile(tree, path)
+		if err != nil {
+			return err
+		}
+		files[path] = contents
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func TestReadOnlyAPICurrentAndExactDownloadsSurviveStorageRestart(t *testing.T) {
 	fixture := newWebFixture(t)
 	firstDigestText := publishWebCandidate(t, fixture, "First network publication.\n")
 	secondDigestText := publishWebCandidate(t, fixture, "Second network publication.\n")
@@ -61,6 +115,7 @@ func TestReadOnlyAPIInstallsCurrentAndExactPublications(t *testing.T) {
 		t.Fatalf("set current status = %d", response.StatusCode)
 	}
 
+	fixture.restart()
 	installer, skill := networkInstaller(t, fixture)
 	currentProject, err := install.OpenProject(t.TempDir())
 	if err != nil {
@@ -98,6 +153,86 @@ func TestReadOnlyAPIInstallsCurrentAndExactPublications(t *testing.T) {
 	exactSkill, err := os.ReadFile(filepath.Join(exactProject.SkillsDir(), "sample", "SKILL.md"))
 	if err != nil || !bytes.Contains(exactSkill, []byte("First network publication.")) {
 		t.Fatalf("exact SKILL.md = %q, %v", exactSkill, err)
+	}
+}
+
+func TestRestoreUsesLockedPublicationAfterCurrentChanges(t *testing.T) {
+	fixture := newWebFixture(t)
+	firstDigestText := publishWebCandidate(t, fixture, "Locked publication A.\n")
+	recorder := &recordingTransport{delegate: http.DefaultTransport}
+	httpClient := &http.Client{Timeout: 10 * time.Second, Transport: recorder}
+	installer, skill := networkInstallerWithClient(t, fixture, httpClient)
+	project, err := install.OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := install.Current(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, err := installer.Install(context.Background(), project, requirement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if locked.Publication().Tree().String() != firstDigestText {
+		t.Fatalf("initial install digest = %s, want %s", locked.Publication().Tree().String(), firstDigestText)
+	}
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	firstTree := readTreeBytes(t, destination)
+	firstLock, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondDigestText := publishWebCandidate(t, fixture, "Current publication B.\n")
+	if secondDigestText == firstDigestText {
+		t.Fatal("publication B has publication A's digest")
+	}
+	response := postForm(t, fixture, "/current", url.Values{"skill": {"team/sample"}, "digest": {secondDigestText}})
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("set current status = %d", response.StatusCode)
+	}
+	currentCatalog := fixture.get("/")
+	if !strings.Contains(currentCatalog, secondDigestText) || strings.Contains(currentCatalog, firstDigestText) {
+		t.Fatalf("catalog did not select publication B: %s", currentCatalog)
+	}
+	if err := os.RemoveAll(destination); err != nil {
+		t.Fatal(err)
+	}
+	recorder.takeRequests()
+
+	if err := installer.Restore(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	expectedTreeRequest := "GET /api/" + protocol.Version + "/skills/team/sample/publications/" + firstDigestText + "/tree.zip"
+	if requests := recorder.takeRequests(); !reflect.DeepEqual(requests, []string{expectedTreeRequest}) {
+		t.Fatalf("restore requests = %v, want [%s]", requests, expectedTreeRequest)
+	}
+	restoredTree := readTreeBytes(t, destination)
+	if !reflect.DeepEqual(restoredTree, firstTree) {
+		t.Fatalf("restored tree bytes = %q, want publication A bytes %q", restoredTree, firstTree)
+	}
+	firstDigest, err := agentskill.ParseTreeDigest(firstDigestText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredDigest, err := agentskill.SumTree(os.DirFS(destination), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restoredDigest != firstDigest {
+		t.Fatalf("restored digest = %s, want %s", restoredDigest.String(), firstDigestText)
+	}
+	restoredLock, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restoredLock, firstLock) {
+		t.Fatalf("restore changed lock from %q to %q", firstLock, restoredLock)
+	}
+	if !bytes.Contains(restoredLock, []byte(firstDigestText)) || bytes.Contains(restoredLock, []byte(secondDigestText)) {
+		t.Fatalf("restored lock does not retain only publication A: %s", restoredLock)
 	}
 }
 

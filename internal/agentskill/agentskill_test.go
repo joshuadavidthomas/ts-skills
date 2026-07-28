@@ -2,6 +2,7 @@ package agentskill
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"testing"
 	"testing/fstest"
@@ -29,8 +30,114 @@ func TestParseNameRejectsInvalidShapes(t *testing.T) {
 	}
 }
 
+func TestParseRejectsNonStringStandardFields(t *testing.T) {
+	fields := []string{"name", "description", "license", "compatibility", "allowed-tools"}
+	wrongTypes := []struct {
+		name  string
+		value string
+	}{
+		{name: "numeric", value: "123"},
+		{name: "boolean", value: "true"},
+		{name: "sequence", value: "[one, two]"},
+		{name: "mapping", value: "{nested: value}"},
+		{name: "null", value: "null"},
+	}
+
+	for _, field := range fields {
+		for _, wrongType := range wrongTypes {
+			t.Run(field+"/"+wrongType.name, func(t *testing.T) {
+				values := map[string]string{
+					"name":          "sample",
+					"description":   "A sample",
+					"license":       "MIT",
+					"compatibility": "Local agents",
+					"allowed-tools": "Bash Read",
+				}
+				values[field] = wrongType.value
+				source := fmt.Sprintf("---\nname: %s\ndescription: %s\nlicense: %s\ncompatibility: %s\nallowed-tools: %s\n---\n", values["name"], values["description"], values["license"], values["compatibility"], values["allowed-tools"])
+
+				_, err := Parse([]byte(source))
+				requireInvalidDocumentField(t, err, field)
+			})
+		}
+	}
+}
+
+func TestParseRejectsNonMappingMetadata(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "string", value: "owner"},
+		{name: "numeric", value: "123"},
+		{name: "boolean", value: "true"},
+		{name: "sequence", value: "[owner, team]"},
+		{name: "null", value: "null"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := fmt.Sprintf("---\nname: sample\ndescription: A sample\nmetadata: %s\n---\n", test.value)
+			_, err := Parse([]byte(source))
+			requireInvalidDocumentField(t, err, "metadata")
+		})
+	}
+}
+
+func TestParseRejectsNonStringMetadataEntries(t *testing.T) {
+	wrongTypes := []struct {
+		name  string
+		value string
+	}{
+		{name: "numeric", value: "123"},
+		{name: "boolean", value: "true"},
+		{name: "sequence", value: "[team]"},
+		{name: "mapping", value: "{team: core}"},
+		{name: "null", value: "null"},
+	}
+	for _, entry := range []string{"key", "value"} {
+		for _, wrongType := range wrongTypes {
+			t.Run(entry+"/"+wrongType.name, func(t *testing.T) {
+				key, value := "owner", "team"
+				if entry == "key" {
+					key = wrongType.value
+				} else {
+					value = wrongType.value
+				}
+				source := fmt.Sprintf("---\nname: sample\ndescription: A sample\nmetadata: {%s: %s}\n---\n", key, value)
+				_, err := Parse([]byte(source))
+				requireInvalidDocumentField(t, err, "metadata")
+			})
+		}
+	}
+}
+
+func TestParseAllowsUnknownFrontmatterNodeTypes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "numeric", value: "123"},
+		{name: "boolean", value: "true"},
+		{name: "sequence", value: "[one, two]"},
+		{name: "mapping", value: "{nested: true}"},
+		{name: "null", value: "null"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source := fmt.Sprintf("---\nname: sample\ndescription: A sample\nvendor-field: %s\nmetadata: {\"123\": \"true\"}\n---\n", test.value)
+			document, err := Parse([]byte(source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if document.Metadata["123"] != "true" {
+				t.Fatalf("metadata = %#v", document.Metadata)
+			}
+		})
+	}
+}
+
 func TestParseAllowsUnknownFrontmatterAndDirectoryPreservesBytes(t *testing.T) {
-	source := []byte("---\nname: sample\ndescription: A sample\nvendor-field:\n  nested: true\nmetadata:\n  owner: team\nlicense: MIT\n---\n# Keep this exact\n")
+	source := []byte("---\nname: sample\ndescription: A sample\nvendor-number: 123\nvendor-enabled: true\nvendor-items: [one, two]\nvendor-field:\n  nested: true\nvendor-empty: null\nmetadata:\n  owner: team\nlicense: MIT\n---\n# Keep this exact\n")
 	files := fstest.MapFS{"sample/SKILL.md": &fstest.MapFile{Data: source}}
 	directory, err := Load(files, "sample")
 	if err != nil {
@@ -50,6 +157,20 @@ func TestParseAllowsUnknownFrontmatterAndDirectoryPreservesBytes(t *testing.T) {
 	second := directory.Document()
 	if *second.License != "MIT" || second.Metadata["owner"] != "team" {
 		t.Fatalf("Document returned mutable aliases: %#v", second)
+	}
+}
+
+func requireInvalidDocumentField(t *testing.T, err error, field string) {
+	t.Helper()
+	if !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("error = %v, want ErrInvalidDocument", err)
+	}
+	var validationError *ValidationError
+	if !errors.As(err, &validationError) {
+		t.Fatalf("error type = %T, want *ValidationError", err)
+	}
+	if validationError.Field != field {
+		t.Fatalf("validation field = %q, want %q", validationError.Field, field)
 	}
 }
 

@@ -11,7 +11,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
@@ -21,12 +20,25 @@ func ensureStateDirectory(stateDir string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return err
 	}
-	info, err := os.Stat(stateDir)
+	info, err := os.Lstat(stateDir)
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("%q is not a directory", stateDir)
+	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%q is not a real directory", stateDir)
+	}
+	if err := os.Chmod(stateDir, 0o700); err != nil {
+		return fmt.Errorf("set private directory permissions: %w", err)
+	}
+	info, err = os.Lstat(stateDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+		return fmt.Errorf("%q is not a real directory", stateDir)
+	}
+	if info.Mode().Perm() != 0o700 {
+		return fmt.Errorf("%q has mode %04o, want 0700", stateDir, info.Mode().Perm())
 	}
 	return nil
 }
@@ -43,10 +55,10 @@ func ensureStorageDirectories(stateDir, treesDir, tmpDir string) error {
 			return fmt.Errorf("create storage directory %q: %w", directory, err)
 		}
 		if created {
-			if err := syncDirectoryBestEffort(directory); err != nil {
+			if err := syncDirectory(directory); err != nil {
 				return fmt.Errorf("sync storage directory %q: %w", directory, err)
 			}
-			if err := syncDirectoryBestEffort(filepath.Dir(directory)); err != nil {
+			if err := syncDirectory(filepath.Dir(directory)); err != nil {
 				return fmt.Errorf("sync storage parent %q: %w", filepath.Dir(directory), err)
 			}
 		}
@@ -110,17 +122,17 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	}
 
 	shard, final := c.treePaths(expected)
-	created, err := createDirectory(shard, 0o700)
-	if err != nil {
+	if _, err := createDirectory(shard, 0o700); err != nil {
 		return fmt.Errorf("create tree digest shard: %w", err)
 	}
-	if created {
-		if err := syncDirectoryBestEffort(shard); err != nil {
-			return fmt.Errorf("sync new tree digest shard: %w", err)
-		}
-		if err := syncDirectoryBestEffort(filepath.Dir(shard)); err != nil {
-			return fmt.Errorf("sync tree digest shard parent: %w", err)
-		}
+	// Another digest in this shard may observe the directory before the
+	// goroutine that created it has synced its parent. Every materialization
+	// completes that mkdir barrier itself before it can commit metadata.
+	if err := c.syncDirectory(shard); err != nil {
+		return fmt.Errorf("sync tree digest shard: %w", err)
+	}
+	if err := c.syncDirectory(filepath.Dir(shard)); err != nil {
+		return fmt.Errorf("sync tree digest shard parent: %w", err)
 	}
 	if err := c.step("prepare digest shard"); err != nil {
 		return err
@@ -141,7 +153,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		if err := syncTree(final, c.step); err != nil {
 			return fmt.Errorf("sync existing digest tree: %w", err)
 		}
-		if err := syncDirectoryBestEffort(shard); err != nil {
+		if err := c.syncDirectory(shard); err != nil {
 			return fmt.Errorf("sync existing digest tree parent: %w", err)
 		}
 		if err := c.step("sync existing digest tree"); err != nil {
@@ -159,7 +171,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	if err := c.step("rename digest tree"); err != nil {
 		return err
 	}
-	if err := syncDirectoryBestEffort(shard); err != nil {
+	if err := c.syncDirectory(shard); err != nil {
 		return fmt.Errorf("sync installed digest tree parent: %w", err)
 	}
 	if err := c.step("sync installed digest tree parent"); err != nil {
@@ -284,7 +296,7 @@ func syncTree(root string, step func(string) error) error {
 		return leftDepth > rightDepth
 	})
 	for _, directory := range directories {
-		if err := syncDirectoryBestEffort(directory); err != nil {
+		if err := syncDirectory(directory); err != nil {
 			return err
 		}
 		if err := step("sync tree directory"); err != nil {
@@ -294,16 +306,13 @@ func syncTree(root string, step func(string) error) error {
 	return nil
 }
 
-func syncDirectoryBestEffort(directory string) error {
+func syncDirectory(directory string) error {
 	file, err := os.Open(directory)
 	if err != nil {
 		return err
 	}
 	syncErr := file.Sync()
 	closeErr := file.Close()
-	if errors.Is(syncErr, syscall.EINVAL) || errors.Is(syncErr, syscall.ENOTSUP) || errors.Is(syncErr, syscall.ENOSYS) {
-		syncErr = nil
-	}
 	return errors.Join(syncErr, closeErr)
 }
 
@@ -329,7 +338,7 @@ func (c *Catalog) OpenCandidateTree(ctx context.Context, id registry.CandidateID
 		return nil, err
 	}
 	defer done()
-	candidate, err := queryCandidate(ctx, c.db, id)
+	candidate, err := queryCandidate(ctx, c.db.QueryRowContext, id)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +351,7 @@ func (c *Catalog) OpenPublicationTree(ctx context.Context, id registry.Publicati
 		return nil, err
 	}
 	defer done()
-	publication, err := queryPublication(ctx, c.db, id)
+	publication, err := queryPublication(ctx, c.db.QueryRowContext, id)
 	if err != nil {
 		return nil, err
 	}

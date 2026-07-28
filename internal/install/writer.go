@@ -26,11 +26,21 @@ func (v *verifiedTree) close() error {
 	if v == nil || !v.owned {
 		return nil
 	}
+	if err := rejectPathComponents(v.path, true); err != nil {
+		return err
+	}
+	removeAll := os.RemoveAll
+	if v.writer != nil && v.writer.removeStaging != nil {
+		removeAll = v.writer.removeStaging
+	}
+	if err := removeAll(v.path); err != nil {
+		return err
+	}
 	v.owned = false
 	if v.writer != nil {
 		delete(v.writer.staging, v.path)
 	}
-	return os.RemoveAll(v.path)
+	return nil
 }
 
 func (v *verifiedTree) transfer() (string, error) {
@@ -45,10 +55,32 @@ func (v *verifiedTree) transfer() (string, error) {
 }
 
 type projectWriter struct {
-	project Project
-	lock    *flock.Flock
-	staging map[string]struct{}
-	closed  bool
+	project       Project
+	lock          *flock.Flock
+	staging       map[string]struct{}
+	closed        bool
+	removeStaging func(string) error
+	closeLock     func(*flock.Flock) error
+}
+
+// filesystemIdentityForPath is a package-private test seam for mount/device checks.
+var filesystemIdentityForPath = filesystemDevice
+
+func requireSameFilesystem(reference string, paths ...string) error {
+	referenceDevice, err := filesystemIdentityForPath(reference)
+	if err != nil {
+		return fmt.Errorf("identify filesystem for %q: %w", reference, err)
+	}
+	for _, path := range paths {
+		device, err := filesystemIdentityForPath(path)
+		if err != nil {
+			return fmt.Errorf("identify filesystem for %q: %w", path, err)
+		}
+		if device != referenceDevice {
+			return fmt.Errorf("managed path %q is not on the project filesystem", path)
+		}
+	}
+	return nil
 }
 
 func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
@@ -58,18 +90,15 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if err := prepareManagedDirectories(p); err != nil {
 		return nil, fmt.Errorf("prepare project transaction paths: %w", err)
 	}
-	projectDevice, err := filesystemDevice(p.root)
-	if err != nil {
-		return nil, fmt.Errorf("identify project filesystem: %w", err)
+	managedDirectories := []string{
+		filepath.Join(p.root, ".agents"),
+		p.SkillsDir(),
+		p.StateDir(),
+		p.operationsDir(),
+		filepath.Dir(p.LockPath()),
 	}
-	for _, path := range []string{filepath.Join(p.root, ".agents"), p.SkillsDir(), p.StateDir(), p.operationsDir()} {
-		device, err := filesystemDevice(path)
-		if err != nil {
-			return nil, fmt.Errorf("identify managed filesystem: %w", err)
-		}
-		if device != projectDevice {
-			return nil, fmt.Errorf("managed path %q is not on the project filesystem", path)
-		}
+	if err := requireSameFilesystem(p.root, managedDirectories...); err != nil {
+		return nil, err
 	}
 
 	lockPath := filepath.Join(p.StateDir(), "write.lock")
@@ -97,7 +126,10 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 		_ = fileLock.Close()
 		return nil, err
 	}
-	writer := &projectWriter{project: p, lock: fileLock, staging: make(map[string]struct{})}
+	writer := &projectWriter{
+		project: p, lock: fileLock, staging: make(map[string]struct{}),
+		removeStaging: os.RemoveAll, closeLock: (*flock.Flock).Close,
+	}
 	if err := writer.recover(); err != nil {
 		_ = writer.close()
 		return nil, err
@@ -105,30 +137,41 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	return writer, nil
 }
 
-func rejectRegularFile(path string) error {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("inspect managed file %q: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("managed path %q must be a real regular file", path)
-	}
-	return nil
-}
-
 func (w *projectWriter) close() error {
 	if w == nil || w.closed {
 		return nil
 	}
-	w.closed = true
+	removeStaging := w.removeStaging
+	if removeStaging == nil {
+		removeStaging = os.RemoveAll
+	}
 	var result error
 	for path := range w.staging {
-		result = errors.Join(result, os.RemoveAll(path))
+		if err := rejectPathComponents(path, true); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		if err := removeStaging(path); err != nil {
+			result = errors.Join(result, err)
+			continue
+		}
+		delete(w.staging, path)
+	}
+	if result != nil {
+		return result
 	}
 	if w.lock != nil {
-		result = errors.Join(result, w.lock.Close())
+		closeLock := w.closeLock
+		if closeLock == nil {
+			closeLock = (*flock.Flock).Close
+		}
+		if err := closeLock(w.lock); err != nil {
+			return err
+		}
+		w.lock = nil
 	}
-	return result
+	w.closed = true
+	return nil
 }
 
 func (w *projectWriter) readLock() (Lock, []byte, bool, error) {

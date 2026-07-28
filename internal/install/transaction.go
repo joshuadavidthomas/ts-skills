@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ const (
 	journalName = "journal.json"
 	stagingName = "staging"
 	backupName  = "backup"
+	discardName = "discard"
 	oldLockName = "old-lock"
 	newLockName = "new-lock"
 )
@@ -33,6 +35,8 @@ type transactionJournal struct {
 	Skill          string `json:"skill"`
 	OldDigest      string `json:"old_digest"`
 	NewDigest      string `json:"new_digest"`
+	OldLockHash    string `json:"old_lock_hash"`
+	NewLockHash    string `json:"new_lock_hash"`
 	HadLock        bool   `json:"had_lock"`
 	HadDestination bool   `json:"had_destination"`
 	Phase          string `json:"phase"`
@@ -83,10 +87,7 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 		return err
 	}
 	operationDir := filepath.Join(w.project.operationsDir(), operation)
-	if err := os.Mkdir(operationDir, 0o700); err != nil {
-		return fmt.Errorf("create project operation: %w", err)
-	}
-	if err := syncDirectory(w.project.operationsDir(), "create-operation"); err != nil {
+	if err := createManagedDirectory(operationDir, 0o700, "project-operation"); err != nil {
 		return err
 	}
 
@@ -109,15 +110,24 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	if err := writeSyncedFile(filepath.Join(operationDir, newLockName), newLockBytes, 0o600, "new-lock"); err != nil {
 		return err
 	}
+	destination := w.project.destination(publication.Skill().Name().String())
+	backup := filepath.Join(operationDir, backupName)
+	if err := w.preflightTransactionFilesystem(oldLock, publication.Skill(), hadDestination, hadLock, oldLockBytes, operationDir, operationStaging, backup, destination); err != nil {
+		return err
+	}
 	journal := transactionJournal{
-		Schema:         1,
+		Schema:         2,
 		Operation:      operation,
 		Skill:          publication.Skill().String(),
 		OldDigest:      oldDigest,
 		NewDigest:      publication.Tree().String(),
+		NewLockHash:    lockSnapshotHash(newLockBytes),
 		HadLock:        hadLock,
 		HadDestination: hadDestination,
 		Phase:          "prepared",
+	}
+	if hadLock {
+		journal.OldLockHash = lockSnapshotHash(oldLockBytes)
 	}
 	if err := writeJournal(operationDir, journal); err != nil {
 		return err
@@ -126,8 +136,6 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 		return err
 	}
 
-	destination := w.project.destination(publication.Skill().Name().String())
-	backup := filepath.Join(operationDir, backupName)
 	if hadDestination {
 		if err := durableRename(destination, backup, w.project.SkillsDir(), "backup-destination"); err != nil {
 			return err
@@ -160,6 +168,91 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	return nil
 }
 
+func (w *projectWriter) preflightTransactionFilesystem(
+	oldLock Lock,
+	skill registry.SkillID,
+	hadDestination bool,
+	hadLock bool,
+	oldLockBytes []byte,
+	operationDir string,
+	operationStaging string,
+	backup string,
+	destination string,
+) error {
+	for _, path := range []string{
+		w.project.StateDir(),
+		w.project.SkillsDir(),
+		filepath.Dir(w.project.LockPath()),
+		w.project.LockPath(),
+		operationDir,
+		operationStaging,
+		backup,
+		destination,
+	} {
+		if err := rejectPathComponents(path, true); err != nil {
+			return fmt.Errorf("preflight managed transaction path: %w", err)
+		}
+	}
+	if err := ensureRealDirectory(operationDir, false); err != nil {
+		return err
+	}
+	if err := ensureRealDirectory(operationStaging, false); err != nil {
+		return err
+	}
+	if exists, err := inspectOptionalRealDirectory(backup); err != nil {
+		return fmt.Errorf("inspect operation backup: %w", err)
+	} else if exists {
+		return fmt.Errorf("operation backup exists before journal preparation")
+	}
+	if exists, err := inspectOptionalRealDirectory(filepath.Join(operationDir, discardName)); err != nil {
+		return fmt.Errorf("inspect operation discard: %w", err)
+	} else if exists {
+		return fmt.Errorf("operation discard exists before journal preparation")
+	}
+	stillHadDestination, err := w.preflight(oldLock, skill)
+	if err != nil {
+		return err
+	}
+	if stillHadDestination != hadDestination {
+		return fmt.Errorf("skill destination changed during transaction preflight")
+	}
+	actualLockBytes, lockExists, err := readOptionalFile(w.project.LockPath())
+	if err != nil {
+		return fmt.Errorf("inspect project lock during transaction preflight: %w", err)
+	}
+	if lockExists != hadLock || (lockExists && !bytes.Equal(actualLockBytes, oldLockBytes)) {
+		return fmt.Errorf("project lock changed during transaction preflight")
+	}
+	if lockExists {
+		if err := rejectRegularFile(w.project.LockPath()); err != nil {
+			return err
+		}
+	}
+
+	paths := []string{
+		w.project.SkillsDir(),
+		w.project.StateDir(),
+		filepath.Dir(w.project.LockPath()),
+		operationDir,
+		operationStaging,
+	}
+	if stillHadDestination {
+		paths = append(paths, destination)
+	} else {
+		paths = append(paths, w.project.SkillsDir())
+	}
+	// A missing backup will be created by renaming into its existing operation
+	// directory, so the operation directory proves its filesystem placement.
+	paths = append(paths, operationDir)
+	if lockExists {
+		paths = append(paths, w.project.LockPath())
+	}
+	if err := requireSameFilesystem(w.project.root, paths...); err != nil {
+		return fmt.Errorf("preflight project transaction filesystem: %w", err)
+	}
+	return nil
+}
+
 func encodeLockBytes(lock Lock) ([]byte, error) {
 	var buffer bytes.Buffer
 	if err := EncodeLock(&buffer, lock); err != nil {
@@ -177,6 +270,9 @@ func newOperationID() (string, error) {
 }
 
 func writeSyncedFile(path string, contents []byte, mode fs.FileMode, label string) error {
+	if err := rejectPathComponents(path, true); err != nil {
+		return err
+	}
 	if err := transactionPoint("before-write-" + label); err != nil {
 		return err
 	}
@@ -186,7 +282,7 @@ func writeSyncedFile(path string, contents []byte, mode fs.FileMode, label strin
 	}
 	_, writeErr := file.Write(contents)
 	if writeErr == nil {
-		writeErr = file.Sync()
+		writeErr = syncOpenFile(file, label)
 	}
 	closeErr := file.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
@@ -205,20 +301,42 @@ func writeJournal(operationDir string, journal transactionJournal) error {
 	}
 	contents = append(contents, '\n')
 	temporary := filepath.Join(operationDir, journalName+".tmp")
+	if err := rejectPathComponents(temporary, true); err != nil {
+		return err
+	}
 	if err := transactionPoint("before-journal-write-" + journal.Phase); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	temporaryContents, exists, err := readOptionalFile(temporary)
 	if err != nil {
-		return fmt.Errorf("create project journal: %w", err)
+		return fmt.Errorf("inspect project journal temporary: %w", err)
 	}
-	_, writeErr := file.Write(contents)
-	if writeErr == nil {
-		writeErr = file.Sync()
+	if exists && !bytes.Equal(temporaryContents, contents) {
+		// The durable journal remains authoritative until this rename commits.
+		// A retry may choose a different final recovery phase than an abandoned
+		// temporary prepared by the interrupted attempt.
+		if err := durableRemoveFile(temporary, operationDir, "stale-project-journal-temporary"); err != nil {
+			return err
+		}
+		exists = false
 	}
-	closeErr := file.Close()
-	if err := errors.Join(writeErr, closeErr); err != nil {
-		return fmt.Errorf("write project journal: %w", err)
+	if exists {
+		if err := syncFile(temporary, "journal-"+journal.Phase); err != nil {
+			return err
+		}
+	} else {
+		file, err := os.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return fmt.Errorf("create project journal: %w", err)
+		}
+		_, writeErr := file.Write(contents)
+		if writeErr == nil {
+			writeErr = syncOpenFile(file, "journal-"+journal.Phase)
+		}
+		closeErr := file.Close()
+		if err := errors.Join(writeErr, closeErr); err != nil {
+			return fmt.Errorf("write project journal: %w", err)
+		}
 	}
 	if err := durableRename(temporary, filepath.Join(operationDir, journalName), operationDir, "journal-"+journal.Phase); err != nil {
 		return err
@@ -227,6 +345,15 @@ func writeJournal(operationDir string, journal transactionJournal) error {
 }
 
 func durableRename(oldPath, newPath, syncParent, label string) error {
+	if err := rejectPathComponents(oldPath, false); err != nil {
+		return err
+	}
+	if err := rejectPathComponents(newPath, true); err != nil {
+		return err
+	}
+	if err := ensureRealDirectory(syncParent, false); err != nil {
+		return err
+	}
 	if err := transactionPoint("before-rename-" + label); err != nil {
 		return err
 	}
@@ -236,22 +363,58 @@ func durableRename(oldPath, newPath, syncParent, label string) error {
 	if err := transactionPoint("after-rename-" + label); err != nil {
 		return err
 	}
-	parents := []string{filepath.Dir(oldPath), filepath.Dir(newPath), syncParent}
+	parents := []struct {
+		path string
+		role string
+	}{
+		{path: filepath.Dir(oldPath), role: "source-parent"},
+		{path: filepath.Dir(newPath), role: "destination-parent"},
+		{path: syncParent, role: "requested-parent"},
+	}
 	synced := make(map[string]struct{}, len(parents))
 	for _, parent := range parents {
-		parent = filepath.Clean(parent)
-		if _, found := synced[parent]; found {
+		path := filepath.Clean(parent.path)
+		if _, found := synced[path]; found {
 			continue
 		}
-		if err := syncDirectory(parent, label); err != nil {
+		if err := syncDirectory(path, label+"-"+parent.role); err != nil {
 			return err
 		}
-		synced[parent] = struct{}{}
+		synced[path] = struct{}{}
+	}
+	return nil
+}
+
+func syncOpenFile(file *os.File, label string) error {
+	if err := transactionPoint("before-fsync-" + label + "-file"); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	return transactionPoint("after-fsync-" + label + "-file")
+}
+
+func syncFile(path, label string) error {
+	if err := rejectPathComponents(path, false); err != nil {
+		return err
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open file for %s durability: %w", label, err)
+	}
+	syncErr := syncOpenFile(file, label)
+	closeErr := file.Close()
+	if err := errors.Join(syncErr, closeErr); err != nil {
+		return fmt.Errorf("sync file for %s durability: %w", label, err)
 	}
 	return nil
 }
 
 func syncDirectory(path, label string) error {
+	if err := rejectPathComponents(path, false); err != nil {
+		return err
+	}
 	if err := transactionPoint("before-fsync-" + label); err != nil {
 		return err
 	}
@@ -277,8 +440,8 @@ func syncTree(root, label string) error {
 		if err != nil {
 			return err
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("tree path %q is a symbolic link", path)
+		if pathInfoIsLink(info) {
+			return fmt.Errorf("tree path %q is a symbolic link or reparse point", path)
 		}
 		if info.IsDir() {
 			directories = append(directories, path)
@@ -287,19 +450,7 @@ func syncTree(root, label string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("tree path %q is not regular", path)
 		}
-		if err := transactionPoint("before-fsync-" + label + "-file"); err != nil {
-			return err
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		if err := errors.Join(syncErr, closeErr); err != nil {
-			return err
-		}
-		return transactionPoint("after-fsync-" + label + "-file")
+		return syncFile(path, label)
 	})
 	if err != nil {
 		return fmt.Errorf("sync %s: %w", label, err)
@@ -316,7 +467,7 @@ func syncTree(root, label string) error {
 }
 
 func replaceLockFrom(project Project, operation, source string) error {
-	contents, err := os.ReadFile(source)
+	contents, err := readManagedFile(source)
 	if err != nil {
 		return fmt.Errorf("read staged project lock: %w", err)
 	}
@@ -324,12 +475,20 @@ func replaceLockFrom(project Project, operation, source string) error {
 	if err := rejectLink(temporary, true); err != nil {
 		return err
 	}
-	if _, err := os.Lstat(temporary); err == nil {
-		return recoveryError("project lock temporary already exists", nil)
-	} else if !errors.Is(err, fs.ErrNotExist) {
+	temporaryContents, exists, err := readOptionalFile(temporary)
+	if err != nil {
 		return fmt.Errorf("inspect project lock temporary: %w", err)
 	}
-	if err := writeSyncedFile(temporary, contents, 0o600, "project-lock-temporary"); err != nil {
+	if exists {
+		if !bytes.Equal(temporaryContents, contents) {
+			return recoveryError("project lock temporary does not match its operation", nil)
+		}
+		// The first attempt may have stopped after writing but before its rename.
+		// Sync again so this retry does not rely on that attempt reaching its barrier.
+		if err := syncFile(temporary, "project-lock-temporary"); err != nil {
+			return err
+		}
+	} else if err := writeSyncedFile(temporary, contents, 0o600, "project-lock-temporary"); err != nil {
 		return err
 	}
 	return durableRename(temporary, project.LockPath(), filepath.Dir(project.LockPath()), "project-lock")
@@ -346,16 +505,19 @@ func (w *projectWriter) recover() error {
 	}
 	for _, entry := range entries {
 		operationDir := filepath.Join(w.project.operationsDir(), entry.Name())
+		if err := rejectPathComponents(operationDir, false); err != nil {
+			return fmt.Errorf("%w: invalid operation path %q: %v", ErrRecoveryRequired, operationDir, err)
+		}
 		info, err := os.Lstat(operationDir)
-		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		if err != nil || pathInfoIsLink(info) || !info.IsDir() {
 			return fmt.Errorf("%w: invalid operation path %q", ErrRecoveryRequired, operationDir)
 		}
 		journalPath := filepath.Join(operationDir, journalName)
+		if err := rejectPathComponents(journalPath, true); err != nil {
+			return fmt.Errorf("inspect operation journal: %w", err)
+		}
 		if _, err := os.Lstat(journalPath); errors.Is(err, fs.ErrNotExist) {
-			if err := os.RemoveAll(operationDir); err != nil {
-				return fmt.Errorf("remove incomplete operation: %w", err)
-			}
-			if err := syncDirectory(w.project.operationsDir(), "remove-journal-less-operation"); err != nil {
+			if err := durableRemoveAll(operationDir, w.project.operationsDir(), "journal-less-operation"); err != nil {
 				return err
 			}
 			continue
@@ -382,39 +544,15 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if err != nil {
 		return err
 	}
-	oldLockPath := filepath.Join(operationDir, oldLockName)
-	newLockPath := filepath.Join(operationDir, newLockName)
-	var oldLockBytes []byte
-	if journal.HadLock {
-		oldLockBytes, err = os.ReadFile(oldLockPath)
-		if err != nil {
-			return recoveryError("old lock snapshot is unavailable", err)
-		}
-		if _, err := DecodeLock(bytes.NewReader(oldLockBytes)); err != nil {
-			return recoveryError("old lock snapshot is invalid", err)
-		}
-	}
-	newLockBytes, err := os.ReadFile(newLockPath)
-	if err != nil {
-		return recoveryError("new lock snapshot is unavailable", err)
-	}
-	if _, err := DecodeLock(bytes.NewReader(newLockBytes)); err != nil {
-		return recoveryError("new lock snapshot is invalid", err)
-	}
 
-	actualLock, lockExists, err := readOptionalFile(w.project.LockPath())
+	actualLockBytes, lockExists, err := readOptionalFile(w.project.LockPath())
 	if err != nil {
 		return recoveryError("project lock cannot be read", err)
 	}
-	lockIsNew := lockExists && bytes.Equal(actualLock, newLockBytes)
-	lockIsOld := journal.HadLock && lockExists && bytes.Equal(actualLock, oldLockBytes)
-	lockIsAbsentOld := !journal.HadLock && !lockExists
-	if !lockIsNew && !lockIsOld && !lockIsAbsentOld {
-		return recoveryError("project lock matches neither recorded state", nil)
-	}
-	// Equal snapshots mean the lock is new, as required for missing-destination restore.
-	if lockIsNew && lockIsOld {
-		lockIsOld = false
+	if lockExists {
+		if _, err := DecodeLock(bytes.NewReader(actualLockBytes)); err != nil {
+			return recoveryError("project lock is invalid", err)
+		}
 	}
 
 	destination := w.project.destination(skill.Name().String())
@@ -425,6 +563,57 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if err != nil {
 		return recoveryError("destination matches neither recorded tree", err)
 	}
+
+	oldLockPath := filepath.Join(operationDir, oldLockName)
+	newLockPath := filepath.Join(operationDir, newLockName)
+	_, oldLockExists, err := readLockSnapshot(oldLockPath, journal.OldLockHash)
+	if err != nil {
+		return recoveryError("old lock snapshot is invalid", err)
+	}
+	if oldLockExists != journal.HadLock && oldLockExists {
+		return recoveryError("unexpected old lock snapshot", nil)
+	}
+	_, newLockExists, err := readLockSnapshot(newLockPath, journal.NewLockHash)
+	if err != nil {
+		return recoveryError("new lock snapshot is invalid", err)
+	}
+
+	lockIsNew := lockExists && lockSnapshotHash(actualLockBytes) == journal.NewLockHash
+	lockIsOld := journal.HadLock && lockExists && lockSnapshotHash(actualLockBytes) == journal.OldLockHash
+	lockIsAbsentOld := !journal.HadLock && !lockExists
+	if !lockIsNew && !lockIsOld && !lockIsAbsentOld {
+		return recoveryError("project lock matches neither exact recorded state", nil)
+	}
+	// Recovery prefers the new state below when equal snapshots match both.
+	// Keep both matches so a persisted rolled-back cleanup phase can still
+	// validate the unchanged lock.
+	lockSnapshotsEqual := lockIsNew && lockIsOld
+
+	switch journal.Phase {
+	case "cleanup-committed":
+		if !lockIsNew || destinationState != treeNew {
+			return recoveryError("committed cleanup state no longer matches its final plan", nil)
+		}
+		return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
+	case "cleanup-rolled-back":
+		oldDestinationState := treeAbsent
+		if journal.HadDestination {
+			oldDestinationState = treeOld
+		}
+		if (!lockIsOld && !lockIsAbsentOld) || destinationState != oldDestinationState {
+			return recoveryError("rolled-back cleanup state no longer matches its final plan", nil)
+		}
+		return finishRecovery(w.project, operationDir, operation, journal, destination, oldDestinationState, "cleanup-rolled-back")
+	case "lock-committed":
+		if lockIsNew && destinationState == treeNew {
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
+		}
+	}
+
+	if (journal.HadLock && !oldLockExists) || !newLockExists {
+		return recoveryError("lock snapshots were removed before cleanup was committed", nil)
+	}
+
 	backupState, err := classifyTree(backup, oldDigest, newDigest, hasOldDigest)
 	if hasOldDigest && oldDigest == newDigest && backupState == treeNew {
 		backupState = treeOld
@@ -440,22 +629,23 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if lockIsNew {
 		switch {
 		case destinationState == treeNew:
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
 		case destinationState == treeAbsent && stagingState == treeNew:
 			if err := durableRename(staging, destination, w.project.SkillsDir(), "recover-new-destination"); err != nil {
 				return err
 			}
-			if err := syncTree(destination, "recovered-destination-tree"); err != nil {
-				return err
-			}
-			return cleanupOperation(w.project, operationDir, operation)
-		case oldDigest == newDigest && destinationState == treeAbsent && stagingState == treeAbsent:
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
+		case journal.Phase == "prepared" && lockSnapshotsEqual && !journal.HadDestination && destinationState == treeAbsent && stagingState == treeAbsent && backupState == treeAbsent:
+			// Restore can prepare an install for a missing destination without
+			// changing the lock. If it stops before transferring staging
+			// ownership, writer cleanup removes that tree. Roll back the empty
+			// operation so this or a later Restore can fetch it again.
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
 		case journal.HadLock && (destinationState == treeOld || backupState == treeOld):
-			if err := restoreOldState(w.project, operation, journal, destination, backup, destinationState, backupState, oldLockPath); err != nil {
+			if err := restoreOldState(w.project, operationDir, operation, journal, destination, backup, destinationState, backupState, oldLockPath); err != nil {
 				return err
 			}
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
 		default:
 			return recoveryError("committed lock has no complete new or recoverable old destination", nil)
 		}
@@ -464,27 +654,27 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if lockIsOld || lockIsAbsentOld {
 		switch {
 		case journal.HadDestination && destinationState == treeOld:
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
 		case !journal.HadDestination && destinationState == treeAbsent:
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
 		case journal.HadDestination && destinationState == treeAbsent && backupState == treeOld:
 			if err := durableRename(backup, destination, w.project.SkillsDir(), "recover-old-destination"); err != nil {
 				return err
 			}
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
 		case journal.HadDestination && destinationState == treeNew && backupState == treeOld:
-			if err := durableRemoveAll(destination, w.project.SkillsDir(), "remove-uncommitted-destination"); err != nil {
+			if err := discardDestination(w.project, operationDir, destination, "uncommitted-destination"); err != nil {
 				return err
 			}
 			if err := durableRename(backup, destination, w.project.SkillsDir(), "restore-old-destination"); err != nil {
 				return err
 			}
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
 		case !journal.HadDestination && destinationState == treeNew:
-			if err := durableRemoveAll(destination, w.project.SkillsDir(), "remove-first-uncommitted-destination"); err != nil {
+			if err := discardDestination(w.project, operationDir, destination, "first-uncommitted-destination"); err != nil {
 				return err
 			}
-			return cleanupOperation(w.project, operationDir, operation)
+			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
 		default:
 			return recoveryError("old lock has no recoverable old destination", nil)
 		}
@@ -492,8 +682,79 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	return recoveryError("operation state is ambiguous", nil)
 }
 
+func readLockSnapshot(path, expectedHash string) ([]byte, bool, error) {
+	contents, exists, err := readOptionalFile(path)
+	if err != nil || !exists {
+		return nil, exists, err
+	}
+	if lockSnapshotHash(contents) != expectedHash {
+		return nil, true, fmt.Errorf("snapshot contents do not match the journal hash")
+	}
+	if _, err := DecodeLock(bytes.NewReader(contents)); err != nil {
+		return nil, true, err
+	}
+	return contents, true, nil
+}
+
+func lockSnapshotHash(contents []byte) string {
+	digest := sha256.Sum256(contents)
+	return hex.EncodeToString(digest[:])
+}
+
+func finishRecovery(project Project, operationDir, operation string, journal transactionJournal, destination string, destinationState treeState, phase string) error {
+	if err := stabilizeDestination(project, destination, destinationState); err != nil {
+		return err
+	}
+	if journal.Phase != phase {
+		journal.Phase = phase
+		if err := writeJournal(operationDir, journal); err != nil {
+			return err
+		}
+	}
+	return cleanupOperation(project, operationDir, operation)
+}
+
+func stabilizeDestination(project Project, destination string, state treeState) error {
+	switch state {
+	case treeOld, treeNew:
+		if err := syncTree(destination, "recovery-destination-tree"); err != nil {
+			return err
+		}
+	case treeAbsent:
+		exists, err := inspectOptionalRealDirectory(destination)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return recoveryError("destination was expected to remain absent", nil)
+		}
+	default:
+		return recoveryError("destination has an unknown recovery state", nil)
+	}
+	return syncDirectory(project.SkillsDir(), "recovery-destination-parent")
+}
+
+func discardDestination(project Project, operationDir, destination, label string) error {
+	discard := filepath.Join(operationDir, discardName)
+	discardExists, err := inspectOptionalRealDirectory(discard)
+	if err != nil {
+		return recoveryError("inspect operation discard", err)
+	}
+	if discardExists {
+		return recoveryError("operation discard already exists while its destination remains live", nil)
+	}
+	if err := durableRename(destination, discard, project.SkillsDir(), "discard-"+label); err != nil {
+		return err
+	}
+	return durableRemoveAll(discard, operationDir, "discard-"+label)
+}
+
 func readJournal(operationDir, operation string) (transactionJournal, registry.SkillID, agentskill.TreeDigest, agentskill.TreeDigest, error) {
-	contents, err := os.ReadFile(filepath.Join(operationDir, journalName))
+	journalPath := filepath.Join(operationDir, journalName)
+	if err := rejectRegularFile(journalPath); err != nil {
+		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("inspect journal", err)
+	}
+	contents, err := os.ReadFile(journalPath)
 	if err != nil {
 		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("read journal", err)
 	}
@@ -506,13 +767,16 @@ func readJournal(operationDir, operation string) (transactionJournal, registry.S
 	if err := ensureJSONEOF(decoder); err != nil {
 		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("decode journal", err)
 	}
-	if journal.Schema != 1 || journal.Operation != operation || !validOperationID(operation) {
+	if journal.Schema != 2 || journal.Operation != operation || !validOperationID(operation) {
 		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal identity or schema is invalid", nil)
 	}
 	switch journal.Phase {
-	case "prepared", "backup-created", "destination-swapped", "lock-committed":
+	case "prepared", "backup-created", "destination-swapped", "lock-committed", "cleanup-committed", "cleanup-rolled-back":
 	default:
 		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal phase is invalid", nil)
+	}
+	if !validSnapshotHash(journal.NewLockHash) || (journal.HadLock != validSnapshotHash(journal.OldLockHash)) {
+		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal lock snapshot hashes are invalid", nil)
 	}
 	skill, err := registry.ParseSkillID(journal.Skill)
 	if err != nil {
@@ -553,6 +817,14 @@ func validOperationID(value string) bool {
 	return err == nil && hex.EncodeToString(decoded) == value
 }
 
+func validSnapshotHash(value string) bool {
+	if len(value) != sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && hex.EncodeToString(decoded) == value
+}
+
 func classifyTree(path string, oldDigest, newDigest agentskill.TreeDigest, hasOldDigest bool) (treeState, error) {
 	exists, err := inspectOptionalRealDirectory(path)
 	if err != nil || !exists {
@@ -573,6 +845,9 @@ func classifyTree(path string, oldDigest, newDigest agentskill.TreeDigest, hasOl
 }
 
 func inspectOptionalRealDirectory(path string) (bool, error) {
+	if err := rejectPathComponents(path, true); err != nil {
+		return false, err
+	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
@@ -580,10 +855,17 @@ func inspectOptionalRealDirectory(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+	if pathInfoIsLink(info) || !info.IsDir() {
 		return false, fmt.Errorf("%q is not a real directory", path)
 	}
 	return true, nil
+}
+
+func readManagedFile(path string) ([]byte, error) {
+	if err := rejectRegularFile(path); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(path)
 }
 
 func readOptionalFile(path string) ([]byte, bool, error) {
@@ -600,10 +882,10 @@ func readOptionalFile(path string) ([]byte, bool, error) {
 	return contents, true, nil
 }
 
-func restoreOldState(project Project, operation string, journal transactionJournal, destination, backup string, destinationState, backupState treeState, oldLockPath string) error {
+func restoreOldState(project Project, operationDir, operation string, journal transactionJournal, destination, backup string, destinationState, backupState treeState, oldLockPath string) error {
 	if destinationState != treeOld && backupState == treeOld {
 		if destinationState != treeAbsent {
-			if err := durableRemoveAll(destination, project.SkillsDir(), "rollback-new-destination"); err != nil {
+			if err := discardDestination(project, operationDir, destination, "rollback-new-destination"); err != nil {
 				return err
 			}
 		}
@@ -612,15 +894,46 @@ func restoreOldState(project Project, operation string, journal transactionJourn
 		}
 	}
 	if journal.HadLock {
+		newLockPath := filepath.Join(filepath.Dir(oldLockPath), newLockName)
+		if err := prepareOldLockRestoreTemporary(project, operation, oldLockPath, newLockPath); err != nil {
+			return err
+		}
 		return replaceLockFrom(project, operation, oldLockPath)
 	}
-	if err := os.Remove(project.LockPath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	return durableRemoveFile(project.LockPath(), filepath.Dir(project.LockPath()), "new-project-lock")
+}
+
+func prepareOldLockRestoreTemporary(project Project, operation, oldLockPath, newLockPath string) error {
+	temporary := lockTemporaryPath(project, operation)
+	temporaryContents, exists, err := readOptionalFile(temporary)
+	if err != nil || !exists {
 		return err
 	}
-	return syncDirectory(filepath.Dir(project.LockPath()), "remove-new-project-lock")
+	oldLockContents, err := readManagedFile(oldLockPath)
+	if err != nil {
+		return recoveryError("old lock snapshot is unavailable while inspecting its temporary", err)
+	}
+	if bytes.Equal(temporaryContents, oldLockContents) {
+		// An interrupted old-lock replacement can resume its rename.
+		return nil
+	}
+	newLockContents, err := readManagedFile(newLockPath)
+	if err != nil {
+		return recoveryError("new lock snapshot is unavailable while discarding its temporary", err)
+	}
+	if !bytes.Equal(temporaryContents, newLockContents) {
+		return recoveryError("project lock temporary matches neither recovery action", nil)
+	}
+	return durableRemoveFile(temporary, filepath.Dir(project.LockPath()), "abandoned-new-project-lock-temporary")
 }
 
 func durableRemoveAll(path, parent, label string) error {
+	if err := rejectPathComponents(path, true); err != nil {
+		return err
+	}
+	if err := ensureRealDirectory(parent, false); err != nil {
+		return err
+	}
 	if err := transactionPoint("before-remove-" + label); err != nil {
 		return err
 	}
@@ -634,24 +947,66 @@ func durableRemoveAll(path, parent, label string) error {
 }
 
 func cleanupOperation(project Project, operationDir, operation string) error {
-	for _, name := range []string{backupName, stagingName, oldLockName, newLockName, journalName + ".tmp"} {
-		if err := os.RemoveAll(filepath.Join(operationDir, name)); err != nil {
+	for _, name := range []string{backupName, stagingName, discardName, oldLockName, newLockName, journalName + ".tmp"} {
+		label := "cleanup-" + name
+		path := filepath.Join(operationDir, name)
+		if err := rejectPathComponents(path, true); err != nil {
+			return err
+		}
+		if err := transactionPoint("before-remove-" + label); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(path); err != nil {
 			return fmt.Errorf("clean project operation %s: %w", name, err)
 		}
+		if err := transactionPoint("after-remove-" + label); err != nil {
+			return err
+		}
 	}
-	if err := os.Remove(lockTemporaryPath(project, operation)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("clean project lock temporary: %w", err)
+	// Persist snapshot removal before removing the journal. If the journal
+	// survives an interruption, recovery classifies the actual committed state.
+	if err := syncDirectory(operationDir, "cleanup-snapshots"); err != nil {
+		return err
 	}
-	if err := os.Remove(filepath.Join(operationDir, journalName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove project journal: %w", err)
+
+	if err := durableRemoveFile(lockTemporaryPath(project, operation), filepath.Dir(project.LockPath()), "cleanup-project-lock-temporary"); err != nil {
+		return err
 	}
-	if err := syncDirectory(operationDir, "cleanup-operation"); err != nil {
+	if err := durableRemoveFile(filepath.Join(operationDir, journalName), operationDir, "cleanup-journal"); err != nil {
+		return err
+	}
+	if err := rejectPathComponents(operationDir, false); err != nil {
+		return err
+	}
+	if err := transactionPoint("before-remove-cleanup-operation"); err != nil {
 		return err
 	}
 	if err := os.Remove(operationDir); err != nil {
 		return fmt.Errorf("remove project operation: %w", err)
 	}
+	if err := transactionPoint("after-remove-cleanup-operation"); err != nil {
+		return err
+	}
 	return syncDirectory(project.operationsDir(), "cleanup-operations-parent")
+}
+
+func durableRemoveFile(path, parent, label string) error {
+	if err := rejectPathComponents(path, true); err != nil {
+		return err
+	}
+	if err := ensureRealDirectory(parent, false); err != nil {
+		return err
+	}
+	if err := transactionPoint("before-remove-" + label); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove %s: %w", label, err)
+	}
+	if err := transactionPoint("after-remove-" + label); err != nil {
+		return err
+	}
+	return syncDirectory(parent, label)
 }
 
 func recoveryError(problem string, cause error) error {

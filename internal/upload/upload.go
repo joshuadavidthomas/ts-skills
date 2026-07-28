@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"mime/multipart"
 	"os"
 	"path"
@@ -25,9 +26,10 @@ const maxZIPBytes int64 = 32 << 20
 var ErrMalformedUpload = errors.New("malformed skill upload")
 
 type Submission struct {
-	snapshot *safetree.Snapshot
-	root     string
-	label    string
+	snapshot      *safetree.Snapshot
+	root          string
+	label         string
+	closeSnapshot func(*safetree.Snapshot) error
 }
 
 func (s *Submission) FS() fs.FS {
@@ -55,9 +57,15 @@ func (s *Submission) Close() error {
 	if s == nil || s.snapshot == nil {
 		return nil
 	}
-	err := s.snapshot.Close()
+	closeSnapshot := s.closeSnapshot
+	if closeSnapshot == nil {
+		closeSnapshot = (*safetree.Snapshot).Close
+	}
+	if err := closeSnapshot(s.snapshot); err != nil {
+		return err
+	}
 	s.snapshot = nil
-	return err
+	return nil
 }
 
 func StageZIP(ctx context.Context, parent string, src io.Reader, filename string, limits safetree.Limits) (submission *Submission, err error) {
@@ -97,11 +105,21 @@ func StageZIP(ctx context.Context, parent string, src io.Reader, filename string
 	if written > maxZIPBytes {
 		return nil, &safetree.LimitError{Limit: "request bytes", Max: maxZIPBytes, Actual: written}
 	}
+	maximumEntries := maxUploadZIPEntries(limits)
+	if err := safetree.PreflightZIP(spoolName, maximumEntries); err != nil {
+		if errors.Is(err, safetree.ErrLimitExceeded) {
+			return nil, err
+		}
+		return nil, malformed("cannot read ZIP end record", err)
+	}
 	archive, err := zip.OpenReader(spoolName)
 	if err != nil {
 		return nil, malformed("cannot read ZIP archive", err)
 	}
 	defer archive.Close()
+	if int64(len(archive.File)) > maximumEntries {
+		return nil, &safetree.LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(len(archive.File))}
+	}
 
 	root, synthetic, err := inspectZIP(archive.File, limits)
 	if err != nil {
@@ -289,13 +307,12 @@ func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string
 }
 
 func inspectZIP(entries []*zip.File, limits safetree.Limits) (root string, synthetic bool, err error) {
-	type node struct {
-		name string
-		dir  bool
-	}
-	nodes := make([]node, 0, len(entries))
+	nodes := make([]string, 0, len(entries))
 	seen := make(map[string]struct{}, len(entries))
+	files := make(map[string]struct{}, min(len(entries), limits.MaxFiles))
+	directories := make(map[string]struct{}, len(entries))
 	rootSkill := false
+	fileCount := 0
 	wrappers := make(map[string]struct{})
 	for _, entry := range entries {
 		if entry.Flags&0x1 != 0 {
@@ -323,7 +340,37 @@ func inspectZIP(entries []*zip.File, limits safetree.Limits) (root string, synth
 			return "", false, malformed("ZIP contains duplicate paths", nil)
 		}
 		seen[name] = struct{}{}
-		nodes = append(nodes, node{name: name, dir: isDir})
+		nodes = append(nodes, name)
+
+		collision := false
+		if isDir {
+			visitUploadPathParents(name, func(parent string) bool {
+				_, collision = files[parent]
+				return !collision
+			})
+			directories[name] = struct{}{}
+		} else {
+			fileCount++
+			if fileCount > limits.MaxFiles {
+				return "", false, &safetree.LimitError{Limit: "files", Max: int64(limits.MaxFiles), Actual: int64(fileCount)}
+			}
+			_, collision = directories[name]
+			if !collision {
+				visitUploadPathParents(name, func(parent string) bool {
+					_, collision = files[parent]
+					return !collision
+				})
+			}
+			files[name] = struct{}{}
+		}
+		if collision {
+			return "", false, malformed("ZIP contains a file/directory prefix collision", nil)
+		}
+		visitUploadPathParents(name, func(parent string) bool {
+			directories[parent] = struct{}{}
+			return true
+		})
+
 		if !isDir && name == agentskill.Filename {
 			rootSkill = true
 		}
@@ -331,16 +378,6 @@ func inspectZIP(entries []*zip.File, limits safetree.Limits) (root string, synth
 			first, rest, found := strings.Cut(name, "/")
 			if found && rest == agentskill.Filename {
 				wrappers[first] = struct{}{}
-			}
-		}
-	}
-	for i, left := range nodes {
-		if left.dir {
-			continue
-		}
-		for j, right := range nodes {
-			if i != j && strings.HasPrefix(right.name, left.name+"/") {
-				return "", false, malformed("ZIP contains a file/directory prefix collision", nil)
 			}
 		}
 	}
@@ -355,14 +392,38 @@ func inspectZIP(entries []*zip.File, limits safetree.Limits) (root string, synth
 		return "", true, nil
 	}
 	for wrapper := range wrappers {
-		for _, node := range nodes {
-			if node.name != wrapper && !strings.HasPrefix(node.name, wrapper+"/") {
+		for _, name := range nodes {
+			if name != wrapper && !strings.HasPrefix(name, wrapper+"/") {
 				return "", false, malformed("ZIP wrapper must contain every archive entry", nil)
 			}
 		}
 		return wrapper, false, nil
 	}
 	panic("unreachable")
+}
+
+func visitUploadPathParents(name string, visit func(string) bool) {
+	start := 0
+	for {
+		relative := strings.IndexByte(name[start:], '/')
+		if relative < 0 {
+			return
+		}
+		separator := start + relative
+		if !visit(name[:separator]) {
+			return
+		}
+		start = separator + 1
+	}
+}
+
+func maxUploadZIPEntries(limits safetree.Limits) int64 {
+	files := int64(limits.MaxFiles)
+	depth := int64(limits.MaxDepth)
+	if files > math.MaxInt64/depth {
+		return math.MaxInt64
+	}
+	return files * depth
 }
 
 func validateUploadPath(name string, limits safetree.Limits) error {

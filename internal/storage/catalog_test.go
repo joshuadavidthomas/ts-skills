@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
 )
@@ -242,8 +243,8 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	if err := catalog.Close(); !errors.Is(err, ErrTreesOpen) {
 		t.Fatalf("Close with open tree = %v, want ErrTreesOpen", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err != nil {
-		t.Fatalf("catalog closed after ErrTreesOpen: %v", err)
+	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
+		t.Fatal("catalog accepted an operation after Close started")
 	}
 	if err := tree.Close(); err != nil {
 		t.Fatal(err)
@@ -256,6 +257,83 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	}
 	closeCatalog(t, catalog)
 
+	reopened := openCatalog(t, state)
+	closeCatalog(t, reopened)
+}
+
+func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
+	state := t.TempDir()
+	catalog := openCatalog(t, state)
+	t.Cleanup(func() {
+		catalog.closeDB = (*sql.DB).Close
+		catalog.closeLock = (*flock.Flock).Close
+		_ = catalog.Close()
+	})
+	fixture := newFixture(t, "# Closing\n", "asset")
+	candidate := fixture.candidate(t)
+	injectedDB := errors.New("injected database close failure")
+	databaseCloseCalls := 0
+	catalog.closeDB = func(db *sql.DB) error {
+		databaseCloseCalls++
+		if databaseCloseCalls == 1 {
+			return injectedDB
+		}
+		return db.Close()
+	}
+	if err := catalog.Close(); !errors.Is(err, injectedDB) {
+		t.Fatalf("first Close error = %v, want database failure", err)
+	}
+	if !catalog.closing || catalog.closed || catalog.dbClosed || catalog.lockClosed {
+		t.Fatal("database close failure changed catalog resource ownership")
+	}
+	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
+		t.Fatal("catalog accepted an operation after database close started")
+	}
+	if competing, err := OpenCatalog(context.Background(), state); !errors.Is(err, registry.ErrConflict) {
+		if competing != nil {
+			_ = competing.Close()
+		}
+		t.Fatalf("lifetime lock after database close failure = %v, want conflict", err)
+	}
+
+	injectedLock := errors.New("injected lifetime lock close failure")
+	lockCloseCalls := 0
+	catalog.closeLock = func(*flock.Flock) error {
+		lockCloseCalls++
+		return injectedLock
+	}
+	if err := catalog.Close(); !errors.Is(err, injectedLock) {
+		t.Fatalf("second Close error = %v, want lock failure", err)
+	}
+	if !catalog.dbClosed || catalog.lockClosed || catalog.closed {
+		t.Fatal("lock close failure changed catalog lock ownership")
+	}
+	if databaseCloseCalls != 2 {
+		t.Fatalf("database close calls = %d, want 2", databaseCloseCalls)
+	}
+	if competing, err := OpenCatalog(context.Background(), state); !errors.Is(err, registry.ErrConflict) {
+		if competing != nil {
+			_ = competing.Close()
+		}
+		t.Fatalf("lifetime lock after lock close failure = %v, want conflict", err)
+	}
+	if err := catalog.Close(); !errors.Is(err, injectedLock) {
+		t.Fatalf("repeated Close error = %v, want lock failure", err)
+	}
+	if databaseCloseCalls != 2 || lockCloseCalls != 2 {
+		t.Fatalf("close calls after retry = database %d, lock %d", databaseCloseCalls, lockCloseCalls)
+	}
+
+	catalog.closeLock = (*flock.Flock).Close
+	if err := catalog.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.closed || !catalog.dbClosed || !catalog.lockClosed {
+		t.Fatal("successful retry did not close every catalog resource")
+	}
+	if err := catalog.Close(); err != nil {
+		t.Fatalf("Close after full success: %v", err)
+	}
 	reopened := openCatalog(t, state)
 	closeCatalog(t, reopened)
 }
@@ -312,6 +390,66 @@ func TestCatalogSchemaAndConnectionPragmas(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestOpenCatalogRequiresPrivateRealStateDirectory(t *testing.T) {
+	t.Run("sets private mode", func(t *testing.T) {
+		state := filepath.Join(t.TempDir(), "state")
+		if err := os.Mkdir(state, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(state, 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		catalog := openCatalog(t, state)
+		closeCatalog(t, catalog)
+
+		info, err := os.Lstat(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
+			t.Fatalf("state mode = %v, want real directory", info.Mode())
+		}
+		if got := info.Mode().Perm(); got != 0o700 {
+			t.Fatalf("state permissions = %04o, want 0700", got)
+		}
+	})
+
+	t.Run("rejects symbolic link", func(t *testing.T) {
+		parent := t.TempDir()
+		target := filepath.Join(parent, "target")
+		if err := os.Mkdir(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		state := filepath.Join(parent, "state")
+		if err := os.Symlink(target, state); err != nil {
+			t.Fatal(err)
+		}
+
+		catalog, err := OpenCatalog(context.Background(), state)
+		if catalog != nil {
+			_ = catalog.Close()
+		}
+		if err == nil {
+			t.Fatal("OpenCatalog accepted a symbolic-link state directory")
+		}
+		if _, err := os.Lstat(filepath.Join(target, "registry.lock")); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("registry lock created through state symlink: %v", err)
+		}
+	})
+
+	t.Run("rejects regular file", func(t *testing.T) {
+		state := filepath.Join(t.TempDir(), "state")
+		if err := os.WriteFile(state, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if catalog, err := OpenCatalog(context.Background(), state); err == nil {
+			_ = catalog.Close()
+			t.Fatal("OpenCatalog accepted a regular-file state path")
+		}
+	})
 }
 
 func TestOpenCatalogRejectsUnknownSchema(t *testing.T) {
@@ -439,6 +577,90 @@ func TestMaterializationFailuresNeverCreateCandidateMetadata(t *testing.T) {
 			}
 			closeCatalog(t, catalog)
 		})
+	}
+}
+
+func TestSameShardMaterializationWaitsForItsOwnParentBarrier(t *testing.T) {
+	state := t.TempDir()
+	catalog := openCatalog(t, state)
+	defer closeCatalog(t, catalog)
+
+	firstFixture := newFixture(t, "# First same-shard tree\n", "first")
+	var secondFixture catalogFixture
+	for attempt := 0; attempt < 4096; attempt++ {
+		fixture := newFixture(t, fmt.Sprintf("# Same-shard tree %d\n", attempt), fmt.Sprintf("asset %d", attempt))
+		if fixture.digest != firstFixture.digest && fixture.digest[0] == firstFixture.digest[0] {
+			secondFixture = fixture
+			break
+		}
+	}
+	if secondFixture.digest == (agentskill.TreeDigest{}) {
+		t.Fatal("could not construct two distinct digests in one shard")
+	}
+
+	first := firstFixture.candidate(t)
+	second := secondFixture.candidate(t)
+	shard, _ := catalog.treePaths(first.Tree())
+	creatorAtShardSync := make(chan struct{})
+	releaseCreator := make(chan struct{})
+	injected := errors.New("injected shard-parent sync failure")
+	var hookMu sync.Mutex
+	shardSyncs := 0
+	parentSyncs := 0
+	catalog.syncDirectory = func(directory string) error {
+		switch directory {
+		case shard:
+			hookMu.Lock()
+			shardSyncs++
+			call := shardSyncs
+			hookMu.Unlock()
+			if err := syncDirectory(directory); err != nil {
+				return err
+			}
+			if call == 1 {
+				close(creatorAtShardSync)
+				<-releaseCreator
+			}
+			return nil
+		case catalog.treesDir:
+			hookMu.Lock()
+			parentSyncs++
+			call := parentSyncs
+			hookMu.Unlock()
+			if call == 1 {
+				return injected
+			}
+		}
+		return syncDirectory(directory)
+	}
+
+	firstResult := make(chan error, 1)
+	go func() {
+		firstResult <- catalog.RecordCandidate(context.Background(), first, firstFixture.directory)
+	}()
+	<-creatorAtShardSync
+
+	secondResult := make(chan error, 1)
+	go func() {
+		secondResult <- catalog.RecordCandidate(context.Background(), second, secondFixture.directory)
+	}()
+	if err := <-secondResult; !errors.Is(err, injected) {
+		close(releaseCreator)
+		<-firstResult
+		t.Fatalf("second RecordCandidate error = %v, want injected parent-sync failure", err)
+	}
+	if _, err := catalog.Candidate(context.Background(), second.ID()); !errors.Is(err, registry.ErrNotFound) {
+		close(releaseCreator)
+		<-firstResult
+		t.Fatalf("second candidate visible before its shard-parent barrier: %v", err)
+	}
+
+	close(releaseCreator)
+	if err := <-firstResult; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Candidate(context.Background(), first.ID()); err != nil {
+		t.Fatalf("first candidate missing after its shard-parent barrier: %v", err)
 	}
 }
 

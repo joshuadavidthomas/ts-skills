@@ -194,7 +194,7 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 }
 
 func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (string, error) {
-	staged, err := os.MkdirTemp(project.StateDir(), "staging-")
+	staged, err := createManagedTempDirectory(project.StateDir(), "staging-")
 	if err != nil {
 		return "", fmt.Errorf("create install staging: %w", err)
 	}
@@ -215,8 +215,14 @@ func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (
 			return nil
 		}
 		destination := filepath.Join(staged, filepath.FromSlash(name))
+		if err := rejectPathComponents(destination, true); err != nil {
+			return err
+		}
 		if entry.IsDir() {
-			return os.Mkdir(destination, 0o755)
+			if err := os.Mkdir(destination, 0o755); err != nil {
+				return err
+			}
+			return ensureRealDirectory(destination, false)
 		}
 		if entry.Type()&fs.ModeType != 0 {
 			return fmt.Errorf("staged tree contains unsupported path %q", name)
@@ -225,21 +231,16 @@ func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(destination, contents, 0o644)
+		if err := os.WriteFile(destination, contents, 0o644); err != nil {
+			return err
+		}
+		return rejectRegularFile(destination)
 	})
 	if err != nil {
 		return "", fmt.Errorf("copy verified install tree: %w", err)
 	}
-	projectDevice, err := filesystemDevice(project.root)
-	if err != nil {
-		return "", err
-	}
-	stagingDevice, err := filesystemDevice(staged)
-	if err != nil {
-		return "", err
-	}
-	if projectDevice != stagingDevice {
-		return "", fmt.Errorf("verified staging is not on the project filesystem")
+	if err := requireSameFilesystem(project.root, staged); err != nil {
+		return "", fmt.Errorf("verified staging is not on the project filesystem: %w", err)
 	}
 	ok = true
 	return staged, nil

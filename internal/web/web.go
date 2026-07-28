@@ -103,8 +103,9 @@ func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Ha
 	mux.HandleFunc("GET /candidates/{candidate}", h.reviewCandidate)
 	mux.HandleFunc("POST /candidates/{candidate}/publish", h.publishCandidate)
 	mux.HandleFunc("POST /current", h.setCurrent)
-	mux.HandleFunc("GET /api/v1/skills/{namespace}/{name}/current", h.currentPublication)
-	mux.HandleFunc("GET /api/v1/skills/{namespace}/{name}/publications/{digest}/tree.zip", h.publicationTree)
+	apiPattern := "GET /api/" + protocol.Version + "/skills/{namespace}/{name}"
+	mux.HandleFunc(apiPattern+"/current", h.currentPublication)
+	mux.HandleFunc(apiPattern+"/publications/{digest}/tree.zip", h.publicationTree)
 
 	csrfFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusForbidden, "Request could not be verified", "Reload the page and try again.")

@@ -28,15 +28,22 @@ type Catalog struct {
 	treesDir    string
 	tmpDir      string
 	stateMu     sync.RWMutex
+	closing     bool
 	closed      bool
+	dbClosed    bool
+	lockClosed  bool
+	closeDB     func(*sql.DB) error
+	closeLock   func(*flock.Flock) error
 	refsMu      sync.Mutex
 	openTrees   int
 	digestMu    sync.Mutex
 	digestLocks map[agentskill.TreeDigest]*digestMutex
 
-	// afterFilesystemStep is a package-private failure seam used to prove that
-	// metadata is never committed ahead of its tree. Production leaves it nil.
+	// afterFilesystemStep and syncDirectory are package-private failure seams
+	// used to prove that metadata is never committed ahead of its tree.
+	// Production leaves the step hook nil and uses the real directory sync.
 	afterFilesystemStep func(string) error
+	syncDirectory       func(string) error
 }
 
 type digestMutex struct {
@@ -62,7 +69,10 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 	stateLock := flock.New(filepath.Join(absolute, "registry.lock"), flock.SetPermissions(0o600))
 	locked, err := stateLock.TryLock()
 	if err != nil {
-		return nil, fmt.Errorf("lock registry state directory: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("lock registry state directory: %w", err),
+			stateLock.Close(),
+		)
 	}
 	if !locked {
 		_ = stateLock.Close()
@@ -91,12 +101,15 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 	}()
 
 	catalog := &Catalog{
-		db:          db,
-		lock:        stateLock,
-		stateDir:    absolute,
-		treesDir:    treesDir,
-		tmpDir:      tmpDir,
-		digestLocks: make(map[agentskill.TreeDigest]*digestMutex),
+		db:            db,
+		lock:          stateLock,
+		stateDir:      absolute,
+		treesDir:      treesDir,
+		tmpDir:        tmpDir,
+		digestLocks:   make(map[agentskill.TreeDigest]*digestMutex),
+		syncDirectory: syncDirectory,
+		closeDB:       (*sql.DB).Close,
+		closeLock:     (*flock.Flock).Close,
 	}
 	return catalog, nil
 }
@@ -110,17 +123,36 @@ func (c *Catalog) Close() error {
 	if c.closed {
 		return nil
 	}
+	c.closing = true
+
 	c.refsMu.Lock()
 	openTrees := c.openTrees
 	c.refsMu.Unlock()
 	if openTrees != 0 {
 		return fmt.Errorf("%w: %d", ErrTreesOpen, openTrees)
 	}
-
-	databaseErr := c.db.Close()
-	lockErr := c.lock.Close()
+	if !c.dbClosed {
+		closeDB := c.closeDB
+		if closeDB == nil {
+			closeDB = (*sql.DB).Close
+		}
+		if err := closeDB(c.db); err != nil {
+			return fmt.Errorf("close registry database: %w", err)
+		}
+		c.dbClosed = true
+	}
+	if !c.lockClosed {
+		closeLock := c.closeLock
+		if closeLock == nil {
+			closeLock = (*flock.Flock).Close
+		}
+		if err := closeLock(c.lock); err != nil {
+			return fmt.Errorf("close registry lifetime lock: %w", err)
+		}
+		c.lockClosed = true
+	}
 	c.closed = true
-	return errors.Join(databaseErr, lockErr)
+	return nil
 }
 
 func (c *Catalog) withOpenState() (func(), error) {
@@ -128,7 +160,7 @@ func (c *Catalog) withOpenState() (func(), error) {
 		return nil, fmt.Errorf("registry storage is nil")
 	}
 	c.stateMu.RLock()
-	if c.closed {
+	if c.closing {
 		c.stateMu.RUnlock()
 		return nil, fmt.Errorf("registry storage is closed")
 	}
@@ -211,7 +243,7 @@ func (c *Catalog) Candidate(ctx context.Context, id registry.CandidateID) (regis
 		return registry.Candidate{}, err
 	}
 	defer done()
-	return queryCandidate(ctx, c.db, id)
+	return queryCandidate(ctx, c.db.QueryRowContext, id)
 }
 
 func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (_ registry.PublishResult, err error) {
@@ -230,7 +262,7 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		}
 	}()
 
-	candidate, err := queryCandidate(ctx, tx, id)
+	candidate, err := queryCandidate(ctx, tx.QueryRowContext, id)
 	if err != nil {
 		return registry.PublishResult{}, err
 	}
@@ -260,7 +292,7 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		return registry.PublishResult{}, fmt.Errorf("insert publication: %w", err)
 	}
 	if !inserted {
-		publication, err = queryPublication(ctx, tx, publicationID)
+		publication, err = queryPublication(ctx, tx.QueryRowContext, publicationID)
 		if err != nil {
 			return registry.PublishResult{}, err
 		}
@@ -312,7 +344,7 @@ func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, 
 			err = errors.Join(err, tx.Rollback())
 		}
 	}()
-	if _, err := queryPublication(ctx, tx, id); err != nil {
+	if _, err := queryPublication(ctx, tx.QueryRowContext, id); err != nil {
 		return registry.CurrentPublication{}, err
 	}
 	_, err = tx.ExecContext(ctx, `

@@ -25,6 +25,9 @@ import (
 const (
 	defaultHostname     = "ts-skillsd"
 	readHeaderTimeout   = 10 * time.Second
+	readTimeout         = 5 * time.Minute
+	writeTimeout        = 5 * time.Minute
+	idleTimeout         = 5 * time.Minute
 	shutdownTimeout     = 30 * time.Second
 	maxRequestBodyBytes = int64(32 << 20)
 )
@@ -126,7 +129,15 @@ func Run(ctx context.Context, config Config) error {
 	return run(ctx, config, buildRuntime)
 }
 
-func run(ctx context.Context, config Config, factory runtimeFactory) (err error) {
+func run(ctx context.Context, config Config, factory runtimeFactory) error {
+	return runWithHTTPShutdownTimeout(ctx, config, factory, shutdownTimeout)
+}
+
+func runWithHTTPShutdownTimeout(ctx context.Context, config Config, factory runtimeFactory, timeout time.Duration) error {
+	return runWithHandlerGate(ctx, config, factory, timeout, newHandlerGate(nil))
+}
+
+func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFactory, timeout time.Duration, handlers *handlerGate) (err error) {
 	if ctx == nil {
 		return fmt.Errorf("run daemon: context must be provided")
 	}
@@ -152,41 +163,115 @@ func run(ctx context.Context, config Config, factory runtimeFactory) (err error)
 		err = errors.Join(err, active.close())
 	}()
 
-	server := &http.Server{
-		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-			request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBodyBytes)
-			active.handler.ServeHTTP(writer, request)
-		}),
-		ReadHeaderTimeout: readHeaderTimeout,
-	}
+	server := newHTTPServer(active.handler, handlers)
 	serveResult := make(chan error, 1)
 	go func() {
 		serveResult <- server.Serve(active.listener)
 	}()
 
+	var serveErr error
+	var shutdownErr error
 	select {
-	case serveErr := <-serveResult:
-		shutdownErr := shutdownHTTP(server)
+	case serveErr = <-serveResult:
+		handlers.closeAdmission()
+		shutdownErr = shutdownHTTP(server, timeout)
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		} else if serveErr != nil {
 			serveErr = fmt.Errorf("serve Tailnet HTTP: %w", serveErr)
 		}
-		return errors.Join(serveErr, shutdownErr)
 	case <-ctx.Done():
-		shutdownErr := shutdownHTTP(server)
-		serveErr := <-serveResult
+		handlers.closeAdmission()
+		shutdownErr = shutdownHTTP(server, timeout)
+		serveErr = <-serveResult
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		} else if serveErr != nil {
 			serveErr = fmt.Errorf("serve Tailnet HTTP during shutdown: %w", serveErr)
 		}
-		return errors.Join(shutdownErr, serveErr)
+	}
+	handlers.wait()
+	return errors.Join(shutdownErr, serveErr)
+}
+
+func newHTTPServer(handler http.Handler, handlers *handlerGate) *http.Server {
+	return &http.Server{
+		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			if !handlers.admit() {
+				writer.Header().Set("Connection", "close")
+				http.Error(writer, "server is shutting down", http.StatusServiceUnavailable)
+				return
+			}
+			defer handlers.done()
+			request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBodyBytes)
+			handler.ServeHTTP(writer, request)
+		}),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }
 
-func shutdownHTTP(server *http.Server) error {
-	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+type handlerGate struct {
+	mu              sync.Mutex
+	drained         *sync.Cond
+	admissionOpen   bool
+	active          int
+	beforeAdmission func()
+	afterAdmission  func(bool)
+}
+
+func newHandlerGate(beforeAdmission func()) *handlerGate {
+	gate := &handlerGate{
+		admissionOpen:   true,
+		beforeAdmission: beforeAdmission,
+	}
+	gate.drained = sync.NewCond(&gate.mu)
+	return gate
+}
+
+func (g *handlerGate) admit() bool {
+	if g.beforeAdmission != nil {
+		g.beforeAdmission()
+	}
+	g.mu.Lock()
+	admitted := g.admissionOpen
+	if admitted {
+		g.active++
+	}
+	g.mu.Unlock()
+	if g.afterAdmission != nil {
+		g.afterAdmission(admitted)
+	}
+	return admitted
+}
+
+func (g *handlerGate) done() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.active--
+	if g.active == 0 {
+		g.drained.Broadcast()
+	}
+}
+
+func (g *handlerGate) closeAdmission() {
+	g.mu.Lock()
+	g.admissionOpen = false
+	g.mu.Unlock()
+}
+
+func (g *handlerGate) wait() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for g.active != 0 {
+		g.drained.Wait()
+	}
+}
+
+func shutdownHTTP(server *http.Server, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	if err := server.Shutdown(ctx); err != nil {
 		return errors.Join(fmt.Errorf("gracefully shut down Tailnet HTTP: %w", err), server.Close())
@@ -258,23 +343,42 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)
 	}
 
-	var closeOnce sync.Once
-	var closeErr error
-	closeRuntime := func() error {
-		closeOnce.Do(func() {
-			tailErr := tailServer.Close()
-			storageErr := records.Close()
-			closeErr = errors.Join(tailErr, storageErr)
-		})
-		return closeErr
+	cleanup := &runtimeCleanup{
+		closeTailnet: tailServer.Close,
+		closeStorage: records.Close,
 	}
 	closeTailnet = false
 	closeRecords = false
 	return &runtime{
 		listener: tailServer.Listener(),
 		handler:  handler,
-		close:    closeRuntime,
+		close:    cleanup.close,
 	}, nil
+}
+
+type runtimeCleanup struct {
+	mu            sync.Mutex
+	closeTailnet  func() error
+	closeStorage  func() error
+	tailnetClosed bool
+	storageClosed bool
+}
+
+func (c *runtimeCleanup) close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var tailnetErr error
+	if !c.tailnetClosed {
+		tailnetErr = c.closeTailnet()
+		c.tailnetClosed = tailnetErr == nil
+	}
+	var storageErr error
+	if !c.storageClosed {
+		storageErr = c.closeStorage()
+		c.storageClosed = storageErr == nil
+	}
+	return errors.Join(tailnetErr, storageErr)
 }
 
 func loadOrCreateCSRFKey(stateDir string) (web.CSRFKey, error) {

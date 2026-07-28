@@ -24,7 +24,15 @@ import (
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
 )
 
-const maxJSONResponseBytes int64 = 64 << 10
+const (
+	maxJSONResponseBytes int64 = 64 << 10
+
+	// rootlessZIPEntryFixedBytes accounts for the local file header, data
+	// descriptor, central directory header, and the extended timestamp copied
+	// into both headers by web.rootlessZIP. The path follows each header.
+	rootlessZIPEntryFixedBytes int64 = 30 + 16 + 46 + 9 + 9
+	rootlessZIPEndBytes        int64 = 22
+)
 
 type Remote struct {
 	baseURL       *url.URL
@@ -55,11 +63,10 @@ func NewRemote(baseURL *url.URL, httpClient *http.Client, stagingParent string, 
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	entryOverhead := int64(limits.MaxPathBytes) + 256
-	if int64(limits.MaxFiles) > (math.MaxInt64-(1<<20)-limits.MaxExpandedBytes)/entryOverhead {
-		return nil, fmt.Errorf("registry tree limits are too large")
+	maxZIPBytes, err := maxRootlessZIPBytes(limits)
+	if err != nil {
+		return nil, fmt.Errorf("registry tree limits: %w", err)
 	}
-	maxZIPBytes := limits.MaxExpandedBytes + int64(limits.MaxFiles)*entryOverhead + (1 << 20)
 
 	privateClient := *httpClient
 	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -212,11 +219,21 @@ func (r *Remote) fetchTree(ctx context.Context, publication registry.Publication
 }
 
 func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree.Snapshot, err error) {
+	maximumEntries := int64(r.limits.MaxFiles)
+	if err := safetree.PreflightZIP(archivePath, maximumEntries); err != nil {
+		if errors.Is(err, safetree.ErrLimitExceeded) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: inspect tree archive end record: %v", protocol.ErrProtocol, err)
+	}
 	archive, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: open tree archive: %v", protocol.ErrProtocol, err)
 	}
 	defer func() { err = errors.Join(err, archive.Close()) }()
+	if int64(len(archive.File)) > maximumEntries {
+		return nil, &safetree.LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(len(archive.File))}
+	}
 	builder, err := safetree.NewBuilder(r.stagingParent, r.limits)
 	if err != nil {
 		return nil, err
@@ -299,6 +316,27 @@ func (r *Remote) responseError(response *http.Response) error {
 	}
 }
 
+func maxRootlessZIPBytes(limits safetree.Limits) (int64, error) {
+	pathBytes := int64(limits.MaxPathBytes)
+	if pathBytes > (math.MaxInt64-rootlessZIPEntryFixedBytes)/2 {
+		return 0, fmt.Errorf("limits are too large to bound a publication archive")
+	}
+	entryBytes := rootlessZIPEntryFixedBytes + 2*pathBytes
+	fileCount := int64(limits.MaxFiles)
+
+	// A tree may hit either the aggregate byte limit or every file's byte
+	// limit. Use the smaller capacity so this is the exact maximum payload.
+	expandedBytes := limits.MaxExpandedBytes
+	if fileCount <= limits.MaxExpandedBytes/limits.MaxFileBytes {
+		expandedBytes = fileCount * limits.MaxFileBytes
+	}
+	if expandedBytes > math.MaxInt64-rootlessZIPEndBytes ||
+		fileCount > (math.MaxInt64-rootlessZIPEndBytes-expandedBytes)/entryBytes {
+		return 0, fmt.Errorf("limits are too large to bound a publication archive")
+	}
+	return expandedBytes + fileCount*entryBytes + rootlessZIPEndBytes, nil
+}
+
 func (r *Remote) endpoint(parts ...string) string {
 	escaped := make([]string, len(parts))
 	for index, part := range parts {
@@ -352,7 +390,8 @@ func decodeStrictJSON(source []byte, destination any) error {
 }
 
 type fetchedTree struct {
-	snapshot *safetree.Snapshot
+	snapshot      *safetree.Snapshot
+	closeSnapshot func(*safetree.Snapshot) error
 }
 
 func (t *fetchedTree) Open(name string) (fs.File, error) {
@@ -363,9 +402,15 @@ func (t *fetchedTree) Close() error {
 	if t == nil || t.snapshot == nil {
 		return nil
 	}
-	err := t.snapshot.Close()
+	closeSnapshot := t.closeSnapshot
+	if closeSnapshot == nil {
+		closeSnapshot = (*safetree.Snapshot).Close
+	}
+	if err := closeSnapshot(t.snapshot); err != nil {
+		return err
+	}
 	t.snapshot = nil
-	return err
+	return nil
 }
 
 func validateOrigin(source *url.URL) (*url.URL, error) {

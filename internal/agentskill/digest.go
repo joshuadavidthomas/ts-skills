@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"sort"
 	"strings"
@@ -102,11 +103,7 @@ func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
 	return digest, nil
 }
 
-type byteWriter interface {
-	Write([]byte) (int, error)
-}
-
-func writeUint64(dst byteWriter, value uint64) {
+func writeUint64(dst io.Writer, value uint64) {
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], value)
 	_, _ = dst.Write(encoded[:])

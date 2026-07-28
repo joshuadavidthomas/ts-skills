@@ -343,3 +343,30 @@ func TestSubmissionOwnsAndRemovesSnapshot(t *testing.T) {
 		}
 	}
 }
+
+func TestSubmissionCloseRetainsSnapshotAfterFailure(t *testing.T) {
+	submission, err := StageZIP(context.Background(), t.TempDir(), bytes.NewReader(makeZIP(t,
+		zipEntry{name: "SKILL.md", body: testSkill},
+	)), "skill.zip", safetree.PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected snapshot close failure")
+	submission.closeSnapshot = func(*safetree.Snapshot) error { return injected }
+	if err := submission.Close(); !errors.Is(err, injected) {
+		t.Fatalf("first Close error = %v, want injected failure", err)
+	}
+	if submission.snapshot == nil {
+		t.Fatal("failed Close released submission snapshot ownership")
+	}
+	if _, err := fs.ReadFile(submission.FS(), "sample/SKILL.md"); err != nil {
+		t.Fatalf("submission after failed Close: %v", err)
+	}
+	submission.closeSnapshot = nil
+	if err := submission.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if submission.snapshot != nil {
+		t.Fatal("successful Close retained submission snapshot ownership")
+	}
+}

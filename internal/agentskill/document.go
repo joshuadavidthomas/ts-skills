@@ -43,9 +43,9 @@ func Parse(src []byte) (Document, error) {
 		return Document{}, err
 	}
 
-	var raw frontmatterYAML
+	var node yaml.Node
 	decoder := yaml.NewDecoder(bytes.NewReader(frontmatter))
-	if err := decoder.Decode(&raw); err != nil {
+	if err := decoder.Decode(&node); err != nil {
 		return Document{}, newValidationError(ErrInvalidDocument, "frontmatter", err.Error())
 	}
 	var trailing any
@@ -53,6 +53,14 @@ func Parse(src []byte) (Document, error) {
 		if err == nil {
 			err = fmt.Errorf("contains more than one YAML document")
 		}
+		return Document{}, newValidationError(ErrInvalidDocument, "frontmatter", err.Error())
+	}
+	if err := validateFrontmatterTypes(&node); err != nil {
+		return Document{}, err
+	}
+
+	var raw frontmatterYAML
+	if err := node.Decode(&raw); err != nil {
 		return Document{}, newValidationError(ErrInvalidDocument, "frontmatter", err.Error())
 	}
 
@@ -86,6 +94,46 @@ func Parse(src []byte) (Document, error) {
 		},
 		Instructions: string(instructions),
 	}, nil
+}
+
+func validateFrontmatterTypes(document *yaml.Node) error {
+	if document.Kind != yaml.DocumentNode || len(document.Content) != 1 {
+		return newValidationError(ErrInvalidDocument, "frontmatter", "must contain one YAML document")
+	}
+	mapping := document.Content[0]
+	if mapping.Kind != yaml.MappingNode {
+		return newValidationError(ErrInvalidDocument, "frontmatter", "must be a YAML mapping")
+	}
+	for i := 0; i < len(mapping.Content); i += 2 {
+		key, value := mapping.Content[i], mapping.Content[i+1]
+		switch key.Value {
+		case "name", "description", "license", "compatibility", "allowed-tools":
+			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+				return newValidationError(ErrInvalidDocument, key.Value, "must be a YAML string scalar")
+			}
+		case "metadata":
+			if err := validateMetadataTypes(value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateMetadataTypes(metadata *yaml.Node) error {
+	if metadata.Kind != yaml.MappingNode {
+		return newValidationError(ErrInvalidDocument, "metadata", "must be a YAML mapping")
+	}
+	for i := 0; i < len(metadata.Content); i += 2 {
+		key, value := metadata.Content[i], metadata.Content[i+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return newValidationError(ErrInvalidDocument, "metadata", "keys must be YAML string scalars")
+		}
+		if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+			return newValidationError(ErrInvalidDocument, "metadata", "values must be YAML string scalars")
+		}
+	}
+	return nil
 }
 
 func splitDocument(src []byte) ([]byte, []byte, error) {

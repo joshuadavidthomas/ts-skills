@@ -13,16 +13,8 @@ import (
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
 )
 
-type queryRower interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
-
-type rowScanner interface {
-	Scan(...any) error
-}
-
-func queryCandidate(ctx context.Context, db queryRower, id registry.CandidateID) (registry.Candidate, error) {
-	row := db.QueryRowContext(ctx, `
+func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id registry.CandidateID) (registry.Candidate, error) {
+	row := queryRow(ctx, `
 		SELECT id, namespace, name, tree_digest, source_kind, source_label,
 		       submitted_actor_id, submitted_actor_display, submitted_at_ns
 		FROM candidates WHERE id = ?`, candidateIDBlob(id))
@@ -36,7 +28,7 @@ func queryCandidate(ctx context.Context, db queryRower, id registry.CandidateID)
 	return candidate, nil
 }
 
-func scanCandidate(row rowScanner) (registry.Candidate, error) {
+func scanCandidate(row *sql.Row) (registry.Candidate, error) {
 	var (
 		idBlob, digestBlob                   []byte
 		namespaceText, nameText, sourceLabel string
@@ -80,8 +72,8 @@ func scanCandidate(row rowScanner) (registry.Candidate, error) {
 	return candidate, nil
 }
 
-func queryPublication(ctx context.Context, db queryRower, id registry.PublicationID) (registry.Publication, error) {
-	row := db.QueryRowContext(ctx, `
+func queryPublication(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id registry.PublicationID) (registry.Publication, error) {
+	row := queryRow(ctx, `
 		SELECT namespace, name, tree_digest, candidate_id,
 		       published_actor_id, published_actor_display, published_at_ns
 		FROM publications
@@ -97,7 +89,7 @@ func queryPublication(ctx context.Context, db queryRower, id registry.Publicatio
 	return publication, nil
 }
 
-func scanPublication(row rowScanner) (registry.Publication, error) {
+func scanPublication(row *sql.Row) (registry.Publication, error) {
 	var (
 		digestBytes, candidateBytes               []byte
 		namespaceText, nameText, actorID, display string
@@ -142,7 +134,7 @@ func (c *Catalog) Publication(ctx context.Context, id registry.PublicationID) (r
 		return registry.Publication{}, err
 	}
 	defer done()
-	return queryPublication(ctx, c.db, id)
+	return queryPublication(ctx, c.db.QueryRowContext, id)
 }
 
 func (c *Catalog) ResolveCurrent(ctx context.Context, skill registry.SkillID) (registry.Publication, error) {
