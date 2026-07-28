@@ -697,9 +697,6 @@ func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
 	if err := formWriter.WriteField("namespace", "team"); err != nil {
 		t.Fatal(err)
 	}
-	if err := formWriter.WriteField("kind", "zip"); err != nil {
-		t.Fatal(err)
-	}
 	filePart, err := formWriter.CreateFormFile("archive", "sample.zip")
 	if err != nil {
 		t.Fatal(err)

@@ -56,6 +56,16 @@ type directoryPart struct {
 	body     string
 }
 
+func stageDirectory(t *testing.T, parent string, limits safetree.Limits, parts ...directoryPart) (*Submission, error) {
+	t.Helper()
+	reader := directoryReader(t, parts...)
+	first, err := reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return StageBrowserDirectory(context.Background(), parent, first, reader, limits)
+}
+
 func directoryReader(t *testing.T, parts ...directoryPart) *multipart.Reader {
 	t.Helper()
 	var body bytes.Buffer
@@ -103,11 +113,11 @@ func TestEquivalentZIPAndBrowserDirectoryHaveSameDigest(t *testing.T) {
 		t.Fatalf("ZIP root/label = %q/%q", zipSubmission.Root(), zipSubmission.Label())
 	}
 
-	directorySubmission, err := StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t,
+	directorySubmission, err := stageDirectory(t, t.TempDir(), limits,
 		directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/SKILL.md","size":74},{"index":1,"path":"sample/assets/data.txt","size":5}]`},
 		directoryPart{name: "file-0", filename: "ignored.md", body: string(testSkill)},
 		directoryPart{name: "file-1", filename: "also-ignored.txt", body: "asset"},
-	), limits)
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,10 +290,10 @@ func TestZIPAndDirectoryEnforceLimits(t *testing.T) {
 
 	limits = safetree.PrototypeLimits()
 	limits.MaxPathBytes = 16
-	_, err = StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t,
+	_, err = stageDirectory(t, t.TempDir(), limits,
 		directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/a-very-long-file","size":1}]`},
 		directoryPart{name: "file-0", body: "x"},
-	), limits)
+	)
 	if !errors.Is(err, safetree.ErrLimitExceeded) {
 		t.Fatalf("directory error = %v, want limit", err)
 	}
@@ -293,9 +303,9 @@ func TestEveryConfiguredTreeLimitIsEnforced(t *testing.T) {
 	t.Run("files", func(t *testing.T) {
 		limits := safetree.PrototypeLimits()
 		limits.MaxFiles = 1
-		_, err := StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t,
+		_, err := stageDirectory(t, t.TempDir(), limits,
 			directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/one","size":1},{"index":1,"path":"sample/two","size":1}]`},
-		), limits)
+		)
 		if !errors.Is(err, safetree.ErrLimitExceeded) {
 			t.Fatalf("error = %v, want file limit", err)
 		}
@@ -303,9 +313,9 @@ func TestEveryConfiguredTreeLimitIsEnforced(t *testing.T) {
 	t.Run("depth", func(t *testing.T) {
 		limits := safetree.PrototypeLimits()
 		limits.MaxDepth = 2
-		_, err := StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t,
+		_, err := stageDirectory(t, t.TempDir(), limits,
 			directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/nested/file","size":1}]`},
-		), limits)
+		)
 		if !errors.Is(err, safetree.ErrLimitExceeded) {
 			t.Fatalf("error = %v, want depth limit", err)
 		}
@@ -314,11 +324,11 @@ func TestEveryConfiguredTreeLimitIsEnforced(t *testing.T) {
 		limits := safetree.PrototypeLimits()
 		limits.MaxFileBytes = 4
 		limits.MaxExpandedBytes = 5
-		_, err := StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t,
+		_, err := stageDirectory(t, t.TempDir(), limits,
 			directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/one","size":3},{"index":1,"path":"sample/two","size":3}]`},
 			directoryPart{name: "file-0", filename: "one", body: "one"},
 			directoryPart{name: "file-1", filename: "two", body: "two"},
-		), limits)
+		)
 		if !errors.Is(err, safetree.ErrLimitExceeded) {
 			t.Fatalf("error = %v, want expanded-byte limit", err)
 		}
@@ -380,7 +390,7 @@ func TestBrowserDirectoryRejectsMalformedManifestAndPartSequence(t *testing.T) {
 	}
 	for name, parts := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := StageBrowserDirectory(context.Background(), t.TempDir(), directoryReader(t, parts...), safetree.PrototypeLimits())
+			_, err := stageDirectory(t, t.TempDir(), safetree.PrototypeLimits(), parts...)
 			if !errors.Is(err, ErrMalformedUpload) {
 				t.Fatalf("error = %v, want ErrMalformedUpload", err)
 			}

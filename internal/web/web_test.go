@@ -217,7 +217,6 @@ func (f *webFixture) uploadZIP(instructions string) string {
 	f.t.Helper()
 	request := multipartRequest(f.t, f.server.URL+"/candidates", []formPart{
 		{name: "namespace", body: []byte("team")},
-		{name: "kind", body: []byte("zip")},
 		{name: "archive", filename: "sample.zip", body: skillZIP(f.t, instructions)},
 	})
 	response := f.do(request, true)
@@ -360,7 +359,6 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 
 	uploadRequest := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
 		{name: "namespace", body: []byte("team")},
-		{name: "kind", body: []byte("zip")},
 		{name: "archive", filename: "sample.zip", body: skillZIP(t, "Denied upload.\n")},
 	})
 	mutations := map[string]func() *http.Response{
@@ -448,7 +446,6 @@ func TestEquivalentZIPAndDirectoryUploadsHaveSameReviewDigest(t *testing.T) {
 	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/<script>.txt","size":%d}]`, len(skill), len(asset))
 	request := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
 		{name: "namespace", body: []byte("team")},
-		{name: "kind", body: []byte("directory")},
 		{name: "manifest", body: []byte(manifest)},
 		{name: "file-0", filename: "SKILL.md", body: []byte(skill)},
 		{name: "file-1", filename: "not-the-path.txt", body: []byte(asset)},
@@ -523,7 +520,6 @@ func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {
 	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d}]`, (16<<20)+1)
 	request := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
 		{name: "namespace", body: []byte("team")},
-		{name: "kind", body: []byte("directory")},
 		{name: "manifest", body: []byte(manifest)},
 	})
 	response := fixture.do(request, true)
@@ -538,7 +534,6 @@ func TestUploadRequiresCSRFAndExactMultipartOrder(t *testing.T) {
 	fixture := newWebFixture(t)
 	validParts := []formPart{
 		{name: "namespace", body: []byte("team")},
-		{name: "kind", body: []byte("zip")},
 		{name: "archive", filename: "sample.zip", body: skillZIP(t, "Safe.\n")},
 	}
 	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", validParts), false)
@@ -547,7 +542,7 @@ func TestUploadRequiresCSRFAndExactMultipartOrder(t *testing.T) {
 		t.Fatalf("missing CSRF status = %d", response.StatusCode)
 	}
 
-	reordered := []formPart{validParts[1], validParts[0], validParts[2]}
+	reordered := []formPart{validParts[1], validParts[0]}
 	response = fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", reordered), true)
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()

@@ -261,20 +261,19 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
 		return
 	}
-	kindText, err := nextTextPart(body, "kind", 32)
-	if err != nil {
-		h.handleError(w, err)
+	part, nextErr := body.NextPart()
+	if nextErr != nil {
+		h.handleError(w, malformedRequest("a skill upload part must follow namespace", nextErr))
 		return
 	}
 
 	var submission *upload.Submission
 	var kind registry.UploadKind
-	switch kindText {
-	case "zip":
+	switch part.FormName() {
+	case "archive":
 		kind = registry.UploadZIP
-		part, nextErr := body.NextPart()
-		if nextErr != nil || part.FormName() != "archive" || part.FileName() == "" {
-			h.handleError(w, malformedRequest("an archive file part must follow kind", nextErr))
+		if part.FileName() == "" {
+			h.handleError(w, malformedRequest("archive part must carry a filename", nil))
 			return
 		}
 		submission, err = upload.StageZIP(r.Context(), h.options.StagingParent, part, part.FileName(), h.options.Limits)
@@ -286,11 +285,11 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 				err = malformedRequest("ZIP upload contains an extra multipart part", nextErr)
 			}
 		}
-	case "directory":
+	case "manifest":
 		kind = registry.UploadDirectory
-		submission, err = upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, body, h.options.Limits)
+		submission, err = upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, part, body, h.options.Limits)
 	default:
-		err = malformedRequest("kind must be zip or directory", nil)
+		err = malformedRequest("skill upload must contain an archive or a directory manifest", nil)
 	}
 	if err != nil {
 		h.handleError(w, err)

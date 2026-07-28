@@ -188,29 +188,25 @@ type manifestEntry struct {
 	Size  int64  `json:"size"`
 }
 
-func StageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits safetree.Limits) (_ *Submission, err error) {
-	if body == nil {
-		return nil, malformed("multipart reader is missing", nil)
+func StageBrowserDirectory(ctx context.Context, parent string, manifest *multipart.Part, body *multipart.Reader, limits safetree.Limits) (_ *Submission, err error) {
+	if manifest == nil || body == nil {
+		return nil, malformed("multipart directory parts are missing", nil)
 	}
 	if err := safetree.ValidateLimits(limits); err != nil {
 		return nil, fmt.Errorf("directory staging limits: %w", err)
 	}
-	part, err := body.NextPart()
-	if err != nil {
-		return nil, malformed("manifest must be the first directory part", err)
-	}
-	if part.FormName() != "manifest" || part.FileName() != "" {
+	if manifest.FormName() != "manifest" || manifest.FileName() != "" {
 		return nil, malformed("manifest must be the first directory part", nil)
 	}
 	manifestLimit := int64(limits.MaxFiles)*(int64(limits.MaxPathBytes)+96) + 2
-	manifestBytes, readErr := io.ReadAll(io.LimitReader(part, manifestLimit+1))
+	manifestBytes, readErr := io.ReadAll(io.LimitReader(manifest, manifestLimit+1))
 	if readErr != nil {
 		return nil, malformed("cannot read directory manifest", readErr)
 	}
 	if int64(len(manifestBytes)) > manifestLimit {
 		return nil, &safetree.LimitError{Limit: "manifest bytes", Max: manifestLimit, Actual: int64(len(manifestBytes))}
 	}
-	manifest, root, err := decodeManifest(manifestBytes, limits)
+	entries, root, err := decodeManifest(manifestBytes, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +220,7 @@ func StageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 			err = errors.Join(err, builder.Close())
 		}
 	}()
-	for _, entry := range manifest {
+	for _, entry := range entries {
 		part, nextErr := body.NextPart()
 		if nextErr != nil {
 			return nil, malformed(fmt.Sprintf("file-%d is missing", entry.Index), nextErr)
