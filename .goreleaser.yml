@@ -1,0 +1,72 @@
+version: 2
+
+project_name: ts-skills
+
+builds:
+  - id: ts-skills
+    main: ./cmd/ts-skills
+    binary: ts-skills
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/joshuadavidthomas/ts-skills/internal/version.Version={{ .Tag }}
+  - id: ts-skillsd
+    main: ./cmd/ts-skillsd
+    binary: ts-skillsd
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/joshuadavidthomas/ts-skills/internal/version.Version={{ .Tag }}
+
+archives:
+  - id: ts-skills
+    ids:
+      - ts-skills
+      - ts-skillsd
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+brews:
+  - name: ts-skills
+    ids:
+      - ts-skills
+    repository:
+      owner: joshuadavidthomas
+      name: homebrew-homebrew
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/joshuadavidthomas/ts-skills
+    description: "A private Agent Skills registry for your tailnet"
+    license: MIT
+    install: |
+      bin.install "ts-skills"
+      bin.install "ts-skillsd"
+    test: |
+      system "#{bin}/ts-skills", "version"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'

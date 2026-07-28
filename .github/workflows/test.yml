@@ -1,0 +1,38 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - .github/workflows/test.yml
+      - go.mod
+      - go.sum
+  pull_request:
+    paths:
+      - "**/*.go"
+      - .github/workflows/test.yml
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests
+        run: go test ./... -race -v
