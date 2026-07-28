@@ -45,6 +45,39 @@ func localClientForWhoIs(t *testing.T, response *apitype.WhoIsResponse, addresse
 	}
 }
 
+func TestNewTSNetServerCopiesConfigurationAndOwnsLogs(t *testing.T) {
+	var messages []string
+	logf := func(format string, _ ...any) { messages = append(messages, format) }
+	tags := []string{"tag:skills-registry"}
+	server := newTSNetServer(ServerConfig{
+		Hostname:      "registry",
+		StateDir:      "/state",
+		AuthKey:       "tskey-auth-test",
+		AdvertiseTags: tags,
+		Logf:          logf,
+	})
+	tags[0] = "tag:changed"
+
+	if server.Hostname != "registry" || server.Dir != "/state" || server.AuthKey != "tskey-auth-test" {
+		t.Fatalf("server fields = (%q, %q, %q)", server.Hostname, server.Dir, server.AuthKey)
+	}
+	if got := server.AdvertiseTags; len(got) != 1 || got[0] != "tag:skills-registry" {
+		t.Fatalf("advertise tags = %v", got)
+	}
+	server.Logf("backend diagnostic")
+	server.UserLogf("node status")
+	if got := strings.Join(messages, ", "); got != "backend diagnostic, node status" {
+		t.Fatalf("diagnostics = %q", got)
+	}
+
+	discard := newTSNetServer(ServerConfig{Hostname: "registry", StateDir: "/state"})
+	if discard.Logf == nil || discard.UserLogf == nil {
+		t.Fatal("nil diagnostics were passed through to tsnet defaults")
+	}
+	discard.Logf("discarded backend diagnostic")
+	discard.UserLogf("discarded node status")
+}
+
 func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 	var addresses []string
 	client := localClientForWhoIs(t, &apitype.WhoIsResponse{

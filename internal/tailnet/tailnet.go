@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"tailscale.com/client/local"
-	"tailscale.com/hostinfo"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 )
@@ -95,7 +93,9 @@ type ServerConfig struct {
 	StateDir      string
 	AuthKey       string
 	AdvertiseTags []string
-	Verbose       bool
+	// Logf receives both verbose backend diagnostics and user-facing tsnet
+	// status. A nil value suppresses both kinds of output.
+	Logf func(string, ...any)
 }
 
 // Server owns one embedded Tailscale node and its Tailnet-only TLS listener.
@@ -118,17 +118,7 @@ func ListenTLS(ctx context.Context, config ServerConfig) (_ *Server, err error) 
 		return nil, fmt.Errorf("start Tailnet server: state directory must be provided")
 	}
 
-	ts := &tsnet.Server{
-		Hostname:      config.Hostname,
-		Dir:           config.StateDir,
-		AuthKey:       config.AuthKey,
-		AdvertiseTags: append([]string(nil), config.AdvertiseTags...),
-		Logf:          func(string, ...any) {},
-	}
-	if config.Verbose {
-		ts.Logf = log.Printf
-	}
-	hostinfo.SetApp("ts-skillsd")
+	ts := newTSNetServer(config)
 	if err := ts.Start(); err != nil {
 		return nil, fmt.Errorf("start embedded Tailscale node: %w", err)
 	}
@@ -152,6 +142,21 @@ func ListenTLS(ctx context.Context, config ServerConfig) (_ *Server, err error) 
 	}
 	closeOnError = false
 	return &Server{server: ts, listener: listener}, nil
+}
+
+func newTSNetServer(config ServerConfig) *tsnet.Server {
+	logf := config.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return &tsnet.Server{
+		Hostname:      config.Hostname,
+		Dir:           config.StateDir,
+		AuthKey:       config.AuthKey,
+		AdvertiseTags: append([]string(nil), config.AdvertiseTags...),
+		Logf:          logf,
+		UserLogf:      logf,
+	}
 }
 
 func (s *Server) Listener() net.Listener {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skills/internal/daemon"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
+	"tailscale.com/hostinfo"
 )
 
 func main() {
@@ -25,6 +26,7 @@ func run(args []string) error {
 		return nil
 	}
 
+	hostinfo.SetApp("ts-skillsd")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

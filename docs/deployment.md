@@ -38,7 +38,7 @@ This project never modifies tailnet policy; ACLs, tags, and approval stay in you
 | `TS_SKILLSD_TAG` | Optional advertised tag, e.g. `tag:skills-registry`. |
 | `TS_SKILLSD_VERBOSE` | Enable embedded Tailscale backend logs for debugging. |
 
-For the first start, create a tagged, one-off, non-ephemeral auth key in the Tailscale admin console (pre-approved, if your tailnet uses device approval). tsnet reads the standard `TS_AUTHKEY` variable itself. For secret stores that deliver a file, set `TS_SKILLSD_AUTHKEY_FILE` instead; the file value takes precedence over `TS_AUTHKEY`.
+For the first start, create a tagged, one-off, non-ephemeral auth key in the Tailscale admin console (pre-approved, if your tailnet uses device approval). The daemon resolves `TS_SKILLSD_AUTHKEY_FILE` first, then `TS_AUTHKEY`, and passes that chosen key to tsnet. It does not use tsnet's other enrollment settings, including `TS_AUTH_KEY`, `TS_CLIENT_SECRET`, `TS_CLIENT_ID`, `TS_ID_TOKEN`, `TS_AUDIENCE`, `TSNET_FORCE_LOGIN`, or `TS_CONTROL_URL`. On a first start, those unsupported settings cause an error when neither supported key is set. Once `tsnet/tailscaled.state` holds the node key, the daemon ignores them; it starts from the saved identity instead.
 
 This example uses a private auth-key file:
 

@@ -3,9 +3,11 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -22,6 +24,8 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/storage"
 	"github.com/joshuadavidthomas/ts-skills/internal/tailnet"
 	"github.com/joshuadavidthomas/ts-skills/internal/web"
+	"tailscale.com/ipn"
+	"tailscale.com/types/persist"
 )
 
 const (
@@ -122,8 +126,9 @@ func isLoopbackHost(host string) bool {
 	return address != nil && address.IsLoopback()
 }
 
-// ConfigFromEnv reads daemon configuration and, when configured, reads the
-// first-enrollment auth key once from its file.
+// ConfigFromEnv reads daemon configuration. For first enrollment, it resolves
+// TS_SKILLSD_AUTHKEY_FILE before TS_AUTHKEY. Later starts need neither value
+// when the tsnet state file already contains an enrolled node key.
 func ConfigFromEnv() (Config, error) {
 	config := Config{
 		StateDir: os.Getenv("TS_SKILLSD_STATE_DIR"),
@@ -140,17 +145,98 @@ func ConfigFromEnv() (Config, error) {
 		}
 		config.Verbose = verbose
 	}
+	var err error
+	config, err = normalizeConfig(config)
+	if err != nil {
+		return Config{}, err
+	}
+	config.AuthKey, err = authKeyFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+	if config.AuthKey != "" {
+		return normalizeConfig(config)
+	}
+
+	hasState, err := tsnetStateHasNodeKey(filepath.Join(config.StateDir, "tsnet", "tailscaled.state"))
+	if err != nil {
+		return Config{}, err
+	}
+	if hasState {
+		return config, nil
+	}
+	if variable := unsupportedTsnetCredential(); variable != "" {
+		return Config{}, fmt.Errorf("%s is not supported for ts-skillsd enrollment; use TS_SKILLSD_AUTHKEY_FILE or TS_AUTHKEY", variable)
+	}
+	return Config{}, fmt.Errorf("first enrollment requires TS_SKILLSD_AUTHKEY_FILE or TS_AUTHKEY; no node key exists in %q", filepath.Join(config.StateDir, "tsnet", "tailscaled.state"))
+}
+
+func authKeyFromEnv() (string, error) {
 	if authKeyFile := os.Getenv("TS_SKILLSD_AUTHKEY_FILE"); authKeyFile != "" {
 		contents, err := os.ReadFile(authKeyFile)
 		if err != nil {
-			return Config{}, fmt.Errorf("read TS_SKILLSD_AUTHKEY_FILE %q: %w", authKeyFile, err)
+			return "", fmt.Errorf("read TS_SKILLSD_AUTHKEY_FILE %q: %w", authKeyFile, err)
 		}
-		config.AuthKey = strings.TrimSpace(string(contents))
-		if config.AuthKey == "" {
-			return Config{}, fmt.Errorf("TS_SKILLSD_AUTHKEY_FILE %q is empty", authKeyFile)
+		authKey := strings.TrimSpace(string(contents))
+		if authKey == "" {
+			return "", fmt.Errorf("TS_SKILLSD_AUTHKEY_FILE %q is empty", authKeyFile)
+		}
+		return authKey, nil
+	}
+	return strings.TrimSpace(os.Getenv("TS_AUTHKEY")), nil
+}
+
+func tsnetStateHasNodeKey(path string) (bool, error) {
+	contents, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read tsnet state %q: %w", path, err)
+	}
+	var state map[string][]byte
+	if err := json.Unmarshal(contents, &state); err != nil {
+		return false, fmt.Errorf("parse tsnet state %q: %w", path, err)
+	}
+	profileKey := ipn.StateKey(state[string(ipn.CurrentProfileKey(""))])
+	if profileKey == "" {
+		profileKey = ipn.LegacyGlobalDaemonStateKey
+	}
+	profile, found := state[string(profileKey)]
+	if !found || len(profile) == 0 {
+		return false, nil
+	}
+	prefs := ipn.NewPrefs()
+	prefs.Persist = &persist.Persist{}
+	if err := ipn.PrefsFromBytes(profile, prefs); err != nil {
+		return false, fmt.Errorf("parse tsnet profile %q in %q: %w", profileKey, path, err)
+	}
+	return !prefs.Persist.PrivateNodeKey.IsZero(), nil
+}
+
+var unsupportedTsnetCredentials = []string{
+	"TS_AUTH_KEY",
+	"TS_CLIENT_SECRET",
+	"TS_CLIENT_ID",
+	"TS_ID_TOKEN",
+	"TS_AUDIENCE",
+	"TSNET_FORCE_LOGIN",
+	"TS_CONTROL_URL",
+}
+
+func unsupportedTsnetCredential() string {
+	for _, variable := range unsupportedTsnetCredentials {
+		if os.Getenv(variable) != "" {
+			return variable
 		}
 	}
-	return normalizeConfig(config)
+	return ""
+}
+
+func clearTsnetCredentialEnvironment() {
+	for _, variable := range append([]string{"TS_AUTHKEY"}, unsupportedTsnetCredentials...) {
+		_ = os.Unsetenv(variable)
+	}
 }
 
 func normalizeConfig(config Config) (Config, error) {
@@ -442,11 +528,22 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 		}
 	}()
 
+	// tsnet also discovers credentials from its process environment. ConfigFromEnv
+	// resolved the only supported credential chain, so remove tsnet fallbacks
+	// before constructing the embedded node.
+	clearTsnetCredentialEnvironment()
+	logger := slog.Default()
+	var logf func(string, ...any)
+	if config.Verbose {
+		logf = func(format string, args ...any) {
+			logger.Info(fmt.Sprintf(format, args...))
+		}
+	}
 	tailConfig := tailnet.ServerConfig{
 		Hostname: config.Hostname,
 		StateDir: filepath.Join(config.StateDir, "tsnet"),
 		AuthKey:  config.AuthKey,
-		Verbose:  config.Verbose,
+		Logf:     logf,
 	}
 	if config.Tag != "" {
 		tailConfig.AdvertiseTags = []string{config.Tag}
@@ -475,6 +572,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
 		SecureCookies: true,
+		Logger:        logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)
@@ -519,6 +617,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
 		SecureCookies: false,
+		Logger:        slog.Default(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)

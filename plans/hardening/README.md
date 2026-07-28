@@ -46,7 +46,7 @@ never reused or renumbered.)
 | 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | DONE |
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | DONE |
 | 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | DONE |
-| 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | TODO |
+| 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | DONE |
 | 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | TODO |
 | 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | TODO |
 | 19 | [007](007-apply-portable-safetree-rules.md) | Apply Windows path restrictions on every platform | S | — (needs owner sign-off, see plan) | TODO |
@@ -79,6 +79,8 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 014 landed — production enrollment now resolves `TS_SKILLSD_AUTHKEY_FILE`, then `TS_AUTHKEY`, and only permits a credential-free start from an enrolled tsnet profile with a saved node key. On a first start it names unsupported tsnet credential inputs; after enrollment, daemon startup clears those inputs so tsnet cannot discover them. `ServerConfig` now carries diagnostics: daemon routes both backend and user status through its logger only when verbose, otherwise discards both. The adapter no longer changes process globals; `hostinfo.SetApp("ts-skillsd")` runs in the daemon binary. Deployment docs name the supported chain and rejected ambient inputs. Tests cover chain precedence, incomplete and enrolled state, ambient-input rules and cleanup, plus tsnet field/log mapping. `go test -race ./internal/daemon/ ./internal/tailnet/ -count=1`, `go build ./...` passed. Deviation: added `TSNET_FORCE_LOGIN` and `TS_CONTROL_URL` to the rejected inputs because each changes tsnet startup outside daemon configuration. Next: 019.
 
 - **2026-07-28**: 013 landed — `protocol` now defines the v1 rootless ZIP contract: classic, single-disk, Store-only entries with a 256-byte per-entry metadata allowance. `TreeArchiveCeiling` derives a safe envelope from tree limits, including overflow protection; client and web use it, and web rejects an archive that exceeds it. Client rejects deflated entries alongside malformed ZIP forms. Archive rejection tests now run through `Remote.Fetch` over HTTP; the direct decode test remains only for the deterministic cancellation mapping it covers. The web download test proves the encoder's output stays below the shared ceiling and contains Store-only entries. `go test -race ./internal/protocol/ ./internal/client/ ./internal/web/ -count=1` passed. Deviation: `internal/web/web_test.go` joined the scope because the plan's stated web-conformance test required it; the plan scope now records that file. Next: 014.
 

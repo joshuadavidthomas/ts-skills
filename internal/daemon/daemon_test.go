@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime/multipart"
@@ -17,6 +18,9 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/storage"
+	"tailscale.com/ipn"
+	"tailscale.com/types/key"
+	"tailscale.com/types/persist"
 )
 
 type recordingListener struct {
@@ -605,8 +609,51 @@ func TestRunClosesIncompleteRuntime(t *testing.T) {
 	}
 }
 
+func writeEnrolledTSNetState(t *testing.T, stateDir string) {
+	t.Helper()
+	prefs := ipn.NewPrefs()
+	prefs.Persist = &persist.Persist{PrivateNodeKey: key.NewNode()}
+	profileKey := ipn.StateKey("profile-test")
+	state, err := json.Marshal(map[string][]byte{
+		string(ipn.CurrentProfileKey("")): []byte(profileKey),
+		string(profileKey):                prefs.ToBytes(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(stateDir, "tsnet", "tailscaled.state")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClearTsnetCredentialEnvironment(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "tskey-auth-test")
+	for _, variable := range unsupportedTsnetCredentials {
+		t.Setenv(variable, "configured")
+	}
+
+	clearTsnetCredentialEnvironment()
+
+	if value := os.Getenv("TS_AUTHKEY"); value != "" {
+		t.Fatalf("TS_AUTHKEY = %q after cleanup", value)
+	}
+	for _, variable := range unsupportedTsnetCredentials {
+		if value := os.Getenv(variable); value != "" {
+			t.Errorf("%s = %q after cleanup", variable, value)
+		}
+	}
+}
+
 func TestConfigFromEnvReadsEnrollmentKeyOnce(t *testing.T) {
 	stateDir := t.TempDir()
+	t.Setenv("TS_AUTHKEY", "")
+	for _, variable := range unsupportedTsnetCredentials {
+		t.Setenv(variable, "")
+	}
 	authKeyPath := filepath.Join(t.TempDir(), "auth.key")
 	if err := os.WriteFile(authKeyPath, []byte("  tskey-auth-test\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -637,6 +684,10 @@ func TestConfigFromEnvReadsEnrollmentKeyOnce(t *testing.T) {
 
 func TestConfigFromEnvRequiresStateDirectory(t *testing.T) {
 	t.Setenv("TS_SKILLSD_STATE_DIR", "")
+	t.Setenv("TS_AUTHKEY", "")
+	for _, variable := range unsupportedTsnetCredentials {
+		t.Setenv(variable, "")
+	}
 	t.Setenv("TS_SKILLSD_HOSTNAME", "")
 	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
 	t.Setenv("TS_SKILLSD_TAG", "")
@@ -647,6 +698,10 @@ func TestConfigFromEnvRequiresStateDirectory(t *testing.T) {
 }
 
 func TestConfigFromEnvParsesVerbose(t *testing.T) {
+	t.Setenv("TS_AUTHKEY", "tskey-auth-test")
+	for _, variable := range unsupportedTsnetCredentials {
+		t.Setenv(variable, "")
+	}
 	for value, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true} {
 		t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
 		t.Setenv("TS_SKILLSD_VERBOSE", value)
@@ -663,6 +718,146 @@ func TestConfigFromEnvParsesVerbose(t *testing.T) {
 	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TS_SKILLSD_VERBOSE") {
 		t.Errorf("ConfigFromEnv accepted a non-boolean TS_SKILLSD_VERBOSE: %v", err)
 	}
+}
+
+func TestConfigFromEnvResolvesEnrollmentCredentials(t *testing.T) {
+	setEnv := func(t *testing.T, stateDir string) {
+		t.Helper()
+		t.Setenv("TS_SKILLSD_STATE_DIR", stateDir)
+		t.Setenv("TS_SKILLSD_HOSTNAME", "")
+		t.Setenv("TS_SKILLSD_TAG", "")
+		t.Setenv("TS_SKILLSD_VERBOSE", "")
+		t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
+		t.Setenv("TS_AUTHKEY", "")
+		for _, variable := range unsupportedTsnetCredentials {
+			t.Setenv(variable, "")
+		}
+	}
+
+	t.Run("file takes precedence over TS_AUTHKEY", func(t *testing.T) {
+		stateDir := t.TempDir()
+		setEnv(t, stateDir)
+		authKeyPath := filepath.Join(t.TempDir(), "auth.key")
+		if err := os.WriteFile(authKeyPath, []byte("tskey-auth-file"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TS_SKILLSD_AUTHKEY_FILE", authKeyPath)
+		t.Setenv("TS_AUTHKEY", "tskey-auth-environment")
+
+		config, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.AuthKey != "tskey-auth-file" {
+			t.Fatalf("auth key = %q, want file value", config.AuthKey)
+		}
+	})
+
+	t.Run("TS_AUTHKEY supplies first enrollment", func(t *testing.T) {
+		setEnv(t, t.TempDir())
+		t.Setenv("TS_AUTHKEY", " tskey-auth-environment\n")
+
+		config, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.AuthKey != "tskey-auth-environment" {
+			t.Fatalf("auth key = %q, want environment value", config.AuthKey)
+		}
+	})
+
+	t.Run("empty file fails instead of falling back to TS_AUTHKEY", func(t *testing.T) {
+		setEnv(t, t.TempDir())
+		authKeyPath := filepath.Join(t.TempDir(), "auth.key")
+		if err := os.WriteFile(authKeyPath, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("TS_SKILLSD_AUTHKEY_FILE", authKeyPath)
+		t.Setenv("TS_AUTHKEY", "tskey-auth-environment")
+
+		_, err := ConfigFromEnv()
+		if err == nil || !strings.Contains(err.Error(), "is empty") {
+			t.Fatalf("ConfigFromEnv error = %v, want empty file failure", err)
+		}
+	})
+
+	t.Run("supported credential wins over unsupported settings", func(t *testing.T) {
+		setEnv(t, t.TempDir())
+		t.Setenv("TS_AUTHKEY", "tskey-auth-environment")
+		t.Setenv("TS_CLIENT_SECRET", "tskey-client-secret")
+
+		config, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.AuthKey != "tskey-auth-environment" {
+			t.Fatalf("auth key = %q, want supported credential", config.AuthKey)
+		}
+	})
+
+	t.Run("stored node key needs no credential", func(t *testing.T) {
+		stateDir := t.TempDir()
+		setEnv(t, stateDir)
+		writeEnrolledTSNetState(t, stateDir)
+
+		config, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if config.AuthKey != "" {
+			t.Fatalf("auth key = %q, want no first-enrollment key", config.AuthKey)
+		}
+	})
+
+	t.Run("unsupported credential fails without stored state", func(t *testing.T) {
+		setEnv(t, t.TempDir())
+		t.Setenv("TS_CLIENT_SECRET", "tskey-client-secret")
+
+		_, err := ConfigFromEnv()
+		if err == nil || !strings.Contains(err.Error(), "TS_CLIENT_SECRET") {
+			t.Fatalf("ConfigFromEnv error = %v, want unsupported variable named", err)
+		}
+	})
+
+	t.Run("unsupported credential is ignored with stored state", func(t *testing.T) {
+		stateDir := t.TempDir()
+		setEnv(t, stateDir)
+		writeEnrolledTSNetState(t, stateDir)
+		t.Setenv("TS_AUTH_KEY", "tskey-auth-legacy")
+
+		if _, err := ConfigFromEnv(); err != nil {
+			t.Fatalf("ConfigFromEnv with stored state: %v", err)
+		}
+	})
+
+	t.Run("machine key without enrollment fails", func(t *testing.T) {
+		stateDir := t.TempDir()
+		setEnv(t, stateDir)
+		statePath := filepath.Join(stateDir, "tsnet", "tailscaled.state")
+		if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		state, err := json.Marshal(map[string][]byte{"_machinekey": []byte("private-machine-key")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(statePath, state, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = ConfigFromEnv()
+		if err == nil || !strings.Contains(err.Error(), "first enrollment requires") {
+			t.Fatalf("ConfigFromEnv error = %v, want missing enrollment credentials", err)
+		}
+	})
+
+	t.Run("missing credential and state fails", func(t *testing.T) {
+		setEnv(t, t.TempDir())
+		_, err := ConfigFromEnv()
+		if err == nil || !strings.Contains(err.Error(), "first enrollment requires") {
+			t.Fatalf("ConfigFromEnv error = %v, want missing enrollment credentials", err)
+		}
+	})
 }
 
 func TestPersistentCSRFKey(t *testing.T) {
