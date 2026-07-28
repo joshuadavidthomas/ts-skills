@@ -1,4 +1,4 @@
-# ts-skill-registry
+# ts-skills
 
 A private [Agent Skills](docs/research/agentskills-spec.md) registry for your tailnet.
 
@@ -61,3 +61,7 @@ go test ./...
 ```
 
 The test suite needs no Tailnet credentials. See the [development guide](docs/development.md) for focused tests, race and cross-platform checks, and how dev mode is wired.
+
+## License
+
+ts-skills is licensed under the MIT license. See the [`LICENSE`](LICENSE) file for more information.

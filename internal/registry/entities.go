@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
 type Candidate struct {

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/web"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/web"
 	"tailscale.com/client/local"
 	"tailscale.com/hostinfo"
 	"tailscale.com/tailcfg"

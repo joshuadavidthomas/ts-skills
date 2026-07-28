@@ -21,11 +21,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/gorilla/csrf"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/upload"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/upload"
 )
 
 const maxRequestBytes int64 = 32 << 20

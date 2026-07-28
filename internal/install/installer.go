@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 var (

@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 var ErrTreesOpen = errors.New("registry trees remain open")

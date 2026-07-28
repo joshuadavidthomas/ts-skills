@@ -17,11 +17,11 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/storage"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/tailnet"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/web"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/storage"
+	"github.com/joshuadavidthomas/ts-skills/internal/tailnet"
+	"github.com/joshuadavidthomas/ts-skills/internal/web"
 )
 
 const (

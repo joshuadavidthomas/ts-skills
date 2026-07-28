@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"golang.org/x/text/unicode/norm"
 )
 

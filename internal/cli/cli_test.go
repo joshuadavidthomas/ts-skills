@@ -13,8 +13,8 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 )
 
 func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {

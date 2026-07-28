@@ -1,4 +1,4 @@
-module github.com/joshuadavidthomas/ts-skill-registry
+module github.com/joshuadavidthomas/ts-skills
 
 go 1.26.5
 

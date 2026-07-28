@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/storage"
+	"github.com/joshuadavidthomas/ts-skills/internal/storage"
 )
 
 type recordingListener struct {

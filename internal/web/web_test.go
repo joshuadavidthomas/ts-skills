@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/storage"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/storage"
 )
 
 type fixedActorResolver struct{ identity Identity }

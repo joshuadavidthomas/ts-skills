@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 const (

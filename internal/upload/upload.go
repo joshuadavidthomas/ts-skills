@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 var ErrMalformedUpload = errors.New("malformed skill upload")

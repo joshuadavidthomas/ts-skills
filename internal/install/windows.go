@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 func rejectWindowsPathComponents(name string) error {

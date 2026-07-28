@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/cli"
+	"github.com/joshuadavidthomas/ts-skills/internal/cli"
 )
 
 func main() {

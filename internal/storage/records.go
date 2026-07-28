@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id registry.CandidateID) (registry.Candidate, error) {

@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/daemon"
+	"github.com/joshuadavidthomas/ts-skills/internal/daemon"
 )
 
 func main() {

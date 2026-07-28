@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
 func TestAcquireWriterDurablyCreatesManagedAncestors(t *testing.T) {

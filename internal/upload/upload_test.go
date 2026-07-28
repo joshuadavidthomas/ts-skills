@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 var testSkill = []byte("---\nname: sample\ndescription: Sample skill\n---\n# Instructions\nDo nothing.\n")

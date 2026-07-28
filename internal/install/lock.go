@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
 

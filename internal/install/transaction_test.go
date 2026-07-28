@@ -12,8 +12,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func testPublication(t *testing.T, namespaceText, nameText, body string) (registry.SkillID, registry.PublicationID, fstest.MapFS) {

@@ -10,13 +10,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/client"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/config"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/install"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/client"
+	"github.com/joshuadavidthomas/ts-skills/internal/config"
+	"github.com/joshuadavidthomas/ts-skills/internal/install"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {

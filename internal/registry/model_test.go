@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
 func testValues(t *testing.T) (SkillID, CandidateID, Actor, Provenance) {
