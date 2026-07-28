@@ -42,7 +42,7 @@ never reused or renumbered.)
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | DONE |
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | DONE |
 | 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | DONE |
-| 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | TODO |
+| 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | DONE |
 | 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | TODO |
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | TODO |
 | 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | TODO |

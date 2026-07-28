@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -248,12 +249,12 @@ func TestPreparedMissingTreeRestoreCleansEqualLockOperationAndRefetches(t *testi
 		t.Fatalf("operations after interruption = %d, %v", len(operations), err)
 	}
 	operationDir := filepath.Join(project.operationsDir(), operations[0].Name())
-	journal, _, _, _, err := readJournal(operationDir, operations[0].Name())
+	operation, err := readJournal(operationDir, operations[0].Name())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if journal.Phase != "prepared" || journal.OldLockHash != journal.NewLockHash {
-		t.Fatalf("prepared journal phase and lock hashes = %q, %q, %q", journal.Phase, journal.OldLockHash, journal.NewLockHash)
+	if operation.phase != recoveryPhasePrepared || operation.oldLock == nil || operation.oldLock.hash != operation.newLock.hash {
+		t.Fatalf("prepared recovery operation = %#v", operation)
 	}
 	if _, err := os.Stat(filepath.Join(operationDir, stagingName)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("prepared staging remains: %v", err)
@@ -678,6 +679,266 @@ func requirePointPrefix(t *testing.T, points []string, prefix string) {
 	t.Fatalf("no transaction point has prefix %q", prefix)
 }
 
+// crashWindows names durable mutation boundaries. Add one when a transaction
+// gains another mutating step; this list must not be inferred from test hooks.
+var crashWindows = []string{
+	"after-rename-stage-operation",
+	"after-write-new-lock",
+	"after-journal-write-prepared",
+	"after-rename-backup-destination",
+	"after-journal-write-backup-created",
+	"after-rename-swap-destination",
+	"after-journal-write-destination-swapped",
+	"after-rename-project-lock",
+	"after-journal-write-lock-committed",
+	"after-remove-cleanup-new-lock",
+}
+
+func TestTransactionCrashesRecoverThroughPublicInstall(t *testing.T) {
+	for _, window := range crashWindows {
+		t.Run(window, func(t *testing.T) {
+			project, installer, _, skill := prepareUpdate(t)
+			command := exec.Command(os.Args[0], "-test.run=^TestTransactionCrashHelper$")
+			command.Env = append(os.Environ(), "TS_SKILLS_CRASH_HELPER=1", "TS_SKILLS_CRASH_WINDOW="+window, "TS_SKILLS_CRASH_PROJECT="+project.Root())
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("crash helper: %v\n%s", err, output)
+			}
+			otherName, err := agentskill.ParseName("other")
+			if err != nil {
+				t.Fatal(err)
+			}
+			namespace, err := registry.ParseNamespace("team")
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherSkill, err := registry.NewSkillID(namespace, otherName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherRequirement, err := Current(otherSkill)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := installer.Install(context.Background(), project, otherRequirement); !errors.Is(err, ErrIdentityMismatch) {
+				t.Fatalf("public recovery re-entry error = %v, want identity mismatch", err)
+			}
+			assertProjectAgreement(t, project, skill)
+		})
+	}
+}
+
+func TestRestoreCrashRecoversThroughPublicRestore(t *testing.T) {
+	project, installer, _, skill := prepareInstalledSkill(t)
+	if err := os.RemoveAll(project.destination(skill.Name().String())); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestTransactionCrashHelper$")
+	command.Env = append(os.Environ(), "TS_SKILLS_CRASH_HELPER=1", "TS_SKILLS_CRASH_MODE=restore", "TS_SKILLS_CRASH_WINDOW=after-journal-write-prepared", "TS_SKILLS_CRASH_PROJECT="+project.Root())
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("crash helper: %v\n%s", err, output)
+	}
+	if err := installer.Restore(context.Background(), project); err != nil {
+		t.Fatalf("public recovery restore: %v", err)
+	}
+	assertProjectAgreement(t, project, skill)
+}
+
+func TestTransactionCrashHelper(t *testing.T) {
+	if os.Getenv("TS_SKILLS_CRASH_HELPER") != "1" {
+		return
+	}
+	project, err := OpenProject(os.Getenv("TS_SKILLS_CRASH_PROJECT"))
+	if err != nil {
+		os.Exit(2)
+	}
+	body := "new"
+	if os.Getenv("TS_SKILLS_CRASH_MODE") == "restore" {
+		body = "old"
+	}
+	skill, publication, files := testPublication(t, "team", "sample", body)
+	remote := &scriptedRemote{publication: publication, files: files}
+	installer, err := NewInstaller(remote)
+	if err != nil {
+		os.Exit(2)
+	}
+	requirement, err := Current(skill)
+	if err != nil {
+		os.Exit(2)
+	}
+	window := os.Getenv("TS_SKILLS_CRASH_WINDOW")
+	transactionFailure = func(point string) error {
+		if point == window {
+			os.Exit(0) // Deliberately skip every defer in Install and its writer.
+		}
+		return nil
+	}
+	if os.Getenv("TS_SKILLS_CRASH_MODE") == "restore" {
+		_ = installer.Restore(context.Background(), project)
+	} else {
+		_, _ = installer.Install(context.Background(), project, requirement)
+	}
+	os.Exit(2)
+}
+
+func TestReadJournalRejectsCrossFieldCorruption(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*transactionJournal, string)
+	}{
+		{
+			name: "new snapshot selects another digest",
+			mutate: func(journal *transactionJournal, operationDir string) {
+				_, publication, _ := testPublication(t, "team", "sample", "other")
+				writeLockSnapshot(t, filepath.Join(operationDir, newLockName), publication)
+				journal.NewLockHash = lockSnapshotHash(mustReadFile(t, filepath.Join(operationDir, newLockName)))
+			},
+		},
+		{
+			name: "new snapshot changes another skill",
+			mutate: func(journal *transactionJournal, operationDir string) {
+				_, publication, _ := testPublication(t, "team", "sample", "new")
+				_, other, _ := testPublication(t, "team", "other", "other")
+				writeLockSnapshot(t, filepath.Join(operationDir, newLockName), publication, other)
+				journal.NewLockHash = lockSnapshotHash(mustReadFile(t, filepath.Join(operationDir, newLockName)))
+			},
+		},
+		{
+			name: "old snapshot selects another digest",
+			mutate: func(journal *transactionJournal, operationDir string) {
+				_, publication, _ := testPublication(t, "team", "sample", "other")
+				writeLockSnapshot(t, filepath.Join(operationDir, oldLockName), publication)
+				journal.OldLockHash = lockSnapshotHash(mustReadFile(t, filepath.Join(operationDir, oldLockName)))
+			},
+		},
+		{
+			name: "destination without old provenance",
+			mutate: func(journal *transactionJournal, _ string) {
+				journal.HadDestination = true
+				journal.OldDigest = ""
+			},
+		},
+		{
+			name:   "unknown phase",
+			mutate: func(journal *transactionJournal, _ string) { journal.Phase = "lost" },
+		},
+		{
+			name: "truncated new snapshot",
+			mutate: func(_ *transactionJournal, operationDir string) {
+				if err := os.WriteFile(filepath.Join(operationDir, newLockName), []byte("schema ="), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operationDir, operation, journal := validRecoveryJournal(t)
+			test.mutate(&journal, operationDir)
+			if err := writeJournal(operationDir, journal); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readJournal(operationDir, operation); !errors.Is(err, ErrRecoveryRequired) {
+				t.Fatalf("readJournal error = %v, want ErrRecoveryRequired", err)
+			}
+		})
+	}
+}
+
+func TestPreChangeRecoveryFixtureRestoresThroughPublicAPI(t *testing.T) {
+	const fixture = "testdata/prechange-recovery"
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareManagedDirectories(project); err != nil {
+		t.Fatal(err)
+	}
+	operation := strings.Repeat("c", 32)
+	operationDir := filepath.Join(project.operationsDir(), operation)
+	if err := os.Mkdir(operationDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{journalName, oldLockName, newLockName} {
+		contents := mustReadFile(t, filepath.Join(fixture, name))
+		if err := os.WriteFile(filepath.Join(operationDir, name), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(project.destination("sample"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project.destination("sample"), "SKILL.md"), mustReadFile(t, filepath.Join(fixture, "SKILL.md")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project.LockPath(), mustReadFile(t, filepath.Join(fixture, newLockName)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	skill, publication, files := testPublication(t, "team", "sample", "new")
+	installer, err := NewInstaller(&scriptedRemote{publication: publication, files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := installer.Restore(context.Background(), project); err != nil {
+		t.Fatalf("restore pre-change journal: %v", err)
+	}
+	assertProjectAgreement(t, project, skill)
+}
+
+func validRecoveryJournal(t *testing.T) (string, string, transactionJournal) {
+	t.Helper()
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareManagedDirectories(project); err != nil {
+		t.Fatal(err)
+	}
+	operation := strings.Repeat("c", 32)
+	operationDir := filepath.Join(project.operationsDir(), operation)
+	if err := os.Mkdir(operationDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	skill, oldPublication, _ := testPublication(t, "team", "sample", "old")
+	_, newPublication, _ := testPublication(t, "team", "sample", "new")
+	writeLockSnapshot(t, filepath.Join(operationDir, oldLockName), oldPublication)
+	writeLockSnapshot(t, filepath.Join(operationDir, newLockName), newPublication)
+	oldBytes := mustReadFile(t, filepath.Join(operationDir, oldLockName))
+	newBytes := mustReadFile(t, filepath.Join(operationDir, newLockName))
+	return operationDir, operation, transactionJournal{Schema: 2, Operation: operation, Skill: skill.String(), OldDigest: oldPublication.Tree().String(), NewDigest: newPublication.Tree().String(), OldLockHash: lockSnapshotHash(oldBytes), NewLockHash: lockSnapshotHash(newBytes), HadLock: true, HadDestination: true, Phase: "prepared"}
+}
+
+func writeLockSnapshot(t *testing.T, path string, publications ...registry.PublicationID) {
+	t.Helper()
+	locked := make([]LockedSkill, 0, len(publications))
+	for _, publication := range publications {
+		entry, err := NewLockedSkill(publication)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locked = append(locked, entry)
+	}
+	lock, err := NewLock(locked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contents bytes.Buffer
+	if err := EncodeLock(&contents, lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, contents.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return contents
+}
+
 func failOnceAt(wanted string) func(string) error {
 	failed := false
 	return func(point string) error {
@@ -698,6 +959,11 @@ func reacquireAndAssertAgreement(t *testing.T, project Project, skill registry.S
 	if err := writer.close(); err != nil {
 		t.Fatal(err)
 	}
+	assertProjectAgreement(t, project, skill)
+}
+
+func assertProjectAgreement(t *testing.T, project Project, skill registry.SkillID) {
+	t.Helper()
 	lockBytes, err := os.ReadFile(project.LockPath())
 	if err != nil {
 		t.Fatal(err)

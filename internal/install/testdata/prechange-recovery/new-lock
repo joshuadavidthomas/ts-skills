@@ -1,0 +1,5 @@
+schema = 1
+
+[[skills]]
+skill = "team/sample"
+digest = "sha256:7dbb6a9b4fa8aebc8a126a09c7b1e5a295946aed3df31e6a0e507c00c1052c3e"

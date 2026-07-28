@@ -29,6 +29,8 @@ const (
 	newLockName = "new-lock"
 )
 
+// transactionJournal is the stable on-disk encoding. Recovery converts it
+// into recoveryOperation before it makes any decision from its contents.
 type transactionJournal struct {
 	Schema         int    `json:"schema"`
 	Operation      string `json:"operation"`
@@ -40,6 +42,89 @@ type transactionJournal struct {
 	HadLock        bool   `json:"had_lock"`
 	HadDestination bool   `json:"had_destination"`
 	Phase          string `json:"phase"`
+}
+
+type recoveryPhase uint8
+
+const (
+	recoveryPhaseInvalid recoveryPhase = iota
+	recoveryPhasePrepared
+	recoveryPhaseBackupCreated
+	recoveryPhaseDestinationSwapped
+	recoveryPhaseLockCommitted
+	recoveryPhaseCleanupCommitted
+	recoveryPhaseCleanupRolledBack
+)
+
+type lockSnapshot struct {
+	contents []byte
+	lock     Lock
+}
+
+type recoveryLock struct {
+	hash     string
+	snapshot *lockSnapshot
+}
+
+type recoveryOperation struct {
+	id             string
+	skill          registry.SkillID
+	phase          recoveryPhase
+	oldDigest      *agentskill.TreeDigest
+	newDigest      agentskill.TreeDigest
+	oldLock        *recoveryLock
+	newLock        recoveryLock
+	hadDestination bool
+}
+
+func (o recoveryOperation) hadLock() bool { return o.oldLock != nil }
+
+func (o recoveryOperation) journalAt(phase recoveryPhase) transactionJournal {
+	journal := transactionJournal{
+		Schema:         2,
+		Operation:      o.id,
+		Skill:          o.skill.String(),
+		NewDigest:      o.newDigest.String(),
+		NewLockHash:    o.newLock.hash,
+		HadLock:        o.hadLock(),
+		HadDestination: o.hadDestination,
+		Phase:          phase.String(),
+	}
+	if o.oldDigest != nil {
+		journal.OldDigest = o.oldDigest.String()
+	}
+	if o.oldLock != nil {
+		journal.OldLockHash = o.oldLock.hash
+	}
+	return journal
+}
+
+func (p recoveryPhase) String() string {
+	switch p {
+	case recoveryPhasePrepared:
+		return "prepared"
+	case recoveryPhaseBackupCreated:
+		return "backup-created"
+	case recoveryPhaseDestinationSwapped:
+		return "destination-swapped"
+	case recoveryPhaseLockCommitted:
+		return "lock-committed"
+	case recoveryPhaseCleanupCommitted:
+		return "cleanup-committed"
+	case recoveryPhaseCleanupRolledBack:
+		return "cleanup-rolled-back"
+	default:
+		return ""
+	}
+}
+
+func parseRecoveryPhase(value string) recoveryPhase {
+	for phase := recoveryPhasePrepared; phase <= recoveryPhaseCleanupRolledBack; phase++ {
+		if phase.String() == value {
+			return phase
+		}
+	}
+	return recoveryPhaseInvalid
 }
 
 // transactionFailure is a package-private test seam. Production leaves it nil.
@@ -558,7 +643,7 @@ const (
 )
 
 func (w *projectWriter) recoverOperation(operationDir, operation string) error {
-	journal, skill, oldDigest, newDigest, err := readJournal(operationDir, operation)
+	op, err := readJournal(operationDir, operation)
 	if err != nil {
 		return err
 	}
@@ -567,38 +652,26 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if err != nil {
 		return recoveryError("project lock cannot be read", err)
 	}
+	var actualLock *lockSnapshot
 	if lockExists {
-		if _, err := DecodeLock(bytes.NewReader(actualLockBytes)); err != nil {
+		lock, err := DecodeLock(bytes.NewReader(actualLockBytes))
+		if err != nil {
 			return recoveryError("project lock is invalid", err)
 		}
+		actualLock = &lockSnapshot{contents: actualLockBytes, lock: lock}
 	}
 
-	destination := w.project.destination(skill.Name().String())
+	destination := w.project.destination(op.skill.Name().String())
 	backup := filepath.Join(operationDir, backupName)
 	staging := filepath.Join(operationDir, stagingName)
-	hasOldDigest := journal.OldDigest != ""
-	destinationState, err := classifyTree(destination, oldDigest, newDigest, hasOldDigest)
+	destinationState, err := classifyTree(destination, op.oldDigest, op.newDigest)
 	if err != nil {
 		return recoveryError("destination matches neither recorded tree", err)
 	}
 
-	oldLockPath := filepath.Join(operationDir, oldLockName)
-	newLockPath := filepath.Join(operationDir, newLockName)
-	_, oldLockExists, err := readLockSnapshot(oldLockPath, journal.OldLockHash)
-	if err != nil {
-		return recoveryError("old lock snapshot is invalid", err)
-	}
-	if oldLockExists != journal.HadLock && oldLockExists {
-		return recoveryError("unexpected old lock snapshot", nil)
-	}
-	_, newLockExists, err := readLockSnapshot(newLockPath, journal.NewLockHash)
-	if err != nil {
-		return recoveryError("new lock snapshot is invalid", err)
-	}
-
-	lockIsNew := lockExists && lockSnapshotHash(actualLockBytes) == journal.NewLockHash
-	lockIsOld := journal.HadLock && lockExists && lockSnapshotHash(actualLockBytes) == journal.OldLockHash
-	lockIsAbsentOld := !journal.HadLock && !lockExists
+	lockIsNew := actualLock != nil && lockSnapshotHash(actualLock.contents) == op.newLock.hash && op.validateLockSelection(actualLock, op.newDigest, true) == nil
+	lockIsOld := actualLock != nil && op.oldLock != nil && lockSnapshotHash(actualLock.contents) == op.oldLock.hash && op.validateOldLock(actualLock) == nil
+	lockIsAbsentOld := op.oldLock == nil && !lockExists
 	if !lockIsNew && !lockIsOld && !lockIsAbsentOld {
 		return recoveryError("project lock matches neither exact recorded state", nil)
 	}
@@ -607,39 +680,39 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	// validate the unchanged lock.
 	lockSnapshotsEqual := lockIsNew && lockIsOld
 
-	switch journal.Phase {
-	case "cleanup-committed":
+	switch op.phase {
+	case recoveryPhaseCleanupCommitted:
 		if !lockIsNew || destinationState != treeNew {
 			return recoveryError("committed cleanup state no longer matches its final plan", nil)
 		}
-		return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
-	case "cleanup-rolled-back":
+		return finishRecovery(w.project, operationDir, op, destination, treeNew, recoveryPhaseCleanupCommitted)
+	case recoveryPhaseCleanupRolledBack:
 		oldDestinationState := treeAbsent
-		if journal.HadDestination {
+		if op.hadDestination {
 			oldDestinationState = treeOld
 		}
 		if (!lockIsOld && !lockIsAbsentOld) || destinationState != oldDestinationState {
 			return recoveryError("rolled-back cleanup state no longer matches its final plan", nil)
 		}
-		return finishRecovery(w.project, operationDir, operation, journal, destination, oldDestinationState, "cleanup-rolled-back")
-	case "lock-committed":
+		return finishRecovery(w.project, operationDir, op, destination, oldDestinationState, recoveryPhaseCleanupRolledBack)
+	case recoveryPhaseLockCommitted:
 		if lockIsNew && destinationState == treeNew {
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
+			return finishRecovery(w.project, operationDir, op, destination, treeNew, recoveryPhaseCleanupCommitted)
 		}
 	}
 
-	if (journal.HadLock && !oldLockExists) || !newLockExists {
+	if (op.oldLock != nil && op.oldLock.snapshot == nil) || op.newLock.snapshot == nil {
 		return recoveryError("lock snapshots were removed before cleanup was committed", nil)
 	}
 
-	backupState, err := classifyTree(backup, oldDigest, newDigest, hasOldDigest)
-	if hasOldDigest && oldDigest == newDigest && backupState == treeNew {
+	backupState, err := classifyTree(backup, op.oldDigest, op.newDigest)
+	if op.oldDigest != nil && *op.oldDigest == op.newDigest && backupState == treeNew {
 		backupState = treeOld
 	}
 	if err != nil || (backupState != treeAbsent && backupState != treeOld) {
 		return recoveryError("backup matches neither recorded old tree nor absence", err)
 	}
-	stagingState, err := classifyTree(staging, oldDigest, newDigest, hasOldDigest)
+	stagingState, err := classifyTree(staging, op.oldDigest, op.newDigest)
 	if err != nil || (stagingState != treeAbsent && stagingState != treeNew) {
 		return recoveryError("staging matches neither recorded new tree nor absence", err)
 	}
@@ -647,25 +720,19 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	if lockIsNew {
 		switch {
 		case destinationState == treeNew:
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
+			return finishRecovery(w.project, operationDir, op, destination, treeNew, recoveryPhaseCleanupCommitted)
 		case destinationState == treeAbsent && stagingState == treeNew:
 			if err := durableRename(staging, destination, w.project.SkillsDir(), "recover-new-destination"); err != nil {
 				return err
 			}
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
-		case journal.Phase == "prepared" && lockSnapshotsEqual && !journal.HadDestination && destinationState == treeAbsent && stagingState == treeAbsent && backupState == treeAbsent:
-			// Restore can prepare an install for a missing destination without
-			// changing the lock. If it stops after writing the journal but before
-			// the writer drops its staging entry, writer cleanup normally removes
-			// that tree. Roll back the empty operation so this or a later Restore
-			// can fetch it again. If cleanup leaves the tree intact, the
-			// staging-present case above finishes it.
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
-		case journal.HadLock && (destinationState == treeOld || backupState == treeOld):
-			if err := restoreOldState(w.project, operationDir, operation, journal, destination, backup, destinationState, backupState, oldLockPath); err != nil {
+			return finishRecovery(w.project, operationDir, op, destination, treeNew, recoveryPhaseCleanupCommitted)
+		case op.phase == recoveryPhasePrepared && lockSnapshotsEqual && !op.hadDestination && destinationState == treeAbsent && stagingState == treeAbsent && backupState == treeAbsent:
+			return finishRecovery(w.project, operationDir, op, destination, treeAbsent, recoveryPhaseCleanupRolledBack)
+		case op.oldLock != nil && (destinationState == treeOld || backupState == treeOld):
+			if err := restoreOldState(w.project, operationDir, op, destination, backup, destinationState, backupState); err != nil {
 				return err
 			}
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
+			return finishRecovery(w.project, operationDir, op, destination, treeOld, recoveryPhaseCleanupRolledBack)
 		default:
 			return recoveryError("committed lock has no complete new or recoverable old destination", nil)
 		}
@@ -673,28 +740,28 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 
 	if lockIsOld || lockIsAbsentOld {
 		switch {
-		case journal.HadDestination && destinationState == treeOld:
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
-		case !journal.HadDestination && destinationState == treeAbsent:
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
-		case journal.HadDestination && destinationState == treeAbsent && backupState == treeOld:
+		case op.hadDestination && destinationState == treeOld:
+			return finishRecovery(w.project, operationDir, op, destination, treeOld, recoveryPhaseCleanupRolledBack)
+		case !op.hadDestination && destinationState == treeAbsent:
+			return finishRecovery(w.project, operationDir, op, destination, treeAbsent, recoveryPhaseCleanupRolledBack)
+		case op.hadDestination && destinationState == treeAbsent && backupState == treeOld:
 			if err := durableRename(backup, destination, w.project.SkillsDir(), "recover-old-destination"); err != nil {
 				return err
 			}
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
-		case journal.HadDestination && destinationState == treeNew && backupState == treeOld:
+			return finishRecovery(w.project, operationDir, op, destination, treeOld, recoveryPhaseCleanupRolledBack)
+		case op.hadDestination && destinationState == treeNew && backupState == treeOld:
 			if err := discardDestination(w.project, operationDir, destination, "uncommitted-destination"); err != nil {
 				return err
 			}
 			if err := durableRename(backup, destination, w.project.SkillsDir(), "restore-old-destination"); err != nil {
 				return err
 			}
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeOld, "cleanup-rolled-back")
-		case !journal.HadDestination && destinationState == treeNew:
+			return finishRecovery(w.project, operationDir, op, destination, treeOld, recoveryPhaseCleanupRolledBack)
+		case !op.hadDestination && destinationState == treeNew:
 			if err := discardDestination(w.project, operationDir, destination, "first-uncommitted-destination"); err != nil {
 				return err
 			}
-			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
+			return finishRecovery(w.project, operationDir, op, destination, treeAbsent, recoveryPhaseCleanupRolledBack)
 		default:
 			return recoveryError("old lock has no recoverable old destination", nil)
 		}
@@ -702,18 +769,19 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 	return recoveryError("operation state is ambiguous", nil)
 }
 
-func readLockSnapshot(path, expectedHash string) ([]byte, bool, error) {
+func readLockSnapshot(path, expectedHash string) (*lockSnapshot, error) {
 	contents, exists, err := readOptionalFile(path)
 	if err != nil || !exists {
-		return nil, exists, err
+		return nil, err
 	}
 	if lockSnapshotHash(contents) != expectedHash {
-		return nil, true, fmt.Errorf("snapshot contents do not match the journal hash")
+		return nil, fmt.Errorf("snapshot contents do not match the journal hash")
 	}
-	if _, err := DecodeLock(bytes.NewReader(contents)); err != nil {
-		return nil, true, err
+	lock, err := DecodeLock(bytes.NewReader(contents))
+	if err != nil {
+		return nil, err
 	}
-	return contents, true, nil
+	return &lockSnapshot{contents: contents, lock: lock}, nil
 }
 
 func lockSnapshotHash(contents []byte) string {
@@ -721,17 +789,16 @@ func lockSnapshotHash(contents []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func finishRecovery(project Project, operationDir, operation string, journal transactionJournal, destination string, destinationState treeState, phase string) error {
+func finishRecovery(project Project, operationDir string, operation recoveryOperation, destination string, destinationState treeState, phase recoveryPhase) error {
 	if err := stabilizeDestination(project, destination, destinationState); err != nil {
 		return err
 	}
-	if journal.Phase != phase {
-		journal.Phase = phase
-		if err := writeJournal(operationDir, journal); err != nil {
+	if operation.phase != phase {
+		if err := writeJournal(operationDir, operation.journalAt(phase)); err != nil {
 			return err
 		}
 	}
-	return cleanupOperation(project, operationDir, operation)
+	return cleanupOperation(project, operationDir, operation.id)
 }
 
 func stabilizeDestination(project Project, destination string, state treeState) error {
@@ -772,53 +839,150 @@ func discardDestination(project Project, operationDir, destination, label string
 	return durableRemoveAll(discard, operationDir, "discard-"+label)
 }
 
-func readJournal(operationDir, operation string) (transactionJournal, registry.SkillID, agentskill.TreeDigest, agentskill.TreeDigest, error) {
+func readJournal(operationDir, operation string) (recoveryOperation, error) {
 	journalPath := filepath.Join(operationDir, journalName)
 	if err := rejectRegularFile(journalPath); err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("inspect journal", err)
+		return recoveryOperation{}, recoveryError("inspect journal", err)
 	}
 	contents, err := os.ReadFile(journalPath)
 	if err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("read journal", err)
+		return recoveryOperation{}, recoveryError("read journal", err)
 	}
 	var journal transactionJournal
 	decoder := json.NewDecoder(bytes.NewReader(contents))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&journal); err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("decode journal", err)
+		return recoveryOperation{}, recoveryError("decode journal", err)
 	}
 	if err := ensureJSONEOF(decoder); err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("decode journal", err)
+		return recoveryOperation{}, recoveryError("decode journal", err)
 	}
+	phase := parseRecoveryPhase(journal.Phase)
 	if journal.Schema != 2 || journal.Operation != operation || !validOperationID(operation) {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal identity or schema is invalid", nil)
+		return recoveryOperation{}, recoveryError("journal identity or schema is invalid", nil)
 	}
-	switch journal.Phase {
-	case "prepared", "backup-created", "destination-swapped", "lock-committed", "cleanup-committed", "cleanup-rolled-back":
-	default:
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal phase is invalid", nil)
+	if phase == recoveryPhaseInvalid {
+		return recoveryOperation{}, recoveryError("journal phase is invalid", nil)
 	}
-	if !validSnapshotHash(journal.NewLockHash) || (journal.HadLock != validSnapshotHash(journal.OldLockHash)) {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal lock snapshot hashes are invalid", nil)
+	if !validSnapshotHash(journal.NewLockHash) || (journal.HadLock && !validSnapshotHash(journal.OldLockHash)) || (!journal.HadLock && journal.OldLockHash != "") {
+		return recoveryOperation{}, recoveryError("journal lock snapshot hashes are invalid", nil)
 	}
 	skill, err := registry.ParseSkillID(journal.Skill)
 	if err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal skill is invalid", err)
+		return recoveryOperation{}, recoveryError("journal skill is invalid", err)
 	}
 	newDigest, err := agentskill.ParseTreeDigest(journal.NewDigest)
 	if err != nil {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal new digest is invalid", err)
+		return recoveryOperation{}, recoveryError("journal new digest is invalid", err)
 	}
-	var oldDigest agentskill.TreeDigest
+	var oldDigest *agentskill.TreeDigest
 	if journal.OldDigest != "" {
-		oldDigest, err = agentskill.ParseTreeDigest(journal.OldDigest)
+		digest, err := agentskill.ParseTreeDigest(journal.OldDigest)
 		if err != nil {
-			return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal old digest is invalid", err)
+			return recoveryOperation{}, recoveryError("journal old digest is invalid", err)
 		}
-	} else if journal.HadDestination {
-		return transactionJournal{}, registry.SkillID{}, agentskill.TreeDigest{}, agentskill.TreeDigest{}, recoveryError("journal omits the old destination digest", nil)
+		oldDigest = &digest
 	}
-	return journal, skill, oldDigest, newDigest, nil
+	if journal.HadDestination && (oldDigest == nil || !journal.HadLock) {
+		return recoveryOperation{}, recoveryError("journal destination provenance is invalid", nil)
+	}
+	if !journal.HadLock && oldDigest != nil {
+		return recoveryOperation{}, recoveryError("journal old digest has no old lock", nil)
+	}
+
+	op := recoveryOperation{id: operation, skill: skill, phase: phase, oldDigest: oldDigest, newDigest: newDigest, hadDestination: journal.HadDestination, newLock: recoveryLock{hash: journal.NewLockHash}}
+	if journal.HadLock {
+		op.oldLock = &recoveryLock{hash: journal.OldLockHash}
+	}
+	if op.oldLock != nil {
+		op.oldLock.snapshot, err = readLockSnapshot(filepath.Join(operationDir, oldLockName), op.oldLock.hash)
+		if err != nil {
+			return recoveryOperation{}, recoveryError("old lock snapshot is invalid", err)
+		}
+	} else if snapshot, snapshotErr := readLockSnapshot(filepath.Join(operationDir, oldLockName), journal.OldLockHash); snapshotErr != nil || snapshot != nil {
+		return recoveryOperation{}, recoveryError("unexpected old lock snapshot", snapshotErr)
+	}
+	op.newLock.snapshot, err = readLockSnapshot(filepath.Join(operationDir, newLockName), op.newLock.hash)
+	if err != nil {
+		return recoveryOperation{}, recoveryError("new lock snapshot is invalid", err)
+	}
+	if phase < recoveryPhaseLockCommitted && (op.newLock.snapshot == nil || (op.oldLock != nil && op.oldLock.snapshot == nil)) {
+		return recoveryOperation{}, recoveryError("lock snapshots were removed before commit", nil)
+	}
+	if err := op.validateSnapshots(); err != nil {
+		return recoveryOperation{}, recoveryError("lock snapshots disagree with the journal", err)
+	}
+	return op, nil
+}
+
+func (o recoveryOperation) validateSnapshots() error {
+	if err := o.validateLockSelection(o.newLock.snapshot, o.newDigest, true); err != nil {
+		return fmt.Errorf("new lock: %w", err)
+	}
+	if o.oldLock == nil {
+		if o.newLock.snapshot != nil && len(o.newLock.snapshot.lock.Skills()) != 1 {
+			return fmt.Errorf("new lock adds skills to a lockless project")
+		}
+		return nil
+	}
+	if o.oldDigest == nil {
+		if err := o.validateLockSelection(o.oldLock.snapshot, agentskill.TreeDigest{}, false); err != nil {
+			return fmt.Errorf("old lock: %w", err)
+		}
+	} else if err := o.validateLockSelection(o.oldLock.snapshot, *o.oldDigest, true); err != nil {
+		return fmt.Errorf("old lock: %w", err)
+	}
+	if o.oldLock.snapshot != nil && o.newLock.snapshot != nil && !locksMatchExcept(o.oldLock.snapshot.lock, o.newLock.snapshot.lock, o.skill) {
+		return fmt.Errorf("lock entries besides the updated skill changed")
+	}
+	return nil
+}
+
+func locksMatchExcept(old, new Lock, changed registry.SkillID) bool {
+	oldSkills := old.Skills()
+	newSkills := new.Skills()
+	oldIndex, newIndex := 0, 0
+	for oldIndex < len(oldSkills) || newIndex < len(newSkills) {
+		for oldIndex < len(oldSkills) && oldSkills[oldIndex].Publication().Skill() == changed {
+			oldIndex++
+		}
+		for newIndex < len(newSkills) && newSkills[newIndex].Publication().Skill() == changed {
+			newIndex++
+		}
+		if oldIndex == len(oldSkills) || newIndex == len(newSkills) {
+			return oldIndex == len(oldSkills) && newIndex == len(newSkills)
+		}
+		if oldSkills[oldIndex].Publication() != newSkills[newIndex].Publication() {
+			return false
+		}
+		oldIndex++
+		newIndex++
+	}
+	return true
+}
+
+func (o recoveryOperation) validateLockSelection(snapshot *lockSnapshot, digest agentskill.TreeDigest, present bool) error {
+	if snapshot == nil {
+		return nil
+	}
+	locked, found := snapshot.lock.Lookup(o.skill)
+	if found != present {
+		return fmt.Errorf("skill selection presence does not match the journal")
+	}
+	if found && locked.Publication().Tree() != digest {
+		return fmt.Errorf("skill selection digest does not match the journal")
+	}
+	return nil
+}
+
+func (o recoveryOperation) validateOldLock(snapshot *lockSnapshot) error {
+	if o.oldLock == nil {
+		return fmt.Errorf("old lock is absent")
+	}
+	if o.oldDigest == nil {
+		return o.validateLockSelection(snapshot, agentskill.TreeDigest{}, false)
+	}
+	return o.validateLockSelection(snapshot, *o.oldDigest, true)
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -848,7 +1012,7 @@ func validSnapshotHash(value string) bool {
 	return err == nil && hex.EncodeToString(decoded) == value
 }
 
-func classifyTree(path string, oldDigest, newDigest agentskill.TreeDigest, hasOldDigest bool) (treeState, error) {
+func classifyTree(path string, oldDigest *agentskill.TreeDigest, newDigest agentskill.TreeDigest) (treeState, error) {
 	exists, err := inspectOptionalRealDirectory(path)
 	if err != nil || !exists {
 		return treeAbsent, err
@@ -863,7 +1027,7 @@ func classifyTree(path string, oldDigest, newDigest agentskill.TreeDigest, hasOl
 	if digest == newDigest {
 		return treeNew, nil
 	}
-	if hasOldDigest && digest == oldDigest {
+	if oldDigest != nil && digest == *oldDigest {
 		return treeOld, nil
 	}
 	return treeAbsent, fmt.Errorf("unexpected digest %s", digest.String())
@@ -907,7 +1071,7 @@ func readOptionalFile(path string) ([]byte, bool, error) {
 	return contents, true, nil
 }
 
-func restoreOldState(project Project, operationDir, operation string, journal transactionJournal, destination, backup string, destinationState, backupState treeState, oldLockPath string) error {
+func restoreOldState(project Project, operationDir string, operation recoveryOperation, destination, backup string, destinationState, backupState treeState) error {
 	if destinationState != treeOld && backupState == treeOld {
 		if destinationState != treeAbsent {
 			if err := discardDestination(project, operationDir, destination, "rollback-new-destination"); err != nil {
@@ -918,14 +1082,15 @@ func restoreOldState(project Project, operationDir, operation string, journal tr
 			return err
 		}
 	}
-	if journal.HadLock {
-		newLockPath := filepath.Join(filepath.Dir(oldLockPath), newLockName)
-		if err := prepareOldLockRestoreTemporary(project, operation, oldLockPath, newLockPath); err != nil {
-			return err
-		}
-		return replaceLockFrom(project, operation, oldLockPath)
+	if operation.oldLock == nil || operation.oldLock.snapshot == nil {
+		return recoveryError("old lock snapshot is unavailable while restoring", nil)
 	}
-	return durableRemoveFile(project.LockPath(), filepath.Dir(project.LockPath()), "new-project-lock")
+	oldLockPath := filepath.Join(operationDir, oldLockName)
+	newLockPath := filepath.Join(operationDir, newLockName)
+	if err := prepareOldLockRestoreTemporary(project, operation.id, oldLockPath, newLockPath); err != nil {
+		return err
+	}
+	return replaceLockFrom(project, operation.id, oldLockPath)
 }
 
 func prepareOldLockRestoreTemporary(project Project, operation, oldLockPath, newLockPath string) error {
