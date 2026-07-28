@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,77 @@ type Config struct {
 	Hostname string
 	AuthKey  string
 	Tag      string
+}
+
+// DevConfig serves the registry over plain HTTP on a loopback address with a
+// fixed dev actor. It exists only for local development; it never opens a
+// Tailnet node and must never be reachable from other machines.
+type DevConfig struct {
+	StateDir string
+	Listen   string
+}
+
+// DevModeFromEnv reports whether TS_SKILLSD_DEV enables dev mode.
+func DevModeFromEnv() (bool, error) {
+	value := os.Getenv("TS_SKILLSD_DEV")
+	if value == "" {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("TS_SKILLSD_DEV must be a boolean value such as 1 or true")
+	}
+	return enabled, nil
+}
+
+func DevConfigFromEnv() (DevConfig, error) {
+	listen := os.Getenv("TS_SKILLSD_DEV_LISTEN")
+	if listen == "" {
+		listen = "127.0.0.1:8080"
+	}
+	if os.Getenv("TS_SKILLSD_AUTHKEY_FILE") != "" {
+		return DevConfig{}, fmt.Errorf("dev mode does not enroll a Tailnet node; unset TS_SKILLSD_AUTHKEY_FILE")
+	}
+	stateDir := os.Getenv("TS_SKILLSD_STATE_DIR")
+	if stateDir == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return DevConfig{}, fmt.Errorf("resolve default dev state directory: %w", err)
+		}
+		stateDir = filepath.Join(cache, "ts-skillsd-dev")
+	}
+	return normalizeDevConfig(DevConfig{StateDir: stateDir, Listen: listen})
+}
+
+func normalizeDevConfig(config DevConfig) (DevConfig, error) {
+	if strings.TrimSpace(config.StateDir) == "" {
+		return DevConfig{}, fmt.Errorf("dev state directory is required")
+	}
+	absolute, err := filepath.Abs(config.StateDir)
+	if err != nil {
+		return DevConfig{}, fmt.Errorf("resolve dev state directory: %w", err)
+	}
+	config.StateDir = absolute
+
+	host, port, err := net.SplitHostPort(config.Listen)
+	if err != nil {
+		return DevConfig{}, fmt.Errorf("dev listen address must be host:port: %w", err)
+	}
+	if port == "" {
+		return DevConfig{}, fmt.Errorf("dev listen address %q must include a port", config.Listen)
+	}
+	if !isLoopbackHost(host) {
+		return DevConfig{}, fmt.Errorf("dev listen address %q must use a loopback host", config.Listen)
+	}
+	return config, nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 // ConfigFromEnv reads daemon configuration and, when configured, reads the
@@ -127,6 +199,17 @@ type runtimeFactory func(context.Context, Config) (*runtime, error)
 
 func Run(ctx context.Context, config Config) error {
 	return run(ctx, config, buildRuntime)
+}
+
+func RunDev(ctx context.Context, config DevConfig) error {
+	normalized, err := normalizeDevConfig(config)
+	if err != nil {
+		return err
+	}
+	factory := func(ctx context.Context, _ Config) (*runtime, error) {
+		return buildDevRuntime(ctx, normalized)
+	}
+	return run(ctx, Config{StateDir: normalized.StateDir, Hostname: defaultHostname}, factory)
 }
 
 func run(ctx context.Context, config Config, factory runtimeFactory) error {
@@ -279,15 +362,37 @@ func shutdownHTTP(server *http.Server, timeout time.Duration) error {
 	return nil
 }
 
+func openRegistryCore(ctx context.Context, stateDir string) (_ *storage.Catalog, _ *registry.Catalog, _ web.CSRFKey, err error) {
+	records, err := storage.OpenCatalog(ctx, stateDir)
+	if err != nil {
+		return nil, nil, web.CSRFKey{}, fmt.Errorf("open registry storage: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, records.Close())
+		}
+	}()
+
+	csrfKey, err := loadOrCreateCSRFKey(stateDir)
+	if err != nil {
+		return nil, nil, web.CSRFKey{}, err
+	}
+	catalog, err := registry.NewCatalog(records, filepath.Join(stateDir, "tmp"), safetree.PrototypeLimits())
+	if err != nil {
+		return nil, nil, web.CSRFKey{}, fmt.Errorf("construct registry catalog: %w", err)
+	}
+	return records, catalog, csrfKey, nil
+}
+
 func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	config, err = normalizeConfig(config)
 	if err != nil {
 		return nil, err
 	}
 
-	records, err := storage.OpenCatalog(ctx, config.StateDir)
+	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
-		return nil, fmt.Errorf("open registry storage: %w", err)
+		return nil, err
 	}
 	closeRecords := true
 	defer func() {
@@ -295,16 +400,6 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 			err = errors.Join(err, records.Close())
 		}
 	}()
-
-	csrfKey, err := loadOrCreateCSRFKey(config.StateDir)
-	if err != nil {
-		return nil, err
-	}
-	limits := safetree.PrototypeLimits()
-	catalog, err := registry.NewCatalog(records, filepath.Join(config.StateDir, "tmp"), limits)
-	if err != nil {
-		return nil, fmt.Errorf("construct registry catalog: %w", err)
-	}
 
 	tailConfig := tailnet.ServerConfig{
 		Hostname: config.Hostname,
@@ -335,7 +430,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	}
 	handler, err := web.NewHandler(catalog, actors, web.Options{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
-		Limits:        limits,
+		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
 		SecureCookies: true,
 	})
@@ -344,7 +439,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	}
 
 	cleanup := &runtimeCleanup{
-		closeTailnet: tailServer.Close,
+		closeNetwork: tailServer.Close,
 		closeStorage: records.Close,
 	}
 	closeTailnet = false
@@ -356,11 +451,74 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	}, nil
 }
 
+func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err error) {
+	config, err = normalizeDevConfig(config)
+	if err != nil {
+		return nil, err
+	}
+
+	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	closeRecords := true
+	defer func() {
+		if closeRecords {
+			err = errors.Join(err, records.Close())
+		}
+	}()
+
+	actor, err := registry.NewActor("dev", "dev@localhost")
+	if err != nil {
+		return nil, fmt.Errorf("construct dev actor: %w", err)
+	}
+	handler, err := web.NewHandler(catalog, staticActorResolver{actor: actor}, web.Options{
+		StagingParent: filepath.Join(config.StateDir, "tmp"),
+		Limits:        safetree.PrototypeLimits(),
+		CSRFKey:       csrfKey,
+		SecureCookies: false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)
+	}
+
+	listener, err := net.Listen("tcp", config.Listen)
+	if err != nil {
+		return nil, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
+	}
+
+	cleanup := &runtimeCleanup{
+		closeNetwork: func() error {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				return err
+			}
+			return nil
+		},
+		closeStorage: records.Close,
+	}
+	closeRecords = false
+	return &runtime{
+		listener: listener,
+		handler:  handler,
+		close:    cleanup.close,
+	}, nil
+}
+
+// staticActorResolver attributes every request to one fixed actor. It is only
+// safe behind a loopback listener where every caller is the developer.
+type staticActorResolver struct {
+	actor registry.Actor
+}
+
+func (r staticActorResolver) Actor(*http.Request) (registry.Actor, error) {
+	return r.actor, nil
+}
+
 type runtimeCleanup struct {
 	mu            sync.Mutex
-	closeTailnet  func() error
+	closeNetwork  func() error
 	closeStorage  func() error
-	tailnetClosed bool
+	networkClosed bool
 	storageClosed bool
 }
 
@@ -368,17 +526,17 @@ func (c *runtimeCleanup) close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var tailnetErr error
-	if !c.tailnetClosed {
-		tailnetErr = c.closeTailnet()
-		c.tailnetClosed = tailnetErr == nil
+	var networkErr error
+	if !c.networkClosed {
+		networkErr = c.closeNetwork()
+		c.networkClosed = networkErr == nil
 	}
 	var storageErr error
 	if !c.storageClosed {
 		storageErr = c.closeStorage()
 		c.storageClosed = storageErr == nil
 	}
-	return errors.Join(tailnetErr, storageErr)
+	return errors.Join(networkErr, storageErr)
 }
 
 func loadOrCreateCSRFKey(stateDir string) (web.CSRFKey, error) {

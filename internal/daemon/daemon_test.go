@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -87,7 +90,7 @@ func TestRunWaitsForHandlersAfterForcedHTTPShutdown(t *testing.T) {
 		record("handler-finished")
 	})
 	cleanup := &runtimeCleanup{
-		closeTailnet: func() error {
+		closeNetwork: func() error {
 			record("tailnet-closed")
 			close(tailnetClosed)
 			return nil
@@ -288,7 +291,7 @@ func TestRuntimeCleanupRetriesFailedStorageClose(t *testing.T) {
 	var events []string
 	storageAttempts := 0
 	cleanup := &runtimeCleanup{
-		closeTailnet: func() error {
+		closeNetwork: func() error {
 			events = append(events, "tailnet-closed")
 			return nil
 		},
@@ -556,5 +559,160 @@ func TestRunReportsFactoryFailureWithoutCleanup(t *testing.T) {
 	})
 	if !errors.Is(err, factoryErr) {
 		t.Fatalf("run error = %v, want factory failure", err)
+	}
+}
+
+func TestNormalizeDevConfigChecksListenAddress(t *testing.T) {
+	for _, listen := range []string{"", "127.0.0.1", "127.0.0.1:", "0.0.0.0:8080", "example.com:8080", "[::]:8080", "192.168.1.10:8080"} {
+		if _, err := normalizeDevConfig(DevConfig{StateDir: t.TempDir(), Listen: listen}); err == nil {
+			t.Errorf("normalizeDevConfig accepted %q", listen)
+		}
+	}
+	for _, listen := range []string{"127.0.0.1:0", "localhost:8080", "[::1]:8080"} {
+		if _, err := normalizeDevConfig(DevConfig{StateDir: t.TempDir(), Listen: listen}); err != nil {
+			t.Errorf("normalizeDevConfig(%q): %v", listen, err)
+		}
+	}
+}
+
+func TestDevConfigFromEnvRefusesEnrollmentKey(t *testing.T) {
+	t.Setenv("TS_SKILLSD_DEV_LISTEN", "127.0.0.1:8080")
+	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
+	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", filepath.Join(t.TempDir(), "authkey"))
+	if _, err := DevConfigFromEnv(); err == nil {
+		t.Fatal("dev config accepted an enrollment auth key")
+	}
+}
+
+func TestDevConfigFromEnvDefaultsToLoopbackListen(t *testing.T) {
+	t.Setenv("TS_SKILLSD_DEV_LISTEN", "")
+	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
+	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
+	config, err := DevConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Listen != "127.0.0.1:8080" {
+		t.Fatalf("default dev listen = %q", config.Listen)
+	}
+}
+
+func TestDevModeFromEnv(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true} {
+		t.Setenv("TS_SKILLSD_DEV", value)
+		enabled, err := DevModeFromEnv()
+		if err != nil {
+			t.Fatalf("DevModeFromEnv(%q): %v", value, err)
+		}
+		if enabled != want {
+			t.Errorf("DevModeFromEnv(%q) = %v, want %v", value, enabled, want)
+		}
+	}
+	t.Setenv("TS_SKILLSD_DEV", "maybe")
+	if _, err := DevModeFromEnv(); err == nil {
+		t.Error("DevModeFromEnv accepted a non-boolean value")
+	}
+}
+
+func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
+	rt, err := buildDevRuntime(context.Background(), DevConfig{StateDir: t.TempDir(), Listen: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{Handler: rt.handler}
+	go func() { _ = server.Serve(rt.listener) }()
+	defer func() {
+		_ = server.Close()
+		if err := rt.close(); err != nil {
+			t.Errorf("close dev runtime: %v", err)
+		}
+	}()
+
+	base := "http://" + rt.listener.Addr().String()
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
+	uploadPage, err := client.Get(base + "/upload")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, uploadPage.Body)
+	_ = uploadPage.Body.Close()
+	if uploadPage.StatusCode != http.StatusOK {
+		t.Fatalf("GET /upload status = %d", uploadPage.StatusCode)
+	}
+	token := uploadPage.Header.Get("X-CSRF-Token")
+	cookies := uploadPage.Cookies()
+	if token == "" || len(cookies) != 1 {
+		t.Fatalf("upload page did not provide CSRF material: token=%q cookies=%v", token, cookies)
+	}
+
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	entry, err := zipWriter.Create("SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(entry, "---\nname: sample\ndescription: Dev mode test\n---\nInstructions.\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var form bytes.Buffer
+	formWriter := multipart.NewWriter(&form)
+	if err := formWriter.WriteField("namespace", "team"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("kind", "zip"); err != nil {
+		t.Fatal(err)
+	}
+	filePart, err := formWriter.CreateFormFile("archive", "sample.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filePart.Write(archive.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, base+"/candidates", &form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", formWriter.FormDataContentType())
+	request.Header.Set("X-CSRF-Token", token)
+	request.AddCookie(cookies[0])
+	created, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(created.Body)
+	_ = created.Body.Close()
+	if created.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /candidates status = %d: %s", created.StatusCode, body)
+	}
+
+	reviewRequest, err := http.NewRequest(http.MethodGet, base+created.Header.Get("Location"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewRequest.AddCookie(cookies[0])
+	review, err := client.Do(reviewRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewBody, err := io.ReadAll(review.Body)
+	_ = review.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.StatusCode != http.StatusOK {
+		t.Fatalf("GET review status = %d: %s", review.StatusCode, reviewBody)
+	}
+	if !strings.Contains(string(reviewBody), "dev@localhost") {
+		t.Fatalf("review page does not attribute the upload to dev@localhost: %s", reviewBody)
 	}
 }
