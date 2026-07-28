@@ -115,6 +115,7 @@ func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Ha
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
+	mux.HandleFunc("GET /skills/{namespace}/{name}", h.skillPage)
 	mux.HandleFunc("GET /upload", h.uploadPage)
 	mux.HandleFunc("POST /candidates", h.createCandidate)
 	mux.HandleFunc("GET /candidates/{candidate}", h.reviewCandidate)
@@ -151,8 +152,17 @@ type catalogPageData struct {
 }
 
 type skillView struct {
-	Skill  string
-	Digest string
+	Skill       string
+	Digest      string
+	ShortDigest string
+}
+
+func shortDigest(digest string) string {
+	const visible = len("sha256:") + 12
+	if len(digest) <= visible {
+		return digest
+	}
+	return digest[:visible] + "…"
 }
 
 func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
@@ -167,9 +177,56 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]skillView, 0, len(summaries))
 	for _, summary := range summaries {
-		views = append(views, skillView{Skill: summary.Skill().String(), Digest: summary.Current().Tree().String()})
+		digest := summary.Current().Tree().String()
+		views = append(views, skillView{Skill: summary.Skill().String(), Digest: digest, ShortDigest: shortDigest(digest)})
 	}
 	h.render(w, http.StatusOK, "catalog", catalogPageData{Skills: views})
+}
+
+type skillPageData struct {
+	Skill        string
+	Digest       string
+	PublishedBy  string
+	PublishedAt  string
+	DownloadPath string
+	Files        []string
+	SkillMD      string
+}
+
+func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
+	skill, err := parseAPISkill(r.PathValue("namespace"), r.PathValue("name"))
+	if err != nil {
+		h.renderError(w, http.StatusNotFound, "Skill was not found", "Return to the catalog and choose another skill.")
+		return
+	}
+	publication, err := h.catalog.ResolveCurrent(r.Context(), skill)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	tree, err := h.catalog.OpenPublicationTree(r.Context(), publication.ID())
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	defer tree.Close()
+	files, skillDocument, err := reviewTree(tree)
+	if err != nil {
+		h.handleError(w, err)
+		return
+	}
+	resolved := publication.ID()
+	data := skillPageData{
+		Skill:       resolved.Skill().String(),
+		Digest:      resolved.Tree().String(),
+		PublishedBy: publication.PublishedBy().Display(),
+		PublishedAt: publication.PublishedAt().Format(time.RFC3339),
+		DownloadPath: "/api/" + protocol.Version + "/skills/" + resolved.Skill().Namespace().String() +
+			"/" + resolved.Skill().Name().String() + "/publications/" + resolved.Tree().String() + "/tree.zip",
+		Files:   files,
+		SkillMD: skillDocument,
+	}
+	h.render(w, http.StatusOK, "skill", data)
 }
 
 func (h *handler) uploadPage(w http.ResponseWriter, r *http.Request) {

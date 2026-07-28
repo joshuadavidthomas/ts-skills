@@ -1,5 +1,5 @@
 {{define "catalog"}}
-{{template "head" .}}
+{{template "head" ""}}
 {{template "header" .}}
 <main class="mx-auto w-full max-w-5xl flex-1 px-4 py-6">
   <div class="mb-6 flex items-center justify-between gap-4">
@@ -21,8 +21,8 @@
       <tbody>
         {{range .Skills}}
         <tr class="border-b border-gray-200 last:border-b-0 hover:bg-gray-100">
-          <td class="whitespace-nowrap px-4 py-3 font-medium text-gray-800">{{.Skill}}</td>
-          <td class="px-4 py-3 font-mono text-sm text-gray-500"><span class="break-all" title="{{.Digest}}">{{.Digest}}</span></td>
+          <td class="whitespace-nowrap px-4 py-3 font-medium"><a class="rounded-sm text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" href="/skills/{{.Skill}}">{{.Skill}}</a></td>
+          <td class="px-4 py-3 font-mono text-sm text-gray-500"><span title="{{.Digest}}">{{.ShortDigest}}</span></td>
         </tr>
         {{end}}
       </tbody>

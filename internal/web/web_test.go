@@ -481,8 +481,40 @@ func TestPublishedCurationSurvivesStorageAndHandlerRestart(t *testing.T) {
 		t.Fatalf("restarted catalog lost publication: %s", catalog)
 	}
 	restartedReview := fixture.get(candidatePath)
-	if !strings.Contains(restartedReview, "Persist across restart.") || !strings.Contains(restartedReview, "This candidate is published") {
+	if !strings.Contains(restartedReview, "Persist across restart.") || !strings.Contains(restartedReview, ">Published<") {
 		t.Fatalf("restarted review lost candidate facts: %s", restartedReview)
+	}
+}
+
+func TestSkillDetailPageShowsCurrentPublication(t *testing.T) {
+	fixture := newWebFixture(t)
+	candidatePath := fixture.uploadZIP("Detail page instructions.\n")
+	digest := digestPattern.FindString(fixture.get(candidatePath))
+	response := postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+
+	catalog := fixture.get("/")
+	if !strings.Contains(catalog, `href="/skills/team/sample"`) {
+		t.Fatalf("catalog does not link to the skill page: %s", catalog)
+	}
+	detail := fixture.get("/skills/team/sample")
+	for _, want := range []string{"team/sample", digest, "Detail page instructions.", "SKILL.md", "/publications/" + digest + "/tree.zip"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("skill page is missing %q: %s", want, detail)
+		}
+	}
+
+	missing, err := fixture.client.Get(fixture.server.URL + "/skills/team/unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, missing.Body)
+	_ = missing.Body.Close()
+	if missing.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown skill status = %d", missing.StatusCode)
 	}
 }
 
