@@ -1,6 +1,7 @@
 package agentskill
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -238,7 +239,7 @@ func TestSumTreeFixedVectors(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			digest, err := SumTree(test.fsys, "root")
+			digest, err := SumTree(context.Background(), test.fsys, "root")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,6 +260,19 @@ func TestBundledExampleSkillIsValid(t *testing.T) {
 	}
 }
 
+func TestSumTreeRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	files := fstest.MapFS{"root/a.txt": &fstest.MapFile{Data: []byte("alpha")}}
+	digest, err := SumTree(ctx, files, "root")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("SumTree with cancelled context error = %v", err)
+	}
+	if digest != (TreeDigest{}) {
+		t.Fatalf("SumTree with cancelled context digest = %s, want zero", digest.String())
+	}
+}
+
 func TestSumTreeIgnoresModesAndMapOrder(t *testing.T) {
 	first := fstest.MapFS{
 		"root/a": &fstest.MapFile{Data: []byte("a"), Mode: 0o600},
@@ -268,11 +282,11 @@ func TestSumTreeIgnoresModesAndMapOrder(t *testing.T) {
 		"root/b": &fstest.MapFile{Data: []byte("b"), Mode: 0o400},
 		"root/a": &fstest.MapFile{Data: []byte("a"), Mode: 0o777},
 	}
-	one, err := SumTree(first, "root")
+	one, err := SumTree(context.Background(), first, "root")
 	if err != nil {
 		t.Fatal(err)
 	}
-	two, err := SumTree(second, "root")
+	two, err := SumTree(context.Background(), second, "root")
 	if err != nil {
 		t.Fatal(err)
 	}

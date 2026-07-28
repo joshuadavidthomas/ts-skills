@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
@@ -599,6 +601,18 @@ func TestUploadRequiresCSRFAndExactMultipartOrder(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("extra part status = %d", response.StatusCode)
+	}
+}
+
+func TestResolveTreeFileRespectsCancellation(t *testing.T) {
+	tree := fstest.MapFS{
+		"SKILL.md":        {Data: []byte("---\nname: sample\ndescription: Cancellation test\n---\nBody.\n")},
+		"assets/data.txt": {Data: []byte("asset")},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := resolveTreeFile(ctx, tree, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolveTreeFile with cancelled context error = %v", err)
 	}
 }
 

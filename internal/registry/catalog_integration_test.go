@@ -496,7 +496,7 @@ func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
 	if script.Mode().Perm()&0o111 != 0 {
 		t.Fatalf("installed script is executable: %v", script.Mode())
 	}
-	installedDigest, err := agentskill.SumTree(os.DirFS(project.SkillsDir()), "sample")
+	installedDigest, err := agentskill.SumTree(context.Background(), os.DirFS(project.SkillsDir()), "sample")
 	if err != nil {
 		t.Fatal(err)
 	}

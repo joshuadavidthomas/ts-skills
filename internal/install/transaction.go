@@ -70,7 +70,7 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	if err != nil {
 		return err
 	}
-	hadDestination, err := w.preflight(oldLock, publication.Skill())
+	hadDestination, err := w.preflight(ctx, oldLock, publication.Skill())
 	if err != nil {
 		return err
 	}
@@ -99,7 +99,7 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	delete(w.staging, oldStaging)
 	w.staging[operationStaging] = struct{}{}
 	verified.path = operationStaging
-	if err := syncTree(operationStaging, "staging-tree"); err != nil {
+	if err := syncTree(ctx, operationStaging, "staging-tree"); err != nil {
 		return err
 	}
 	if hadLock {
@@ -112,7 +112,7 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	}
 	destination := w.project.destination(publication.Skill().Name().String())
 	backup := filepath.Join(operationDir, backupName)
-	if err := w.preflightTransactionFilesystem(oldLock, publication.Skill(), hadDestination, hadLock, oldLockBytes, operationDir, operationStaging, backup, destination); err != nil {
+	if err := w.preflightTransactionFilesystem(ctx, oldLock, publication.Skill(), hadDestination, hadLock, oldLockBytes, operationDir, operationStaging, backup, destination); err != nil {
 		return err
 	}
 	journal := transactionJournal{
@@ -135,6 +135,11 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	if _, err := verified.transfer(); err != nil {
 		return err
 	}
+	// Cancellation only interrupts between journaled phases; an interrupted
+	// phase leaves a journal the next writer recovers from.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if hadDestination {
 		if err := durableRename(destination, backup, w.project.SkillsDir(), "backup-destination"); err != nil {
@@ -145,14 +150,20 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 	if err := writeJournal(operationDir, journal); err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := durableRename(operationStaging, destination, w.project.SkillsDir(), "swap-destination"); err != nil {
 		return err
 	}
-	if err := syncTree(destination, "destination-tree"); err != nil {
+	if err := syncTree(ctx, destination, "destination-tree"); err != nil {
 		return err
 	}
 	journal.Phase = "destination-swapped"
 	if err := writeJournal(operationDir, journal); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := replaceLockFrom(w.project, operation, filepath.Join(operationDir, newLockName)); err != nil {
@@ -169,6 +180,7 @@ func (w *projectWriter) install(ctx context.Context, verified *verifiedTree, new
 }
 
 func (w *projectWriter) preflightTransactionFilesystem(
+	ctx context.Context,
 	oldLock Lock,
 	skill registry.SkillID,
 	hadDestination bool,
@@ -209,7 +221,7 @@ func (w *projectWriter) preflightTransactionFilesystem(
 	} else if exists {
 		return fmt.Errorf("operation discard exists before journal preparation")
 	}
-	stillHadDestination, err := w.preflight(oldLock, skill)
+	stillHadDestination, err := w.preflight(ctx, oldLock, skill)
 	if err != nil {
 		return err
 	}
@@ -430,11 +442,14 @@ func syncDirectory(path, label string) error {
 	return transactionPoint("after-fsync-" + label)
 }
 
-func syncTree(root, label string) error {
+func syncTree(ctx context.Context, root, label string) error {
 	directories := make([]string, 0)
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -459,6 +474,9 @@ func syncTree(root, label string) error {
 		return strings.Count(directories[i], string(filepath.Separator)) > strings.Count(directories[j], string(filepath.Separator))
 	})
 	for _, directory := range directories {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := syncDirectory(directory, label+"-directory"); err != nil {
 			return err
 		}
@@ -719,7 +737,10 @@ func finishRecovery(project Project, operationDir, operation string, journal tra
 func stabilizeDestination(project Project, destination string, state treeState) error {
 	switch state {
 	case treeOld, treeNew:
-		if err := syncTree(destination, "recovery-destination-tree"); err != nil {
+		// Recovery must finish the recorded plan even if the caller's
+		// context is cancelled; a half-restored project is worse than a
+		// slow one. It deliberately hashes and syncs without cancellation.
+		if err := syncTree(context.Background(), destination, "recovery-destination-tree"); err != nil {
 			return err
 		}
 	case treeAbsent:
@@ -832,7 +853,9 @@ func classifyTree(path string, oldDigest, newDigest agentskill.TreeDigest, hasOl
 	if err != nil || !exists {
 		return treeAbsent, err
 	}
-	digest, err := agentskill.SumTree(os.DirFS(path), ".")
+	// This helper only runs during journal replay, which must never bail
+	// out mid-recovery, so it ignores caller cancellation on purpose.
+	digest, err := agentskill.SumTree(context.Background(), os.DirFS(path), ".")
 	if err != nil {
 		return treeAbsent, err
 	}

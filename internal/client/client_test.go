@@ -41,7 +41,7 @@ func clientTree(t *testing.T, body string) (agentskill.TreeDigest, []byte) {
 		"SKILL.md":        {Data: []byte("---\nname: sample\ndescription: Client test\n---\n" + body)},
 		"assets/data.txt": {Data: []byte("asset")},
 	}
-	digest, err := agentskill.SumTree(files, ".")
+	digest, err := agentskill.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func boundaryClientTree(t *testing.T, limits safetree.Limits) (agentskill.TreeDi
 		"SKILL.md": {Data: skillDocument},
 		"asset.md": {Data: bytes.Repeat([]byte("a"), assetSize)},
 	}
-	digest, err := agentskill.SumTree(files, ".")
+	digest, err := agentskill.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}

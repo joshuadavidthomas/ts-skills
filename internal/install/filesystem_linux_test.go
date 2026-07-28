@@ -193,5 +193,5 @@ func TestTransactionPreflightRejectsDestinationOnAnotherDevice(t *testing.T) {
 }
 
 func agentskillDigest(path string) (agentskill.TreeDigest, error) {
-	return agentskill.SumTree(os.DirFS(path), ".")
+	return agentskill.SumTree(context.Background(), os.DirFS(path), ".")
 }

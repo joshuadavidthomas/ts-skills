@@ -104,7 +104,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		return err
 	}
 
-	actual, err := agentskill.SumTree(os.DirFS(staging), ".")
+	actual, err := agentskill.SumTree(ctx, os.DirFS(staging), ".")
 	if err != nil {
 		return fmt.Errorf("hash staged tree: %w", err)
 	}
@@ -144,7 +144,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("%w: digest path is not a real directory", registry.ErrTreeMismatch)
 		}
-		if err := verifyTree(final, expected); err != nil {
+		if err := verifyTree(ctx, final, expected); err != nil {
 			return err
 		}
 		if err := c.step("verify existing digest tree"); err != nil {
@@ -242,8 +242,8 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 	return r.source.Read(buffer)
 }
 
-func verifyTree(directory string, expected agentskill.TreeDigest) error {
-	actual, err := agentskill.SumTree(os.DirFS(directory), ".")
+func verifyTree(ctx context.Context, directory string, expected agentskill.TreeDigest) error {
+	actual, err := agentskill.SumTree(ctx, os.DirFS(directory), ".")
 	if err != nil {
 		return fmt.Errorf("%w: verify digest tree: %v", registry.ErrTreeMismatch, err)
 	}
@@ -342,7 +342,7 @@ func (c *Catalog) OpenCandidateTree(ctx context.Context, id registry.CandidateID
 	if err != nil {
 		return nil, err
 	}
-	return c.openTree(candidate.Tree())
+	return c.openTree(ctx, candidate.Tree())
 }
 
 func (c *Catalog) OpenPublicationTree(ctx context.Context, id registry.PublicationID) (registry.Tree, error) {
@@ -355,12 +355,12 @@ func (c *Catalog) OpenPublicationTree(ctx context.Context, id registry.Publicati
 	if err != nil {
 		return nil, err
 	}
-	return c.openTree(publication.ID().Tree())
+	return c.openTree(ctx, publication.ID().Tree())
 }
 
-func (c *Catalog) openTree(digest agentskill.TreeDigest) (registry.Tree, error) {
+func (c *Catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (registry.Tree, error) {
 	_, final := c.treePaths(digest)
-	if err := verifyTree(final, digest); err != nil {
+	if err := verifyTree(ctx, final, digest); err != nil {
 		return nil, err
 	}
 	c.refsMu.Lock()

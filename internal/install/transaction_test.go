@@ -31,7 +31,7 @@ func testPublication(t *testing.T, namespaceText, nameText, body string) (regist
 		t.Fatal(err)
 	}
 	files := fstest.MapFS{"SKILL.md": {Data: []byte("---\nname: " + nameText + "\ndescription: test\n---\n" + body)}}
-	digest, err := agentskill.SumTree(files, ".")
+	digest, err := agentskill.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,6 +548,28 @@ func TestInterruptedSwapRecoversOldDestinationAndLock(t *testing.T) {
 	}
 }
 
+func TestCancelledInstallLeavesProjectUntouched(t *testing.T) {
+	project, installer, requirement, _ := prepareInstalledSkill(t)
+	before := projectDigest(t, project)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := installer.Install(ctx, project, requirement); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled install error = %v", err)
+	}
+	if after := projectDigest(t, project); after != before {
+		t.Fatal("cancelled install changed the project")
+	}
+}
+
+func projectDigest(t *testing.T, project Project) agentskill.TreeDigest {
+	t.Helper()
+	digest, err := agentskill.SumTree(context.Background(), os.DirFS(project.root), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
+}
+
 func prepareInstalledSkill(t *testing.T) (Project, *Installer, Requirement, registry.SkillID) {
 	t.Helper()
 	transactionFailure = nil
@@ -689,7 +711,7 @@ func reacquireAndAssertAgreement(t *testing.T, project Project, skill registry.S
 		t.Fatalf("lock no longer selects %s", skill.String())
 	}
 	destination := project.destination(skill.Name().String())
-	digest, err := agentskill.SumTree(os.DirFS(destination), ".")
+	digest, err := agentskill.SumTree(context.Background(), os.DirFS(destination), ".")
 	if err != nil {
 		t.Fatal(err)
 	}

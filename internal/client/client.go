@@ -210,7 +210,7 @@ func (r *Remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 	if directory.Document().Name != publication.Skill().Name() {
 		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", install.ErrIdentityMismatch)
 	}
-	actual, err := agentskill.SumTree(snapshot.FS(), ".")
+	actual, err := agentskill.SumTree(ctx, snapshot.FS(), ".")
 	if err != nil {
 		return install.FetchedSkill{}, fmt.Errorf("hash downloaded tree: %w", err)
 	}

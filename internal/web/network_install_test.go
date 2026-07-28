@@ -217,7 +217,7 @@ func TestRestoreUsesLockedPublicationAfterCurrentChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restoredDigest, err := agentskill.SumTree(os.DirFS(destination), ".")
+	restoredDigest, err := agentskill.SumTree(context.Background(), os.DirFS(destination), ".")
 	if err != nil {
 		t.Fatal(err)
 	}

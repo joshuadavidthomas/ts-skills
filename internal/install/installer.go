@@ -48,7 +48,7 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	matchingDestination, err := writer.preflight(oldLock, requirement.Skill())
+	matchingDestination, err := writer.preflight(ctx, oldLock, requirement.Skill())
 	if err != nil {
 		return LockedSkill{}, err
 	}
@@ -96,7 +96,7 @@ func (i *Installer) Restore(ctx context.Context, project Project) (err error) {
 	missing := make([]registry.PublicationID, 0)
 	for _, locked := range lock.Skills() {
 		publication := locked.Publication()
-		matching, preflightErr := writer.preflight(lock, publication.Skill())
+		matching, preflightErr := writer.preflight(ctx, lock, publication.Skill())
 		if preflightErr != nil {
 			return preflightErr
 		}
@@ -177,7 +177,7 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 	if directory.Document().Name != requirement.Skill().Name() {
 		return nil, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, directory.Document().Name.String())
 	}
-	actual, err := agentskill.SumTree(snapshot.FS(), ".")
+	actual, err := agentskill.SumTree(ctx, snapshot.FS(), ".")
 	if err != nil {
 		return nil, fmt.Errorf("hash fetched tree: %w", err)
 	}

@@ -72,7 +72,7 @@ func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidat
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}
-	digest, err := agentskill.SumTree(snapshot.FS(), request.Root)
+	digest, err := agentskill.SumTree(ctx, snapshot.FS(), request.Root)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("hash captured Agent Skill: %w", err)
 	}

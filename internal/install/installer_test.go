@@ -55,7 +55,7 @@ func TestInstallerVerifiesBeforeReplacingDestination(t *testing.T) {
 		"assets/data.txt": &fstest.MapFile{Data: []byte("asset")},
 		"scripts/run.sh":  &fstest.MapFile{Data: []byte("echo inert\n"), Mode: 0o777},
 	}
-	digest, err := agentskill.SumTree(files, ".")
+	digest, err := agentskill.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}

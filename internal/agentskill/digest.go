@@ -1,9 +1,11 @@
 package agentskill
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -38,7 +40,10 @@ type treeEntry struct {
 	digest [sha256.Size]byte
 }
 
-func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
+// SumTree hashes every regular file under dir into the tree digest. The walk
+// and each file stream observe ctx cancellation; cancellation checks never
+// contribute to the hash input, so digests are stable.
+func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 	if fsys == nil || !fs.ValidPath(dir) {
 		return TreeDigest{}, newValidationError(ErrInvalidTree, "directory", "must name a tree in a filesystem")
 	}
@@ -46,6 +51,9 @@ func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
 	err := fs.WalkDir(fsys, dir, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if name == dir {
 			if !entry.IsDir() {
@@ -74,7 +82,7 @@ func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
 		if !info.Mode().IsRegular() {
 			return newValidationError(ErrInvalidTree, "path", fmt.Sprintf("%q is not a regular file", relative))
 		}
-		contents, err := fs.ReadFile(fsys, name)
+		file, err := fsys.Open(name)
 		if err != nil {
 			return err
 		}
@@ -82,8 +90,15 @@ func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
 		_, _ = leaf.Write([]byte("file\x00"))
 		writeUint64(leaf, uint64(len(relative)))
 		_, _ = leaf.Write([]byte(relative))
-		writeUint64(leaf, uint64(len(contents)))
-		_, _ = leaf.Write(contents)
+		writeUint64(leaf, uint64(info.Size()))
+		copied, copyErr := io.Copy(leaf, &contextReader{ctx: ctx, source: file})
+		closeErr := file.Close()
+		if err := errors.Join(copyErr, closeErr); err != nil {
+			return err
+		}
+		if copied != info.Size() {
+			return fmt.Errorf("file %q changed while hashing", name)
+		}
 		var sum [sha256.Size]byte
 		copy(sum[:], leaf.Sum(nil))
 		entries = append(entries, treeEntry{path: relative, digest: sum})
@@ -101,6 +116,19 @@ func SumTree(fsys fs.FS, dir string) (TreeDigest, error) {
 	var digest TreeDigest
 	copy(digest[:], tree.Sum(nil))
 	return digest, nil
+}
+
+// contextReader aborts a streaming read as soon as ctx is cancelled.
+type contextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.source.Read(buffer)
 }
 
 func writeUint64(dst io.Writer, value uint64) {

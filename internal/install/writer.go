@@ -94,6 +94,9 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("acquire project writer: context is nil")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("acquire project writer: %w", err)
+	}
 	if err := prepareManagedDirectories(p); err != nil {
 		return nil, fmt.Errorf("prepare project transaction paths: %w", err)
 	}
@@ -236,7 +239,7 @@ func (w *projectWriter) readLock() (Lock, []byte, bool, error) {
 	return lock, contents, true, nil
 }
 
-func (w *projectWriter) preflight(lock Lock, skill registry.SkillID) (bool, error) {
+func (w *projectWriter) preflight(ctx context.Context, lock Lock, skill registry.SkillID) (bool, error) {
 	destination := w.project.destination(skill.Name().String())
 	exists, err := inspectDestination(destination)
 	if err != nil {
@@ -252,7 +255,7 @@ func (w *projectWriter) preflight(lock Lock, skill registry.SkillID) (bool, erro
 	if !exists {
 		return false, nil
 	}
-	actual, err := agentskill.SumTree(os.DirFS(destination), ".")
+	actual, err := agentskill.SumTree(ctx, os.DirFS(destination), ".")
 	if err != nil {
 		return false, fmt.Errorf("verify installed skill %s: %w", skill.String(), err)
 	}

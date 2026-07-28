@@ -38,7 +38,7 @@ func newFixture(t *testing.T, instructions, asset string) catalogFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := agentskill.SumTree(directory.FS(), ".")
+	digest, err := agentskill.SumTree(context.Background(), directory.FS(), ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestConcurrentEquivalentMaterializationSharesOneImmutableTree(t *testing.T)
 		}
 	}
 	_, final := catalog.treePaths(fixture.digest)
-	if err := verifyTree(final, fixture.digest); err != nil {
+	if err := verifyTree(context.Background(), final, fixture.digest); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := os.ReadDir(filepath.Dir(final))

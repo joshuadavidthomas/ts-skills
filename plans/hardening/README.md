@@ -31,7 +31,7 @@ never reused or renumbered.)
 
 | # | Plan | Title | Effort | Depends on | Status |
 |---|------|-------|--------|------------|--------|
-| 1 | [001](001-thread-context-through-tree-walks.md) | Thread context through tree walks and serving | L | — | TODO |
+| 1 | [001](001-thread-context-through-tree-walks.md) | Thread context through tree walks and serving | L | — | DONE |
 | 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | TODO |
 | 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | TODO |
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | TODO |
@@ -79,6 +79,17 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 001 landed — `SumTree` takes ctx and hashes through a
+  cancellation-aware stream (fixed vectors unchanged); storage verify,
+  registry capture, client fetch, install preflight, and web
+  `resolveTreeFile` all thread the request/operation context. Recovery
+  paths (`stabilizeDestination` sync, `classifyTree`) hash and sync on
+  `context.Background()` deliberately — journal replay never bails on
+  cancellation. web.go had a second `resolveTreeFile` call site
+  (candidate review page) beyond the one the plan named; both updated.
+  `syncTree` gained per-entry ctx checks with phase-boundary checks in
+  `install`. Next: 016.
 
 - **2025-07-28**: Second round filed — plans 009–020 from the design
   review; effort renamed idiomatic-hardening → hardening (directory moved),

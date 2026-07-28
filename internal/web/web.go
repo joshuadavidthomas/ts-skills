@@ -2,6 +2,7 @@ package web
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -214,7 +215,7 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tree.Close() }()
-	selected, err := resolveTreeFile(tree, r.URL.Query())
+	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this skill.")
 		return
@@ -337,7 +338,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tree.Close() }()
-	selected, err := resolveTreeFile(tree, r.URL.Query())
+	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this candidate.")
 		return
@@ -660,7 +661,7 @@ type resolvedTreeFile struct {
 	Binary  bool
 }
 
-func resolveTreeFile(tree fs.FS, query map[string][]string) (resolvedTreeFile, error) {
+func resolveTreeFile(ctx context.Context, tree fs.FS, query map[string][]string) (resolvedTreeFile, error) {
 	selectedPath := agentskill.Filename
 	if requested, ok := query["file"]; ok {
 		if len(requested) != 1 {
@@ -675,6 +676,9 @@ func resolveTreeFile(tree fs.FS, query map[string][]string) (resolvedTreeFile, e
 	err := fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if name == "." {
 			return nil
@@ -718,14 +722,33 @@ func resolveTreeFile(tree fs.FS, query map[string][]string) (resolvedTreeFile, e
 	}
 
 	sortFileTree(root)
-	contents, err := fs.ReadFile(tree, selectedPath)
+	file, err := tree.Open(selectedPath)
 	if err != nil {
 		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
 	}
-	if !utf8.Valid(contents) {
+	var contents bytes.Buffer
+	_, copyErr := io.Copy(&contents, &contextReader{ctx: ctx, source: file})
+	closeErr := file.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
+	}
+	if !utf8.Valid(contents.Bytes()) {
 		return resolvedTreeFile{Tree: root, Path: selectedPath, Binary: true}, nil
 	}
-	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: string(contents)}, nil
+	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: contents.String()}, nil
+}
+
+// contextReader aborts a streaming read as soon as ctx is cancelled.
+type contextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (r *contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.source.Read(buffer)
 }
 
 func sortFileTree(node *fileTreeNode) {
