@@ -264,7 +264,13 @@ func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFacto
 		err = errors.Join(err, active.close())
 	}()
 
-	server := newHTTPServer(active.handler, handlers)
+	// serverCtx owns every admitted request's context; cancelling it after
+	// the HTTP shutdown finishes unblocks handlers still observing
+	// r.Context(), so the bounded drain below can complete.
+	serverCtx, cancelServerWork := context.WithCancel(ctx)
+	defer cancelServerWork()
+
+	server := newHTTPServer(serverCtx, active.handler, handlers)
 	serveResult := make(chan error, 1)
 	go func() {
 		serveResult <- server.Serve(active.listener)
@@ -276,6 +282,7 @@ func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFacto
 	case serveErr = <-serveResult:
 		handlers.closeAdmission()
 		shutdownErr = shutdownHTTP(server, timeout)
+		cancelServerWork()
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
 		} else if serveErr != nil {
@@ -284,6 +291,7 @@ func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFacto
 	case <-ctx.Done():
 		handlers.closeAdmission()
 		shutdownErr = shutdownHTTP(server, timeout)
+		cancelServerWork()
 		serveErr = <-serveResult
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
@@ -291,12 +299,27 @@ func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFacto
 			serveErr = fmt.Errorf("serve Tailnet HTTP during shutdown: %w", serveErr)
 		}
 	}
-	handlers.wait()
-	return errors.Join(shutdownErr, serveErr)
+	// The drain is bounded by the same deadline as the HTTP shutdown: a
+	// handler that ignores its context must not hold the process open
+	// forever. The waiter channel is buffered so an abandoned waiter
+	// goroutine always sends and exits.
+	drained := make(chan struct{}, 1)
+	go func() {
+		handlers.wait()
+		drained <- struct{}{}
+	}()
+	var drainErr error
+	select {
+	case <-drained:
+	case <-time.After(timeout):
+		drainErr = fmt.Errorf("handler drain exceeded %s: abandoning stuck handlers", timeout)
+	}
+	return errors.Join(shutdownErr, serveErr, drainErr)
 }
 
-func newHTTPServer(handler http.Handler, handlers *handlerGate) *http.Server {
+func newHTTPServer(baseCtx context.Context, handler http.Handler, handlers *handlerGate) *http.Server {
 	return &http.Server{
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			if !handlers.admit() {
 				writer.Header().Set("Connection", "close")

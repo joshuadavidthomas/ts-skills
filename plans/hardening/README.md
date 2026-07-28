@@ -33,7 +33,7 @@ never reused or renumbered.)
 |---|------|-------|--------|------------|--------|
 | 1 | [001](001-thread-context-through-tree-walks.md) | Thread context through tree walks and serving | L | — | DONE |
 | 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | DONE |
-| 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | TODO |
+| 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | DONE |
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | TODO |
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | TODO |
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | TODO |
@@ -79,6 +79,22 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 002 landed — `runWithHandlerGate` derives a cancellable
+  `serverCtx` from the run context, wires it as `http.Server.BaseContext`,
+  and cancels it after `shutdownHTTP` returns, so request contexts die with
+  the daemon either way (child-of-ctx cancellation actually lands first).
+  The bare `handlers.wait()` became a bounded wait derived from the existing
+  HTTP shutdown timeout; expiry joins a `handler drain exceeded <bound>
+  error into the run result instead of hanging. The old
+  `TestRunWaitsForHandlersAfterForcedHTTPShutdown` fixture, which asserted
+  the unbounded semantics this plan removed, was reworked into
+  `TestRunBoundsDrainWhenHandlerIgnoresShutdown` per the plan's test plan;
+  new `TestRunDrainsHandlerObservingRequestContext` covers the
+  context-observing handler that drains inside the graceful window. One
+  deviation from the plan text: step 2's "existing tests pass unchanged"
+  could not hold because that one fixture encoded the pre-plan semantics —
+  the plan's own test section sanctioned extending it. Next: 003.
 
 - **2026-07-28**: 016 landed — `agentskill.Inspect` composes `Load` +
   ctx-aware `SumTree` into one `Inspection` value exposing `Directory`,

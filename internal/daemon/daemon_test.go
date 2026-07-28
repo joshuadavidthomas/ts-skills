@@ -31,7 +31,10 @@ func (l *recordingListener) Close() error {
 }
 
 func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
-	server := newHTTPServer(http.NotFoundHandler(), newHandlerGate(nil))
+	server := newHTTPServer(context.Background(), http.NotFoundHandler(), newHandlerGate(nil))
+	if server.BaseContext == nil {
+		t.Error("HTTP server has no base context for handler cancellation")
+	}
 	timeouts := map[string]struct {
 		got  time.Duration
 		want time.Duration
@@ -59,7 +62,7 @@ func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
 	}
 }
 
-func TestRunWaitsForHandlersAfterForcedHTTPShutdown(t *testing.T) {
+func TestRunBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -79,13 +82,15 @@ func TestRunWaitsForHandlersAfterForcedHTTPShutdown(t *testing.T) {
 	}}
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
+	handlerReturned := make(chan struct{})
 	tailnetClosed := make(chan struct{})
 	storageClosed := make(chan struct{})
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		record("handler-started")
 		close(handlerStarted)
+		defer close(handlerReturned)
 		defer record("tree-closed")
-		<-releaseHandler
+		<-releaseHandler // ignores r.Context() like a pre-hardening handler
 		record("handler-finished")
 	})
 	cleanup := &runtimeCleanup{
@@ -132,6 +137,7 @@ func TestRunWaitsForHandlersAfterForcedHTTPShutdown(t *testing.T) {
 		t.Fatal("HTTP handler did not start")
 	}
 
+	shutdownStarted := time.Now()
 	cancel()
 	select {
 	case <-listenerClosed:
@@ -147,42 +153,180 @@ func TestRunWaitsForHandlersAfterForcedHTTPShutdown(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("HTTP connection was not closed after the shutdown timeout")
 	}
-	select {
-	case <-tailnetClosed:
-		t.Fatal("Tailnet runtime closed before the active handler finished")
-	default:
-	}
-	select {
-	case <-storageClosed:
-		t.Fatal("storage closed before the active handler finished")
-	default:
-	}
 
-	close(releaseHandler)
+	// The stuck handler must not hold the daemon open: run returns once the
+	// drain bound expires, reporting both the forced HTTP shutdown and the
+	// bounded drain.
 	select {
 	case err := <-runResult:
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("run error = %v, want HTTP shutdown deadline", err)
 		}
+		if !strings.Contains(err.Error(), "handler drain exceeded 20ms") {
+			t.Fatalf("run error = %v, want the drain bound reported", err)
+		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not finish cleanup after the handler returned")
+		t.Fatal("daemon hung on a handler that ignores shutdown")
+	}
+	if elapsed := time.Since(shutdownStarted); elapsed > 2*time.Second {
+		t.Fatalf("shutdown took %s, want a generous multiple of the 20ms bound", elapsed)
+	}
+
+	// Cleanup ran while the stuck handler was still blocked.
+	select {
+	case <-tailnetClosed:
+	default:
+		t.Fatal("Tailnet runtime was not closed after the drain bound expired")
+	}
+	select {
+	case <-storageClosed:
+	default:
+		t.Fatal("storage was not closed after the drain bound expired")
+	}
+
+	close(releaseHandler)
+	select {
+	case <-handlerReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("stuck handler did not return after release")
 	}
 
 	eventMu.Lock()
 	gotEvents := append([]string(nil), events...)
 	eventMu.Unlock()
-	wantEvents := []string{
-		"handler-started",
-		"listener-closed",
-		"connection-forced-closed",
-		"handler-finished",
-		"tree-closed",
-		"tailnet-closed",
-		"storage-closed",
+	if gotEvents[0] != "handler-started" {
+		t.Fatalf("lifecycle events = %v, want handler-started first", gotEvents)
 	}
-	if !reflect.DeepEqual(gotEvents, wantEvents) {
-		t.Fatalf("lifecycle events = %v, want %v", gotEvents, wantEvents)
+	tailnetIndex := indexOf(gotEvents, "tailnet-closed")
+	if tailnetIndex < 0 || !containsAll(gotEvents, "listener-closed", "connection-forced-closed", "storage-closed", "handler-finished", "tree-closed") {
+		t.Fatalf("lifecycle events = %v, want the full lifecycle set", gotEvents)
 	}
+	if gotEvents[tailnetIndex+1] != "storage-closed" {
+		t.Fatalf("lifecycle events = %v, want storage-closed right after tailnet-closed", gotEvents)
+	}
+	if indexOf(gotEvents, "handler-finished") < tailnetIndex {
+		t.Fatalf("lifecycle events = %v, want the stuck handler abandoned before it finished", gotEvents)
+	}
+}
+
+func TestRunDrainsHandlerObservingRequestContext(t *testing.T) {
+	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var eventMu sync.Mutex
+	var events []string
+	record := func(event string) {
+		eventMu.Lock()
+		events = append(events, event)
+		eventMu.Unlock()
+	}
+	listener := &recordingListener{Listener: baseListener, onClose: func() {
+		record("listener-closed")
+	}}
+	handlerStarted := make(chan struct{})
+	handlerReturned := make(chan struct{})
+	tailnetClosed := make(chan struct{})
+	handler := http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		record("handler-started")
+		close(handlerStarted)
+		defer close(handlerReturned)
+		defer record("tree-closed")
+		<-request.Context().Done()
+		record("handler-finished")
+	})
+	cleanup := &runtimeCleanup{
+		closeNetwork: func() error {
+			record("tailnet-closed")
+			close(tailnetClosed)
+			return nil
+		},
+		closeStorage: func() error {
+			record("storage-closed")
+			return nil
+		},
+	}
+	factory := func(context.Context, Config) (*runtime, error) {
+		return &runtime{
+			listener: listener,
+			handler:  handler,
+			close:    cleanup.close,
+		}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stateDir := t.TempDir()
+	runResult := make(chan error, 1)
+	go func() {
+		runResult <- runWithHTTPShutdownTimeout(ctx, Config{
+			StateDir: stateDir,
+			Hostname: "test-daemon",
+		}, factory, 20*time.Millisecond)
+	}()
+
+	responseResult := make(chan error, 1)
+	go func() {
+		response, err := http.Get("http://" + baseListener.Addr().String())
+		if err == nil {
+			_, _ = io.Copy(io.Discard, response.Body)
+			err = response.Body.Close()
+		}
+		responseResult <- err
+	}()
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("HTTP handler did not start")
+	}
+
+	cancel()
+	select {
+	case err := <-runResult:
+		if err != nil && strings.Contains(err.Error(), "handler drain exceeded") {
+			t.Fatalf("run error = %v, want no drain error for a context-observing handler", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("daemon did not drain a context-observing handler")
+	}
+	select {
+	case <-handlerReturned:
+	case <-time.After(5 * time.Second):
+		t.Fatal("context-observing handler was abandoned")
+	}
+	// The handler drains within the graceful window, so the client gets a
+	// completed response instead of a force-closed connection.
+	if err := <-responseResult; err != nil {
+		t.Fatalf("gracefully drained request failed: %v", err)
+	}
+
+	eventMu.Lock()
+	gotEvents := append([]string(nil), events...)
+	eventMu.Unlock()
+	if !containsAll(gotEvents, "handler-started", "listener-closed", "handler-finished", "tree-closed", "tailnet-closed", "storage-closed") {
+		t.Fatalf("lifecycle events = %v, want the full lifecycle set", gotEvents)
+	}
+	if tailnetIndex := indexOf(gotEvents, "tailnet-closed"); indexOf(gotEvents, "handler-finished") > tailnetIndex || indexOf(gotEvents, "tree-closed") > tailnetIndex {
+		t.Fatalf("lifecycle events = %v, want the handler drained before runtime cleanup", gotEvents)
+	}
+}
+
+func indexOf(events []string, want string) int {
+	for index, event := range events {
+		if event == want {
+			return index
+		}
+	}
+	return -1
+}
+
+func containsAll(events []string, wants ...string) bool {
+	for _, want := range wants {
+		if indexOf(events, want) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRunRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
