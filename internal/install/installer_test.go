@@ -96,7 +96,7 @@ func TestInstallerVerifiesBeforeReplacingDestination(t *testing.T) {
 	}
 }
 
-func TestInstallRefusesUnmanagedDestinationWithoutChangingIt(t *testing.T) {
+func TestInstallFetchesBeforeRejectingUnmanagedDestination(t *testing.T) {
 	skill, publication, files := testPublication(t, "team", "sample", "managed replacement")
 	remote := &scriptedRemote{publication: publication, files: files}
 	installer, err := NewInstaller(remote)
@@ -135,8 +135,8 @@ func TestInstallRefusesUnmanagedDestinationWithoutChangingIt(t *testing.T) {
 	if !bytes.Equal(after, before) {
 		t.Fatalf("unmanaged destination changed from %q to %q", before, after)
 	}
-	if remote.last != nil {
-		t.Fatal("Install fetched a replacement before rejecting the unmanaged destination")
+	if remote.last == nil || !remote.last.closed {
+		t.Fatal("Install did not close the fetched replacement")
 	}
 	if _, err := os.Stat(project.LockPath()); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("Install created a lock for the rejected destination: %v", err)
@@ -471,6 +471,42 @@ func TestInstallCloseCleanupFailureIsRetriedByNextWriter(t *testing.T) {
 	}
 	if err := writer.close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAcquireWriterReportsRecoveryBeforeLaterRecoveryFailure(t *testing.T) {
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	completed := filepath.Join(project.operationsDir(), "a-completed")
+	if err := os.Mkdir(completed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	malformed := filepath.Join(project.operationsDir(), "b-malformed")
+	if err := os.Mkdir(malformed, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(malformed, journalName), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = project.acquireWriter(context.Background())
+	if !errors.Is(err, ErrRecovered) {
+		t.Fatalf("writer error = %v, want ErrRecovered", err)
+	}
+	if !errors.Is(err, ErrRecoveryRequired) {
+		t.Fatalf("writer error = %v, want ErrRecoveryRequired", err)
+	}
+	if _, err := os.Stat(completed); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("completed recovery operation remains: %v", err)
 	}
 }
 

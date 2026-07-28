@@ -719,8 +719,12 @@ func TestTransactionCrashesRecoverThroughPublicInstall(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := installer.Install(context.Background(), project, otherRequirement); !errors.Is(err, ErrIdentityMismatch) {
+			_, err = installer.Install(context.Background(), project, otherRequirement)
+			if !errors.Is(err, ErrIdentityMismatch) {
 				t.Fatalf("public recovery re-entry error = %v, want identity mismatch", err)
+			}
+			if !errors.Is(err, ErrRecovered) {
+				t.Fatalf("public recovery re-entry error = %v, want ErrRecovered", err)
 			}
 			assertProjectAgreement(t, project, skill)
 		})
@@ -1007,7 +1011,95 @@ func (r *blockingRemote) Fetch(ctx context.Context, _ Requirement) (FetchedSkill
 	return NewFetchedSkill(r.publication, &fetchedMap{MapFS: r.files})
 }
 
-func TestProjectWriterExcludesConcurrentInstaller(t *testing.T) {
+func TestRestoreFetchDoesNotHoldProjectWriter(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "body")
+	initial, _ := NewInstaller(&scriptedRemote{publication: publication, files: files})
+	project, _ := OpenProject(t.TempDir())
+	requirement, _ := Current(skill)
+	if _, err := initial.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(project.destination("sample")); err != nil {
+		t.Fatal(err)
+	}
+	remote := &blockingRemote{started: make(chan struct{}), release: make(chan struct{}), publication: publication, files: files}
+	installer, _ := NewInstaller(remote)
+	restoreDone := make(chan error, 1)
+	go func() { restoreDone <- installer.Restore(context.Background(), project) }()
+	<-remote.started
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatalf("writer acquisition during restore fetch = %v", err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	close(remote.release)
+	if err := <-restoreDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRestoreRejectsProjectChangesDuringFetch(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "body")
+	initial, _ := NewInstaller(&scriptedRemote{publication: publication, files: files})
+	project, _ := OpenProject(t.TempDir())
+	requirement, _ := Current(skill)
+	if _, err := initial.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(project.destination("sample")); err != nil {
+		t.Fatal(err)
+	}
+	remote := &blockingRemote{started: make(chan struct{}), release: make(chan struct{}), publication: publication, files: files}
+	installer, _ := NewInstaller(remote)
+	restoreDone := make(chan error, 1)
+	go func() { restoreDone <- installer.Restore(context.Background(), project) }()
+	<-remote.started
+	lockBytes, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(project.LockPath(), append(lockBytes, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(remote.release)
+	if err := <-restoreDone; !errors.Is(err, ErrProjectChanged) {
+		t.Fatalf("Restore error = %v, want ErrProjectChanged", err)
+	}
+	if _, err := os.Stat(project.destination("sample")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Restore installed a changed project destination: %v", err)
+	}
+}
+
+func TestRestoreRejectsDestinationChangesDuringFetch(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "body")
+	initial, _ := NewInstaller(&scriptedRemote{publication: publication, files: files})
+	project, _ := OpenProject(t.TempDir())
+	requirement, _ := Current(skill)
+	if _, err := initial.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(project.destination("sample")); err != nil {
+		t.Fatal(err)
+	}
+	remote := &blockingRemote{started: make(chan struct{}), release: make(chan struct{}), publication: publication, files: files}
+	installer, _ := NewInstaller(remote)
+	restoreDone := make(chan error, 1)
+	go func() { restoreDone <- installer.Restore(context.Background(), project) }()
+	<-remote.started
+	repair, _ := NewInstaller(&scriptedRemote{publication: publication, files: files})
+	if err := repair.Restore(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	close(remote.release)
+	if err := <-restoreDone; !errors.Is(err, ErrProjectChanged) {
+		t.Fatalf("Restore error = %v, want ErrProjectChanged", err)
+	}
+	assertProjectAgreement(t, project, skill)
+}
+
+func TestFetchDoesNotHoldProjectWriter(t *testing.T) {
 	skill, publication, files := testPublication(t, "team", "sample", "body")
 	remote := &blockingRemote{started: make(chan struct{}), release: make(chan struct{}), publication: publication, files: files}
 	installer, _ := NewInstaller(remote)
@@ -1018,9 +1110,12 @@ func TestProjectWriterExcludesConcurrentInstaller(t *testing.T) {
 	<-remote.started
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
-	_, err := installer.Install(ctx, project, requirement)
-	if !errors.Is(err, ErrBusy) || !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("concurrent error = %v", err)
+	writer, err := project.acquireWriter(ctx)
+	if err != nil {
+		t.Fatalf("writer acquisition during fetch = %v", err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
 	}
 	close(remote.release)
 	if err := <-firstDone; err != nil {

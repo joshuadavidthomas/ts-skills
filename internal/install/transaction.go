@@ -601,37 +601,40 @@ func lockTemporaryPath(project Project, operation string) string {
 	return filepath.Join(filepath.Dir(project.LockPath()), ".ts-skills-lock-"+operation+".tmp")
 }
 
-func (w *projectWriter) recover() error {
+func (w *projectWriter) recover() (bool, error) {
 	entries, err := os.ReadDir(w.project.operationsDir())
 	if err != nil {
-		return fmt.Errorf("read project operations: %w", err)
+		return false, fmt.Errorf("read project operations: %w", err)
 	}
+	recovered := false
 	for _, entry := range entries {
 		operationDir := filepath.Join(w.project.operationsDir(), entry.Name())
 		if err := rejectPathComponents(operationDir, false); err != nil {
-			return fmt.Errorf("%w: invalid operation path %q: %v", ErrRecoveryRequired, operationDir, err)
+			return recovered, fmt.Errorf("%w: invalid operation path %q: %v", ErrRecoveryRequired, operationDir, err)
 		}
 		info, err := os.Lstat(operationDir)
 		if err != nil || pathInfoIsLink(info) || !info.IsDir() {
-			return fmt.Errorf("%w: invalid operation path %q", ErrRecoveryRequired, operationDir)
+			return recovered, fmt.Errorf("%w: invalid operation path %q", ErrRecoveryRequired, operationDir)
 		}
 		journalPath := filepath.Join(operationDir, journalName)
 		if err := rejectPathComponents(journalPath, true); err != nil {
-			return fmt.Errorf("inspect operation journal: %w", err)
+			return recovered, fmt.Errorf("inspect operation journal: %w", err)
 		}
 		if _, err := os.Lstat(journalPath); errors.Is(err, fs.ErrNotExist) {
 			if err := durableRemoveAll(operationDir, w.project.operationsDir(), "journal-less-operation"); err != nil {
-				return err
+				return recovered, err
 			}
+			recovered = true
 			continue
 		} else if err != nil {
-			return fmt.Errorf("inspect operation journal: %w", err)
+			return recovered, fmt.Errorf("inspect operation journal: %w", err)
 		}
 		if err := w.recoverOperation(operationDir, entry.Name()); err != nil {
-			return err
+			return recovered, err
 		}
+		recovered = true
 	}
-	return nil
+	return recovered, nil
 }
 
 type treeState uint8

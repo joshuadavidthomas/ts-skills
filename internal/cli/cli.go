@@ -190,28 +190,35 @@ func commandInstaller(configPath, projectPath string) (*install.Installer, insta
 }
 
 func commandError(operation string, err error) error {
+	var message string
 	switch {
 	case errors.Is(err, install.ErrBusy):
-		return fmt.Errorf("cannot %s while another ts-skills process is changing this project; wait and try again: %w", operation, err)
+		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
+	case errors.Is(err, install.ErrProjectChanged):
+		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
 	case errors.Is(err, install.ErrUnmanagedDestination):
-		return fmt.Errorf("cannot %s because the skill destination exists outside this project lock; move it aside and try again: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the skill destination exists outside this project lock; move it aside and try again", operation)
 	case errors.Is(err, install.ErrLocalChanges):
-		return fmt.Errorf("cannot %s because an installed skill has local changes; preserve or remove those changes before trying again: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because an installed skill has local changes; preserve or remove those changes before trying again", operation)
 	case errors.Is(err, install.ErrRecoveryRequired):
-		return fmt.Errorf("cannot %s because a prior project update needs manual recovery: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because a prior project update needs manual recovery", operation)
 	case errors.Is(err, install.ErrIdentityMismatch), errors.Is(err, install.ErrDigestMismatch):
-		return fmt.Errorf("cannot %s because the registry response did not match the requested skill; project files were not changed: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
 	case errors.Is(err, registry.ErrNotFound):
-		return fmt.Errorf("cannot %s because the requested skill publication was not found: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
 	case errors.Is(err, safetree.ErrLimitExceeded):
-		return fmt.Errorf("cannot %s because the downloaded skill exceeds the configured safety limits: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the downloaded skill exceeds the configured safety limits", operation)
 	case errors.Is(err, protocol.ErrProtocol):
-		return fmt.Errorf("cannot %s because the registry returned an invalid response; project files were not changed: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the registry returned an invalid response", operation)
 	case errors.Is(err, protocol.ErrInvalidRequest):
-		return fmt.Errorf("cannot %s because the registry rejected the request as invalid: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the registry rejected the request as invalid", operation)
 	case errors.Is(err, protocol.ErrInternal):
-		return fmt.Errorf("cannot %s because the registry could not complete the request: %w", operation, err)
+		message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
 	default:
-		return fmt.Errorf("%s failed: %w", operation, err)
+		message = fmt.Sprintf("%s failed", operation)
 	}
+	if errors.Is(err, install.ErrRecovered) {
+		message += "; a previously interrupted project update was recovered"
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }

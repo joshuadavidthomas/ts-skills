@@ -43,7 +43,7 @@ never reused or renumbered.)
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | DONE |
 | 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | DONE |
 | 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | DONE |
-| 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | TODO |
+| 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | DONE |
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | TODO |
 | 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | TODO |
 | 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | TODO |
@@ -79,6 +79,8 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 015 landed — Install now fetches before it acquires the project writer. Restore captures the lock bytes and each locked destination's matching state, fetches missing publications without a writer, then reacquires, rejects any changed snapshot with `ErrProjectChanged`, and stages, verifies, and installs under the writer. Project-local staging stays writer-owned because orphan recovery removes unowned `staging-*` trees. Writer acquisition records successful orphan or transaction recovery; failures after that fact match `ErrRecovered`, and CLI diagnostics name the recovered prior update instead of claiming the project stayed unchanged. Tests prove blocked Install and Restore fetches leave the writer free, lock and destination changes fail closed, partial recovery facts survive a later recovery error, and crash recovery still reports the original failure plus `ErrRecovered`. `go test -race ./internal/install/ ./internal/cli/ -count=1` passed. Deviation: `transaction.go` now returns whether recovery completed work so writer acquisition can preserve the recovery fact; recovery policy and journal phases are unchanged. Next: 009.
 
 - **2026-07-28**: 010 landed — `registry.Catalog` now owns publication and
   current-selection decisions. Its narrowed `CatalogStore` port records

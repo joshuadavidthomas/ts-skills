@@ -62,6 +62,7 @@ type projectWriter struct {
 	// ownership. Failed top-level staging cleanup is handed to the next writer;
 	// operation staging remains with operation recovery.
 	staging       map[string]struct{}
+	recovered     bool
 	closed        bool
 	removeStaging func(string) error
 	closeLock     func(*flock.Flock) error
@@ -138,12 +139,15 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 		project: p, lock: fileLock, staging: make(map[string]struct{}),
 		removeStaging: projectWriterRemoveStaging, closeLock: (*flock.Flock).Close,
 	}
-	if err := writer.recoverOrphanStaging(); err != nil {
-		return nil, errors.Join(err, writer.close())
+	orphansRecovered, err := writer.recoverOrphanStaging()
+	if err != nil {
+		return nil, errors.Join(recoveryFailure(orphansRecovered, err), writer.close())
 	}
-	if err := writer.recover(); err != nil {
-		return nil, errors.Join(err, writer.close())
+	transactionsRecovered, err := writer.recover()
+	if err != nil {
+		return nil, errors.Join(recoveryFailure(orphansRecovered || transactionsRecovered, err), writer.close())
 	}
+	writer.recovered = orphansRecovered || transactionsRecovered
 	return writer, nil
 }
 
@@ -185,11 +189,12 @@ func (w *projectWriter) close() error {
 	return cleanupErr
 }
 
-func (w *projectWriter) recoverOrphanStaging() error {
+func (w *projectWriter) recoverOrphanStaging() (bool, error) {
 	entries, err := os.ReadDir(w.project.StateDir())
 	if err != nil {
-		return fmt.Errorf("read project state for orphan staging: %w", err)
+		return false, fmt.Errorf("read project state for orphan staging: %w", err)
 	}
+	recovered := false
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, installStagingPrefix) {
@@ -197,23 +202,24 @@ func (w *projectWriter) recoverOrphanStaging() error {
 		}
 		path := filepath.Join(w.project.StateDir(), name)
 		if name == installStagingPrefix {
-			return recoveryError(fmt.Sprintf("orphan staging path %q has no identity", path), nil)
+			return recovered, recoveryError(fmt.Sprintf("orphan staging path %q has no identity", path), nil)
 		}
 		if err := rejectPathComponents(path, false); err != nil {
-			return recoveryError(fmt.Sprintf("orphan staging path %q is invalid", path), err)
+			return recovered, recoveryError(fmt.Sprintf("orphan staging path %q is invalid", path), err)
 		}
 		info, err := os.Lstat(path)
 		if err != nil {
-			return recoveryError(fmt.Sprintf("orphan staging path %q cannot be inspected", path), err)
+			return recovered, recoveryError(fmt.Sprintf("orphan staging path %q cannot be inspected", path), err)
 		}
 		if pathInfoIsLink(info) || !info.IsDir() {
-			return recoveryError(fmt.Sprintf("orphan staging path %q is not a real directory", path), nil)
+			return recovered, recoveryError(fmt.Sprintf("orphan staging path %q is not a real directory", path), nil)
 		}
 		if err := durableRemoveAll(path, w.project.StateDir(), "orphan-install-staging"); err != nil {
-			return fmt.Errorf("clean orphan install staging %q: %w", path, err)
+			return recovered, fmt.Errorf("clean orphan install staging %q: %w", path, err)
 		}
+		recovered = true
 	}
-	return nil
+	return recovered, nil
 }
 
 func (w *projectWriter) readLock() (Lock, []byte, bool, error) {

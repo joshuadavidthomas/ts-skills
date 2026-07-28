@@ -74,8 +74,9 @@ switch; the "did not match / not changed" branches are the target text).
 - tests in those packages
 
 **Out of scope**:
-- transaction.go internals/recovery policy — plan 011 (land that first;
-  this plan consumes whatever it produces).
+- transaction recovery policy — plan 011 owns it. This plan may expose
+  whether successful recovery changed the project, but does not alter recovery
+  decisions or journal phases.
 - Remote behavior, protocol — fetch semantics unchanged.
 - Holding-lock-while-verifying staging — staging under the writer is
   correct (it owns the state dir); only the network fetch moves out.
@@ -97,10 +98,11 @@ idempotent fast-path still exists, now purely a lock-bearing check.
 
 `Restore` becomes three phases: (a) acquire writer, read lock, compute the
 missing set, capture lock bytes + destination state, release writer; (b)
-fetch + stage-verify all missing publications unlocked; (c) reacquire
-writer, require the live lock and preflight state to match the captured
-snapshot (else fail with a typed "project changed during restore" error —
-fail closed, user retries), then install. Keep existing
+fetch all missing publications unlocked; (c) reacquire writer, require the
+live lock and preflight state to match the captured snapshot (else fail with
+a typed "project changed during restore" error — fail closed, user retries),
+then stage, verify, and install under the writer. Project-local staging stays
+under the writer because orphan cleanup owns that namespace. Keep existing
 `ErrBusy` semantics for contemporaneous writers.
 
 **Verify**: `go test -race ./internal/install/ -run 'Restore' -count=1` → all pass.
@@ -138,7 +140,8 @@ new guarantee.
   transaction_test.go:701-719).
 - Restore: mid-restore lock mutation → typed "project changed" error, no
   partial install (assert final tree/lock agreement like the existing
-  agreement tests at transaction_test.go:115-163).
+  agreement tests at transaction_test.go:115-163). Fetching while blocked
+  does not hold the project writer.
 - Recovery-then-failure: inject prior journal (existing fixtures) + failing
   fetch → error matches both the real cause and the recovery fact; CLI
   message asserts the new wording.
@@ -157,12 +160,8 @@ new guarantee.
 
 Stop if:
 
-- `stageAndVerify`'s staging directory lives inside the writer-owned state
-  dir in a way that genuinely requires the lock during staging (the plan
-  assumes staging can happen unlocked as long as the *mutation* of the
-  project is locked — if staging-in-state-dir conflicts with another
-  process's writer, say so and describe the isolation options instead of
-  picking one).
+- Project-local staging must move outside the writer. It is deliberately
+  writer-owned: orphan cleanup removes unowned `staging-*` directories.
 - Plan 011 hasn't landed and the journal model is still flat — recovery
   facts are then guesswork; land 011 first (index says so).
 - Fetch-unlocked surfaces a correctness hole: the **content** fetched for

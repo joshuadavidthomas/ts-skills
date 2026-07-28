@@ -1,6 +1,7 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ var (
 	ErrIdentityMismatch     = errors.New("registry returned another publication")
 	ErrDigestMismatch       = errors.New("fetched tree digest does not match publication")
 	ErrRecoveryRequired     = errors.New("project transaction requires recovery")
+	ErrProjectChanged       = errors.New("project changed during restore")
+	ErrRecovered            = errors.New("recovered a prior interrupted project update")
 )
 
 type Installer struct {
@@ -38,11 +41,24 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 	if project.root == "" || requirement.skill.String() == "" {
 		return LockedSkill{}, fmt.Errorf("install requires a valid project and requirement")
 	}
+	fetched, err := i.remote.Fetch(ctx, requirement)
+	if err != nil {
+		return LockedSkill{}, fmt.Errorf("fetch skill %s: %w", requirement.skill.String(), err)
+	}
+	fetchedOwned := true
+	defer func() {
+		if fetchedOwned {
+			err = errors.Join(err, closeFetchedTree(fetched))
+		}
+	}()
+
 	writer, err := project.acquireWriter(ctx)
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	defer func() { err = errors.Join(err, writer.close()) }()
+	defer func() {
+		err = recoveryFailure(writer.recovered, errors.Join(err, closeWriter(writer)))
+	}()
 
 	oldLock, _, _, err := writer.readLock()
 	if err != nil {
@@ -52,11 +68,8 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	fetched, err := i.remote.Fetch(ctx, requirement)
-	if err != nil {
-		return LockedSkill{}, fmt.Errorf("fetch skill %s: %w", requirement.skill.String(), err)
-	}
-	verified, err := writer.stageAndVerify(ctx, requirement, fetched)
+	verified, fetchedClosed, err := writer.stageAndVerify(ctx, requirement, fetched)
+	fetchedOwned = !fetchedClosed
 	if err != nil {
 		return LockedSkill{}, err
 	}
@@ -87,57 +100,159 @@ func (i *Installer) Restore(ctx context.Context, project Project) (err error) {
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, writer.close()) }()
-
-	lock, _, _, err := writer.readLock()
+	plan, err := makeRestorePlan(ctx, writer)
+	firstRecovered := writer.recovered
+	if closeErr := closeWriter(writer); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
 	if err != nil {
-		return err
+		return recoveryFailure(firstRecovered, err)
 	}
-	missing := make([]registry.PublicationID, 0)
-	for _, locked := range lock.Skills() {
-		publication := locked.Publication()
-		matching, preflightErr := writer.preflight(ctx, lock, publication.Skill())
-		if preflightErr != nil {
-			return preflightErr
-		}
-		if !matching {
-			missing = append(missing, publication)
-		}
+	if len(plan.missing) == 0 {
+		return nil
 	}
 
-	type repair struct {
-		verified *verifiedTree
-	}
-	repairs := make([]repair, 0, len(missing))
-	for _, publication := range missing {
+	fetched := make([]fetchedRepair, 0, len(plan.missing))
+	defer func() {
+		for index := range fetched {
+			if fetched[index].owned {
+				err = errors.Join(err, closeFetchedTree(fetched[index].skill))
+			}
+		}
+		err = recoveryFailure(firstRecovered, err)
+	}()
+	for _, publication := range plan.missing {
 		requirement, exactErr := Exact(publication.Skill(), publication.Tree())
 		if exactErr != nil {
 			return exactErr
 		}
-		fetched, fetchErr := i.remote.Fetch(ctx, requirement)
+		skill, fetchErr := i.remote.Fetch(ctx, requirement)
 		if fetchErr != nil {
 			return fmt.Errorf("fetch locked skill %s: %w", publication.Skill().String(), fetchErr)
 		}
-		verified, verifyErr := writer.stageAndVerify(ctx, requirement, fetched)
+		fetched = append(fetched, fetchedRepair{requirement: requirement, skill: skill, owned: true})
+	}
+
+	writer, err = project.acquireWriter(ctx)
+	if err != nil {
+		return err
+	}
+	recovered := firstRecovered || writer.recovered
+	defer func() {
+		err = errors.Join(err, closeWriter(writer))
+		err = recoveryFailure(recovered, err)
+	}()
+	if err := plan.matches(ctx, writer); err != nil {
+		return err
+	}
+
+	repairs := make([]*verifiedTree, 0, len(fetched))
+	defer func() {
+		for _, repair := range repairs {
+			err = errors.Join(err, repair.close())
+		}
+	}()
+	for index := range fetched {
+		verified, fetchedClosed, verifyErr := writer.stageAndVerify(ctx, fetched[index].requirement, fetched[index].skill)
+		fetched[index].owned = !fetchedClosed
 		if verifyErr != nil {
 			return verifyErr
 		}
-		defer func() { err = errors.Join(err, verified.close()) }()
-		repairs = append(repairs, repair{verified: verified})
+		repairs = append(repairs, verified)
 	}
-
 	for _, repair := range repairs {
-		if err := writer.install(ctx, repair.verified, lock); err != nil {
+		if err := writer.install(ctx, repair, plan.lock); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirement, fetched FetchedSkill) (verified *verifiedTree, err error) {
+type restorePlan struct {
+	lock      Lock
+	lockBytes []byte
+	hadLock   bool
+	matching  map[registry.SkillID]bool
+	missing   []registry.PublicationID
+}
+
+type fetchedRepair struct {
+	requirement Requirement
+	skill       FetchedSkill
+	owned       bool
+}
+
+func makeRestorePlan(ctx context.Context, writer *projectWriter) (restorePlan, error) {
+	lock, lockBytes, hadLock, err := writer.readLock()
+	if err != nil {
+		return restorePlan{}, err
+	}
+	plan := restorePlan{
+		lock: lock, lockBytes: lockBytes, hadLock: hadLock,
+		matching: make(map[registry.SkillID]bool, len(lock.Skills())),
+		missing:  make([]registry.PublicationID, 0),
+	}
+	for _, locked := range lock.Skills() {
+		publication := locked.Publication()
+		matching, err := writer.preflight(ctx, lock, publication.Skill())
+		if err != nil {
+			return restorePlan{}, err
+		}
+		plan.matching[publication.Skill()] = matching
+		if !matching {
+			plan.missing = append(plan.missing, publication)
+		}
+	}
+	return plan, nil
+}
+
+func (p restorePlan) matches(ctx context.Context, writer *projectWriter) error {
+	lock, lockBytes, hadLock, err := writer.readLock()
+	if err != nil {
+		return errors.Join(ErrProjectChanged, err)
+	}
+	if hadLock != p.hadLock || !bytes.Equal(lockBytes, p.lockBytes) {
+		return ErrProjectChanged
+	}
+	for _, locked := range p.lock.Skills() {
+		matching, err := writer.preflight(ctx, lock, locked.Publication().Skill())
+		if err != nil {
+			return errors.Join(ErrProjectChanged, err)
+		}
+		if matching != p.matching[locked.Publication().Skill()] {
+			return ErrProjectChanged
+		}
+	}
+	return nil
+}
+
+func closeFetchedTree(fetched FetchedSkill) error {
 	tree := fetched.Tree()
 	if tree == nil {
-		return nil, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
+		return nil
+	}
+	return tree.Close()
+}
+
+func closeWriter(writer *projectWriter) error {
+	err := writer.close()
+	if err != nil && !writer.closed {
+		return errors.Join(err, writer.close())
+	}
+	return err
+}
+
+func recoveryFailure(recovered bool, err error) error {
+	if recovered && err != nil {
+		return errors.Join(err, ErrRecovered)
+	}
+	return err
+}
+
+func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirement, fetched FetchedSkill) (verified *verifiedTree, fetchedClosed bool, err error) {
+	tree := fetched.Tree()
+	if tree == nil {
+		return nil, false, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
 	}
 	defer func() {
 		if closeErr := tree.Close(); closeErr != nil {
@@ -148,19 +263,21 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 				}
 				verified = nil
 			}
+			return
 		}
+		fetchedClosed = true
 	}()
 
 	publication := fetched.Publication()
 	if publication.Skill() != requirement.Skill() {
-		return nil, fmt.Errorf("%w: requested %s, received %s", ErrIdentityMismatch, requirement.Skill().String(), publication.Skill().String())
+		return nil, false, fmt.Errorf("%w: requested %s, received %s", ErrIdentityMismatch, requirement.Skill().String(), publication.Skill().String())
 	}
 	if digest, exact := requirement.ExactDigest(); exact && publication.Tree() != digest {
-		return nil, fmt.Errorf("%w: registry returned a different exact digest", ErrIdentityMismatch)
+		return nil, false, fmt.Errorf("%w: registry returned a different exact digest", ErrIdentityMismatch)
 	}
 	snapshot, err := stageFetched(ctx, w.project.StateDir(), tree)
 	if err != nil {
-		return nil, fmt.Errorf("stage fetched tree: %w", err)
+		return nil, false, fmt.Errorf("stage fetched tree: %w", err)
 	}
 	defer func() {
 		if closeErr := snapshot.Close(); closeErr != nil {
@@ -175,21 +292,21 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 	}()
 	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
-		return nil, fmt.Errorf("validate fetched Agent Skill: %w", err)
+		return nil, false, fmt.Errorf("validate fetched Agent Skill: %w", err)
 	}
 	if err := inspection.RequireName(requirement.Skill().Name()); err != nil {
-		return nil, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, inspection.Document().Name.String())
+		return nil, false, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, inspection.Document().Name.String())
 	}
 	if inspection.Digest() != publication.Tree() {
-		return nil, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
+		return nil, false, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
 	}
 
 	staged, err := copySnapshotToProject(ctx, w.project, snapshot.FS())
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	w.staging[staged] = struct{}{}
-	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, nil
+	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, false, nil
 }
 
 func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (staged string, err error) {
