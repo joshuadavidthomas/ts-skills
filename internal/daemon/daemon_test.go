@@ -627,6 +627,62 @@ func TestDevConfigFromEnvDefaultsToLoopbackListen(t *testing.T) {
 	if config.Listen != "127.0.0.1:8080" {
 		t.Fatalf("default dev listen = %q", config.Listen)
 	}
+	if !config.EphemeralFallback {
+		t.Fatal("defaulted dev listen did not enable ephemeral fallback")
+	}
+
+	t.Setenv("TS_SKILLSD_DEV_LISTEN", "127.0.0.1:9000")
+	explicit, err := DevConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.EphemeralFallback {
+		t.Fatal("explicit dev listen enabled ephemeral fallback")
+	}
+}
+
+func TestDevRuntimeBusyDefaultPortFallsBackToEphemeral(t *testing.T) {
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = squatter.Close() }()
+	busy := squatter.Addr().String()
+
+	var started net.Addr
+	rt, err := buildDevRuntime(context.Background(), DevConfig{
+		StateDir: t.TempDir(), Listen: busy, EphemeralFallback: true,
+		Started: func(address net.Addr) { started = address },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := rt.close(); err != nil {
+			t.Errorf("close dev runtime: %v", err)
+		}
+	}()
+	bound := rt.listener.Addr().String()
+	if bound == busy {
+		t.Fatalf("fallback bound the busy address %q", busy)
+	}
+	if started == nil || started.String() != bound {
+		t.Fatalf("Started hook reported %v, listener bound %q", started, bound)
+	}
+}
+
+func TestDevRuntimeBusyExplicitPortFails(t *testing.T) {
+	squatter, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = squatter.Close() }()
+
+	rt, err := buildDevRuntime(context.Background(), DevConfig{StateDir: t.TempDir(), Listen: squatter.Addr().String()})
+	if err == nil {
+		_ = rt.close()
+		t.Fatal("buildDevRuntime bound an explicitly requested busy address")
+	}
 }
 
 func TestDevModeFromEnv(t *testing.T) {

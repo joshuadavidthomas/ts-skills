@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -47,6 +48,11 @@ type Config struct {
 type DevConfig struct {
 	StateDir string
 	Listen   string
+	// EphemeralFallback retries on port 0 when Listen is busy. It is set only
+	// when the listen address was defaulted, so an explicit address that is
+	// busy still fails loudly.
+	EphemeralFallback bool
+	Started           func(net.Addr)
 }
 
 // DevModeFromEnv reports whether TS_SKILLSD_DEV enables dev mode.
@@ -64,6 +70,7 @@ func DevModeFromEnv() (bool, error) {
 
 func DevConfigFromEnv() (DevConfig, error) {
 	listen := os.Getenv("TS_SKILLSD_DEV_LISTEN")
+	ephemeralFallback := listen == ""
 	if listen == "" {
 		listen = "127.0.0.1:8080"
 	}
@@ -81,7 +88,7 @@ func DevConfigFromEnv() (DevConfig, error) {
 		}
 		stateDir = filepath.Join(cache, "ts-skillsd-dev")
 	}
-	return normalizeDevConfig(DevConfig{StateDir: stateDir, Listen: listen})
+	return normalizeDevConfig(DevConfig{StateDir: stateDir, Listen: listen, EphemeralFallback: ephemeralFallback})
 }
 
 func normalizeDevConfig(config DevConfig) (DevConfig, error) {
@@ -495,8 +502,18 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 	}
 
 	listener, err := net.Listen("tcp", config.Listen)
+	if err != nil && config.EphemeralFallback && errors.Is(err, syscall.EADDRINUSE) {
+		host, _, splitErr := net.SplitHostPort(config.Listen)
+		if splitErr != nil {
+			return nil, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
+		}
+		listener, err = net.Listen("tcp", net.JoinHostPort(host, "0"))
+	}
 	if err != nil {
 		return nil, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
+	}
+	if config.Started != nil {
+		config.Started(listener.Addr())
 	}
 
 	cleanup := &runtimeCleanup{

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,8 +21,10 @@ func main() {
 			var config daemon.DevConfig
 			config, err = daemon.DevConfigFromEnv()
 			if err == nil {
-				fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode: http://%s (state: %s)\n", config.Listen, config.StateDir)
 				fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode treats every local connection as dev@localhost; never expose this listener\n")
+				config.Started = func(address net.Addr) {
+					fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode: http://%s (state: %s)\n", address, config.StateDir)
+				}
 				err = daemon.RunDev(ctx, config)
 			}
 		} else {
