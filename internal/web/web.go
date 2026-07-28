@@ -13,8 +13,10 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -184,13 +186,15 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type skillPageData struct {
-	Skill        string
-	Digest       string
-	PublishedBy  string
-	PublishedAt  string
-	DownloadPath string
-	Files        []string
-	SkillMD      string
+	Skill           string
+	Digest          string
+	PublishedBy     string
+	PublishedAt     string
+	DownloadPath    string
+	FileTree        *fileTreeNode
+	SelectedPath    string
+	SelectedContent string
+	SelectedBinary  bool
 }
 
 func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +214,11 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tree.Close()
-	files, skillDocument, err := reviewTree(tree)
+	selected, err := resolveTreeFile(tree, r.URL.Query())
+	if errors.Is(err, errTreeFileNotFound) {
+		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this skill.")
+		return
+	}
 	if err != nil {
 		h.handleError(w, err)
 		return
@@ -223,8 +231,8 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		PublishedAt: publication.PublishedAt().Format(time.RFC3339),
 		DownloadPath: "/api/" + protocol.Version + "/skills/" + resolved.Skill().Namespace().String() +
 			"/" + resolved.Skill().Name().String() + "/publications/" + resolved.Tree().String() + "/tree.zip",
-		Files:   files,
-		SkillMD: skillDocument,
+		FileTree: selected.Tree, SelectedPath: selected.Path,
+		SelectedContent: selected.Content, SelectedBinary: selected.Binary,
 	}
 	h.render(w, http.StatusOK, "skill", data)
 }
@@ -298,16 +306,18 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 }
 
 type reviewPageData struct {
-	CandidateID string
-	Skill       string
-	Digest      string
-	Source      string
-	SubmittedBy string
-	SubmittedAt string
-	Files       []string
-	SkillMD     string
-	Published   bool
-	CSRFField   template.HTML
+	CandidateID     string
+	Skill           string
+	Digest          string
+	Source          string
+	SubmittedBy     string
+	SubmittedAt     string
+	FileTree        *fileTreeNode
+	SelectedPath    string
+	SelectedContent string
+	SelectedBinary  bool
+	Published       bool
+	CSRFField       template.HTML
 }
 
 func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +337,11 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tree.Close()
-	files, skillDocument, err := reviewTree(tree)
+	selected, err := resolveTreeFile(tree, r.URL.Query())
+	if errors.Is(err, errTreeFileNotFound) {
+		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this candidate.")
+		return
+	}
 	if err != nil {
 		h.handleError(w, err)
 		return
@@ -347,7 +361,8 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 	data := reviewPageData{
 		CandidateID: id.String(), Skill: candidate.Skill().String(), Digest: candidate.Tree().String(),
 		Source: provenance.Source().Label(), SubmittedBy: provenance.SubmittedBy().Display(),
-		SubmittedAt: provenance.SubmittedAt().Format(time.RFC3339), Files: files, SkillMD: skillDocument,
+		SubmittedAt: provenance.SubmittedAt().Format(time.RFC3339), FileTree: selected.Tree,
+		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary,
 		Published: published, CSRFField: csrf.TemplateField(r),
 	}
 	h.render(w, http.StatusOK, "review", data)
@@ -622,34 +637,110 @@ func nextTextPart(body *multipart.Reader, expected string, maximum int64) (strin
 	return string(contents), nil
 }
 
-func reviewTree(tree fs.FS) ([]string, string, error) {
-	var files []string
+var errTreeFileNotFound = errors.New("tree file not found")
+
+type fileTreeNode struct {
+	Name     string
+	Path     string
+	IsDir    bool
+	Selected bool
+	Children []*fileTreeNode
+}
+
+// QueryEscape percent-encodes slashes; restoring them keeps hrefs readable
+// while every other byte stays escaped, so the result is URL-context safe.
+func (n *fileTreeNode) Href() template.URL {
+	return template.URL("?file=" + strings.ReplaceAll(url.QueryEscape(n.Path), "%2F", "/"))
+}
+
+type resolvedTreeFile struct {
+	Tree    *fileTreeNode
+	Path    string
+	Content string
+	Binary  bool
+}
+
+func resolveTreeFile(tree fs.FS, query map[string][]string) (resolvedTreeFile, error) {
+	selectedPath := agentskill.Filename
+	if requested, ok := query["file"]; ok {
+		if len(requested) != 1 {
+			return resolvedTreeFile{}, errTreeFileNotFound
+		}
+		selectedPath = requested[0]
+	}
+
+	root := &fileTreeNode{IsDir: true}
+	directories := map[string]*fileTreeNode{".": root}
+	selectedFound := false
 	err := fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if name == "." || entry.IsDir() {
+		if name == "." {
 			return nil
 		}
+
+		parentPath := "."
+		baseName := name
+		if separator := strings.LastIndexByte(name, '/'); separator >= 0 {
+			parentPath = name[:separator]
+			baseName = name[separator+1:]
+		}
+		parent, ok := directories[parentPath]
+		if !ok {
+			return fmt.Errorf("tree path %q has no parent directory", name)
+		}
+		node := &fileTreeNode{Name: baseName, Path: name, IsDir: entry.IsDir()}
+		parent.Children = append(parent.Children, node)
+		if node.IsDir {
+			directories[name] = node
+			return nil
+		}
+
 		info, err := entry.Info()
 		if err != nil {
 			return err
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("review tree contains non-regular file %q", name)
+			return fmt.Errorf("tree contains non-regular file %q", name)
 		}
-		files = append(files, name)
+		if name == selectedPath {
+			node.Selected = true
+			selectedFound = true
+		}
 		return nil
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("list candidate tree: %w", err)
+		return resolvedTreeFile{}, fmt.Errorf("list tree: %w", err)
 	}
-	sort.Strings(files)
-	document, err := fs.ReadFile(tree, agentskill.Filename)
+	if !selectedFound {
+		return resolvedTreeFile{}, errTreeFileNotFound
+	}
+
+	sortFileTree(root)
+	contents, err := fs.ReadFile(tree, selectedPath)
 	if err != nil {
-		return nil, "", fmt.Errorf("read candidate SKILL.md: %w", err)
+		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
 	}
-	return files, string(document), nil
+	if !utf8.Valid(contents) {
+		return resolvedTreeFile{Tree: root, Path: selectedPath, Binary: true}, nil
+	}
+	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: string(contents)}, nil
+}
+
+func sortFileTree(node *fileTreeNode) {
+	sort.Slice(node.Children, func(i, j int) bool {
+		left, right := node.Children[i], node.Children[j]
+		if left.IsDir != right.IsDir {
+			return left.IsDir
+		}
+		return left.Name < right.Name
+	})
+	for _, child := range node.Children {
+		if child.IsDir {
+			sortFileTree(child)
+		}
+	}
 }
 
 func malformedRequest(problem string, cause error) error {

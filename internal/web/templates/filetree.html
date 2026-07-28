@@ -1,0 +1,12 @@
+{{define "filetree"}}
+<li>
+  {{if .IsDir}}
+  <span class="block py-1 font-medium text-gray-600">{{.Name}}/</span>
+  <ul class="ml-2 space-y-1 border-l border-gray-200 pl-3">
+    {{range .Children}}{{template "filetree" .}}{{end}}
+  </ul>
+  {{else}}
+  <a href="{{.Href}}" class="-mx-2 block break-all rounded px-2 py-1 {{if .Selected}}bg-blue-50 font-medium text-blue-600{{else}}text-gray-800 hover:underline{{end}} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">{{.Name}}</a>
+  {{end}}
+</li>
+{{end}}

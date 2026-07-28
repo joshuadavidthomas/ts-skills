@@ -275,7 +275,7 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	if strings.Contains(firstReview, "<script>globalThis.pwned") {
 		t.Fatal("imported SKILL.md rendered as active script")
 	}
-	for _, escaped := range []string{"&lt;script&gt;globalThis.pwned", "assets/&lt;script&gt;.txt", "Curator &lt;One&gt;"} {
+	for _, escaped := range []string{"&lt;script&gt;globalThis.pwned", `href="?file=assets/%3Cscript%3E.txt"`, "Curator &lt;One&gt;"} {
 		if !strings.Contains(firstReview, escaped) {
 			t.Fatalf("review does not contain escaped %q: %s", escaped, firstReview)
 		}
@@ -472,6 +472,94 @@ func TestSkillDetailPageShowsCurrentPublication(t *testing.T) {
 	if missing.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown skill status = %d", missing.StatusCode)
 	}
+}
+
+func TestReviewAndSkillPagesSelectExactTreeFiles(t *testing.T) {
+	fixture := newWebFixture(t)
+	candidatePath := fixture.uploadDirectory("Default file content.\n")
+
+	assertFilePages := func(t *testing.T, pagePath string) {
+		t.Helper()
+		defaultPage := fixture.get(pagePath)
+		if !strings.Contains(defaultPage, "Default file content.") || !strings.Contains(defaultPage, `>SKILL.md</h3>`) {
+			t.Fatalf("default page does not show SKILL.md: %s", defaultPage)
+		}
+		if !strings.Contains(defaultPage, `<span class="block py-1 font-medium text-gray-600">assets/</span>`) ||
+			!strings.Contains(defaultPage, `href="?file=assets/%3Cscript%3E.txt"`) {
+			t.Fatalf("page does not show the nested asset link: %s", defaultPage)
+		}
+
+		selectedPath := pagePath + "?file=" + url.QueryEscape("assets/<script>.txt")
+		selectedPage := fixture.get(selectedPath)
+		if !strings.Contains(selectedPage, "inert asset") || !strings.Contains(selectedPage, `>assets/&lt;script&gt;.txt</h3>`) {
+			t.Fatalf("selected asset is not shown in the content pane: %s", selectedPage)
+		}
+
+		for _, file := range []string{"nope.txt", "assets", ""} {
+			request, err := http.NewRequest(http.MethodGet, fixture.server.URL+pagePath+"?file="+url.QueryEscape(file), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := fixture.do(request, false)
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if response.StatusCode != http.StatusNotFound || !strings.Contains(string(body), "File was not found") {
+				t.Fatalf("select %q status/body = %d/%s", file, response.StatusCode, body)
+			}
+		}
+	}
+
+	t.Run("candidate review", func(t *testing.T) {
+		assertFilePages(t, candidatePath)
+	})
+
+	response := postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+	t.Run("skill detail", func(t *testing.T) {
+		assertFilePages(t, "/skills/team/sample")
+	})
+}
+
+func TestReviewAndSkillPagesDescribeBinaryFiles(t *testing.T) {
+	fixture := newWebFixture(t)
+	skill := "---\nname: sample\ndescription: Binary web test\n---\nDefault text.\n"
+	binary := []byte{0xff, 0xfe, 0x00}
+	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/data.bin","size":%d}]`, len(skill), len(binary))
+	request := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
+		{name: "namespace", body: []byte("team")},
+		{name: "manifest", body: []byte(manifest)},
+		{name: "file-0", filename: "SKILL.md", body: []byte(skill)},
+		{name: "file-1", filename: "data.bin", body: binary},
+	})
+	response := fixture.do(request, true)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", response.StatusCode)
+	}
+	candidatePath := response.Header.Get("Location")
+	selectedQuery := "?file=" + url.QueryEscape("assets/data.bin")
+	assertBinary := func(t *testing.T, pagePath string) {
+		t.Helper()
+		page := fixture.get(pagePath + selectedQuery)
+		if !strings.Contains(page, `>assets/data.bin</h3>`) ||
+			!strings.Contains(page, "Binary file — download the ZIP to view it.") {
+			t.Fatalf("binary file fallback is missing: %s", page)
+		}
+	}
+
+	assertBinary(t, candidatePath)
+	response = postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+	assertBinary(t, "/skills/team/sample")
 }
 
 func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {

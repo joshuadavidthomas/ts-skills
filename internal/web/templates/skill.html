@@ -27,13 +27,17 @@
   <div class="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
     <section>
       <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500">Files</h3>
-      <ul class="mt-2 divide-y divide-gray-200 overflow-hidden rounded-md border border-gray-200 bg-white font-mono text-sm text-gray-800">
-        {{range .Files}}<li class="break-all px-4 py-2">{{.}}</li>{{end}}
+      <ul class="mt-2 space-y-1 font-mono text-sm">
+        {{range .FileTree.Children}}{{template "filetree" .}}{{end}}
       </ul>
     </section>
     <section class="min-w-0">
-      <h3 class="text-sm font-semibold uppercase tracking-wide text-gray-500">SKILL.md</h3>
-      <pre class="mt-2 overflow-x-auto rounded-md bg-gray-100 p-4 font-mono text-sm text-gray-800">{{.SkillMD}}</pre>
+      <h3 class="break-all text-sm font-semibold tracking-wide text-gray-500">{{.SelectedPath}}</h3>
+      {{if .SelectedBinary}}
+      <p class="mt-2 text-sm text-gray-600">Binary file — download the ZIP to view it.</p>
+      {{else}}
+      <pre class="mt-2 overflow-x-auto rounded-md bg-gray-100 p-4 font-mono text-sm text-gray-800">{{.SelectedContent}}</pre>
+      {{end}}
     </section>
   </div>
 </main>
