@@ -5,7 +5,22 @@ The deployed daemon listens only through tsnet: it joins your tailnet as its own
 ## Before you start
 
 1. **Enable MagicDNS and HTTPS certificates** for the tailnet. Certificates are issued for the full MagicDNS name (`ts-skillsd.example-tailnet.ts.net`), not the short machine name. Certificate names appear in public Certificate Transparency logs, so pick a hostname that reveals nothing private.
-2. **Decide who may reach the registry.** Anyone who can open a TCP connection to the daemon on port 443 can curate skills — there is no application-level permission model in v1. Use your tailnet ACLs or grants to scope access. If the daemon will run under a tag, create the tag owner and grant the intended users access to that tag.
+2. **Decide who may reach and curate the registry.** Reachability on port 443 grants read access. Grant curation to the intended group with a Tailscale ACL application capability (and create the tag owner if the daemon runs as `tag:skills-registry`):
+
+   ```jsonc
+   "grants": [
+     {
+       "src": ["group:skill-curators"],
+       "dst": ["tag:skills-registry"],
+       "ip":  ["443"],
+       "app": {
+         "tailscale.com/cap/ts-skills": [{"curate": true}]
+       }
+     }
+   ]
+   ```
+
+   Users without the grant can browse and install but cannot upload or publish.
 3. **If device approval or Tailnet Lock is enabled**, arrange approval or signing for the new node ahead of time.
 
 This project never modifies tailnet policy; ACLs, tags, and approval stay in your hands.

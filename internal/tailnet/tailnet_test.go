@@ -63,12 +63,15 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		}
 		request.RemoteAddr = "100.64.0.7:51820"
 		request.Header = headers
-		actor, err := resolver.Actor(request)
+		identity, err := resolver.Identify(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if actor.ID() != "42" || actor.Display() != "alice@example.com" {
-			t.Fatalf("actor = (%q, %q), want stable user identity", actor.ID(), actor.Display())
+		if identity.Actor.ID() != "42" || identity.Actor.Display() != "alice@example.com" {
+			t.Fatalf("actor = (%q, %q), want stable user identity", identity.Actor.ID(), identity.Actor.Display())
+		}
+		if identity.CanCurate {
+			t.Fatal("identity without capability can curate")
 		}
 	}
 
@@ -91,6 +94,9 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 			Tags:     []string{"tag:ci", "tag:publisher"},
 		},
 		UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "tag-owner@example.com"},
+		CapMap: tailcfg.PeerCapMap{
+			skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)},
+		},
 	}, &addresses)
 	resolver, err := NewActorResolver(client)
 	if err != nil {
@@ -102,18 +108,79 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 	}
 	request.RemoteAddr = "[fd7a:115c:a1e0::7]:44321"
 
-	actor, err := resolver.Actor(request)
+	identity, err := resolver.Identify(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if actor.ID() != "n123CNTRL" {
-		t.Fatalf("actor ID = %q, want stable node ID", actor.ID())
+	if identity.Actor.ID() != "n123CNTRL" {
+		t.Fatalf("actor ID = %q, want stable node ID", identity.Actor.ID())
 	}
-	if actor.Display() != "automation.example.ts.net [tag:ci, tag:publisher]" {
-		t.Fatalf("actor display = %q", actor.Display())
+	if identity.Actor.Display() != "automation.example.ts.net [tag:ci, tag:publisher]" {
+		t.Fatalf("actor display = %q", identity.Actor.Display())
+	}
+	if !identity.CanCurate {
+		t.Fatal("tagged identity with capability cannot curate")
 	}
 	if len(addresses) != 1 || addresses[0] != request.RemoteAddr {
 		t.Fatalf("WhoIs addresses = %v, want %q", addresses, request.RemoteAddr)
+	}
+}
+
+func TestActorResolverCapabilityRules(t *testing.T) {
+	tests := map[string]struct {
+		capMap     tailcfg.PeerCapMap
+		wantCurate bool
+		wantError  bool
+	}{
+		"granted by any rule": {
+			capMap: tailcfg.PeerCapMap{
+				skillsCapabilityName: {
+					tailcfg.RawMessage(`{"curate":false}`),
+					tailcfg.RawMessage(`{"curate":true}`),
+				},
+			},
+			wantCurate: true,
+		},
+		"absent": {},
+		"malformed rule": {
+			capMap: tailcfg.PeerCapMap{
+				skillsCapabilityName: {tailcfg.RawMessage(`{"curate":"yes"}`)},
+			},
+			wantError: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			var addresses []string
+			client := localClientForWhoIs(t, &apitype.WhoIsResponse{
+				Node:        &tailcfg.Node{StableID: "node-human", Name: "workstation.example.ts.net."},
+				UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "alice@example.com"},
+				CapMap:      test.capMap,
+			}, &addresses)
+			resolver, err := NewActorResolver(client)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://registry.example.ts.net/candidates", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.RemoteAddr = "100.64.0.7:51820"
+
+			identity, err := resolver.Identify(request)
+			if test.wantError {
+				if err == nil {
+					t.Fatal("Identify succeeded with malformed capability rule")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if identity.CanCurate != test.wantCurate {
+				t.Fatalf("CanCurate = %v, want %v", identity.CanCurate, test.wantCurate)
+			}
+		})
 	}
 }
 
@@ -139,8 +206,8 @@ func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.RemoteAddr = "100.64.0.8:1234"
-			if _, err := resolver.Actor(request); err == nil {
-				t.Fatal("Actor succeeded with incomplete WhoIs identity")
+			if _, err := resolver.Identify(request); err == nil {
+				t.Fatal("Identify succeeded with incomplete WhoIs identity")
 			}
 		})
 	}

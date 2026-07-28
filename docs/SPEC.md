@@ -58,9 +58,9 @@ A curator may still obtain a third-party skill from Git or HTTP manually, then u
 
 ## Access model
 
-Tailnet policy decides who may reach the prototype. Every user allowed to reach `ts-skillsd` may browse, upload, review, publish, and change the current publication.
+Tailnet policy decides who may reach the prototype. Reachability grants read access to the catalog, candidate reviews, and published trees. Uploading, publishing, and changing the current publication require the `tailscale.com/cap/ts-skills` application capability with `{"curate": true}`, granted through Tailscale ACL grants.
 
-The prototype has no application-level role hierarchy or namespace ownership policy. The daemon should still derive and record the Tailnet identity responsible for uploads and publications rather than trust caller-supplied identity headers.
+The prototype has no namespace ownership policy or role hierarchy beyond this curation permission. The daemon derives identity and application capabilities only from WhoIs and records the Tailnet identity responsible for uploads and publications; it never trusts caller-supplied identity headers.
 
 ## Core flows
 

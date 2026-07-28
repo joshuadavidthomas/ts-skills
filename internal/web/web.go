@@ -39,8 +39,13 @@ type Catalog interface {
 	OpenPublicationTree(context.Context, registry.PublicationID) (registry.Tree, error)
 }
 
+type Identity struct {
+	Actor     registry.Actor
+	CanCurate bool
+}
+
 type ActorResolver interface {
-	Actor(*http.Request) (registry.Actor, error)
+	Identify(*http.Request) (Identity, error)
 }
 
 type CSRFKey [32]byte
@@ -162,9 +167,13 @@ func (h *handler) uploadPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
-	actor, err := h.actors.Actor(r)
+	identity, err := h.actors.Identify(r)
 	if err != nil {
 		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
+		return
+	}
+	if !identity.CanCurate {
+		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
 		return
 	}
 	mediaType, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -225,7 +234,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the ZIP or selected directory and try again.")
 		return
 	}
-	provenance, err := registry.NewProvenance(source, actor, time.Now().UTC())
+	provenance, err := registry.NewProvenance(source, identity.Actor, time.Now().UTC())
 	if err != nil {
 		h.handleError(w, err)
 		return
@@ -302,12 +311,16 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
 	}
-	actor, err := h.actors.Actor(r)
+	identity, err := h.actors.Identify(r)
 	if err != nil {
 		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
 		return
 	}
-	if _, err := h.catalog.Publish(r.Context(), id, actor, time.Now().UTC()); err != nil {
+	if !identity.CanCurate {
+		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+		return
+	}
+	if _, err := h.catalog.Publish(r.Context(), id, identity.Actor, time.Now().UTC()); err != nil {
 		h.handleError(w, err)
 		return
 	}
@@ -315,6 +328,15 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
+	identity, err := h.actors.Identify(r)
+	if err != nil {
+		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
+		return
+	}
+	if !identity.CanCurate {
+		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		h.handleError(w, malformedRequest("current publication form is invalid", err))
 		return
@@ -338,12 +360,7 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	actor, err := h.actors.Actor(r)
-	if err != nil {
-		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
-		return
-	}
-	if _, err := h.catalog.SetCurrent(r.Context(), publication, actor, time.Now().UTC()); err != nil {
+	if _, err := h.catalog.SetCurrent(r.Context(), publication, identity.Actor, time.Now().UTC()); err != nil {
 		h.handleError(w, err)
 		return
 	}

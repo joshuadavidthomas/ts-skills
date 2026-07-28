@@ -484,7 +484,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 	if err != nil {
 		return nil, fmt.Errorf("construct dev actor: %w", err)
 	}
-	handler, err := web.NewHandler(catalog, staticActorResolver{actor: actor}, web.Options{
+	handler, err := web.NewHandler(catalog, staticActorResolver{identity: web.Identity{Actor: actor, CanCurate: true}}, web.Options{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
@@ -519,11 +519,11 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 // staticActorResolver attributes every request to one fixed actor. It is only
 // safe behind a loopback listener where every caller is the developer.
 type staticActorResolver struct {
-	actor registry.Actor
+	identity web.Identity
 }
 
-func (r staticActorResolver) Actor(*http.Request) (registry.Actor, error) {
-	return r.actor, nil
+func (r staticActorResolver) Identify(*http.Request) (web.Identity, error) {
+	return r.identity, nil
 }
 
 type runtimeCleanup struct {

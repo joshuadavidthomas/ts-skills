@@ -2,10 +2,10 @@
 
 A private [Agent Skills](docs/research/agentskills-spec.md) registry for your tailnet.
 
-`ts-skillsd` serves a small web UI where anyone on the tailnet can upload, review, and publish skills. `ts-skills` installs a published skill into a project and pins its exact content in a lock file.
+`ts-skillsd` serves a small web UI where tailnet users can browse skills and authorized curators can upload and publish them. `ts-skills` installs a published skill into a project and pins its exact content in a lock file.
 
 - **Content-addressed.** A publication is `namespace/name` plus the SHA-256 digest of its file tree, and is immutable once published. The same files always produce the same digest, whether uploaded as a ZIP or a browser-selected directory.
-- **No accounts.** The daemon serves only through [tsnet](https://tailscale.com/kb/1244/tsnet), so every upload and publish action is attributed to the Tailnet identity that made it. There are no passwords, tokens, or API keys.
+- **No accounts.** The daemon serves only through [tsnet](https://tailscale.com/kb/1244/tsnet), so every upload and publish action is attributed to the Tailnet identity that made it and curation is scoped by an ACL application capability; there are no passwords, tokens, or API keys.
 - **Reproducible installs.** `ts-skills install` writes the skill under `<project>/.agents/skills/<name>/` and records its digest in `<project>/.agents/ts-skills.lock`. `ts-skills restore` recreates exactly what the lock says, even after the registry's current publication moves on.
 
 ## Quickstart

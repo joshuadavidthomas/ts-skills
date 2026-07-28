@@ -21,21 +21,21 @@ import (
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/storage"
 )
 
-type fixedActorResolver struct{ actor registry.Actor }
+type fixedActorResolver struct{ identity Identity }
 
-func (r fixedActorResolver) Actor(*http.Request) (registry.Actor, error) { return r.actor, nil }
+func (r *fixedActorResolver) Identify(*http.Request) (Identity, error) { return r.identity, nil }
 
 type webFixture struct {
-	t       *testing.T
-	server  *httptest.Server
-	client  *http.Client
-	cookie  *http.Cookie
-	token   string
-	storage *storage.Catalog
-	state   string
-	staging string
-	actor   registry.Actor
-	key     CSRFKey
+	t        *testing.T
+	server   *httptest.Server
+	client   *http.Client
+	cookie   *http.Cookie
+	token    string
+	storage  *storage.Catalog
+	state    string
+	staging  string
+	resolver *fixedActorResolver
+	key      CSRFKey
 }
 
 func newWebFixture(t *testing.T) *webFixture {
@@ -59,7 +59,8 @@ func newWebFixture(t *testing.T) *webFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHandler(catalog, fixedActorResolver{actor: actor}, Options{
+	resolver := &fixedActorResolver{identity: Identity{Actor: actor, CanCurate: true}}
+	handler, err := NewHandler(catalog, resolver, Options{
 		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
@@ -86,7 +87,7 @@ func newWebFixture(t *testing.T) *webFixture {
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, actor: actor, key: key,
+		state: state, staging: staging, resolver: resolver, key: key,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -111,7 +112,7 @@ func (f *webFixture) restart() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	handler, err := NewHandler(catalog, fixedActorResolver{actor: f.actor}, Options{
+	handler, err := NewHandler(catalog, f.resolver, Options{
 		StagingParent: f.staging, Limits: safetree.PrototypeLimits(), CSRFKey: f.key, SecureCookies: false,
 	})
 	if err != nil {
@@ -308,6 +309,59 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	currentCatalog := fixture.get("/")
 	if !strings.Contains(currentCatalog, secondDigest) || strings.Contains(currentCatalog, firstDigest) {
 		t.Fatalf("catalog did not change current: %s", currentCatalog)
+	}
+}
+
+func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
+	fixture := newWebFixture(t)
+	publishedPath := fixture.uploadZIP("Published for read-only access.\n")
+	digest := digestPattern.FindString(fixture.get(publishedPath))
+	response := postForm(t, fixture, publishedPath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish fixture candidate status = %d", response.StatusCode)
+	}
+	unpublishedPath := fixture.uploadZIP("Unpublished for permission check.\n")
+
+	fixture.resolver.identity.CanCurate = false
+	readPaths := []string{
+		"/",
+		unpublishedPath,
+		"/api/" + protocol.Version + "/skills/team/sample/current",
+		"/api/" + protocol.Version + "/skills/team/sample/publications/" + digest + "/tree.zip",
+	}
+	for _, path := range readPaths {
+		fixture.get(path)
+	}
+
+	uploadRequest := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
+		{name: "namespace", body: []byte("team")},
+		{name: "kind", body: []byte("zip")},
+		{name: "archive", filename: "sample.zip", body: skillZIP(t, "Denied upload.\n")},
+	})
+	mutations := map[string]func() *http.Response{
+		"create candidate":  func() *http.Response { return fixture.do(uploadRequest, true) },
+		"publish candidate": func() *http.Response { return postForm(t, fixture, unpublishedPath+"/publish", nil) },
+		"set current": func() *http.Response {
+			return postForm(t, fixture, "/current", url.Values{"skill": {"team/sample"}, "digest": {digest}})
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			response := mutate()
+			body, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403: %s", response.StatusCode, body)
+			}
+			if !strings.Contains(string(body), "You do not have permission to curate skills") ||
+				!strings.Contains(string(body), "tailscale.com/cap/ts-skills") {
+				t.Fatalf("permission error is missing guidance: %s", body)
+			}
+		})
 	}
 }
 
