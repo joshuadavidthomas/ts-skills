@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -55,16 +56,22 @@ func (v *verifiedTree) transfer() (string, error) {
 }
 
 type projectWriter struct {
-	project       Project
-	lock          *flock.Flock
+	project Project
+	lock    *flock.Flock
+	// staging tracks trees this writer must remove until a journal takes
+	// ownership. Failed top-level staging cleanup is handed to the next writer;
+	// operation staging remains with operation recovery.
 	staging       map[string]struct{}
 	closed        bool
 	removeStaging func(string) error
 	closeLock     func(*flock.Flock) error
 }
 
-// filesystemIdentityForPath is a package-private test seam for mount/device checks.
-var filesystemIdentityForPath = filesystemDevice
+// Package-private test seams for filesystem failures.
+var (
+	filesystemIdentityForPath  = filesystemDevice
+	projectWriterRemoveStaging = os.RemoveAll
+)
 
 func requireSameFilesystem(reference string, paths ...string) error {
 	referenceDevice, err := filesystemIdentityForPath(reference)
@@ -128,7 +135,11 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	}
 	writer := &projectWriter{
 		project: p, lock: fileLock, staging: make(map[string]struct{}),
-		removeStaging: os.RemoveAll, closeLock: (*flock.Flock).Close,
+		removeStaging: projectWriterRemoveStaging, closeLock: (*flock.Flock).Close,
+	}
+	if err := writer.recoverOrphanStaging(); err != nil {
+		_ = writer.close()
+		return nil, err
 	}
 	if err := writer.recover(); err != nil {
 		_ = writer.close()
@@ -145,32 +156,64 @@ func (w *projectWriter) close() error {
 	if removeStaging == nil {
 		removeStaging = os.RemoveAll
 	}
-	var result error
+	var cleanupErr error
 	for path := range w.staging {
 		if err := rejectPathComponents(path, true); err != nil {
-			result = errors.Join(result, err)
+			cleanupErr = errors.Join(cleanupErr, err)
 			continue
 		}
 		if err := removeStaging(path); err != nil {
-			result = errors.Join(result, err)
+			cleanupErr = errors.Join(cleanupErr, err)
 			continue
 		}
 		delete(w.staging, path)
 	}
-	if result != nil {
-		return result
-	}
+
 	if w.lock != nil {
 		closeLock := w.closeLock
 		if closeLock == nil {
 			closeLock = (*flock.Flock).Close
 		}
 		if err := closeLock(w.lock); err != nil {
-			return err
+			return errors.Join(cleanupErr, err)
 		}
 		w.lock = nil
 	}
+	// Once the lock is released, failed top-level paths belong to the next
+	// writer's orphan pass and failed operation paths belong to journal recovery.
+	w.staging = nil
 	w.closed = true
+	return cleanupErr
+}
+
+func (w *projectWriter) recoverOrphanStaging() error {
+	entries, err := os.ReadDir(w.project.StateDir())
+	if err != nil {
+		return fmt.Errorf("read project state for orphan staging: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, installStagingPrefix) {
+			continue
+		}
+		path := filepath.Join(w.project.StateDir(), name)
+		if name == installStagingPrefix {
+			return recoveryError(fmt.Sprintf("orphan staging path %q has no identity", path), nil)
+		}
+		if err := rejectPathComponents(path, false); err != nil {
+			return recoveryError(fmt.Sprintf("orphan staging path %q is invalid", path), err)
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return recoveryError(fmt.Sprintf("orphan staging path %q cannot be inspected", path), err)
+		}
+		if pathInfoIsLink(info) || !info.IsDir() {
+			return recoveryError(fmt.Sprintf("orphan staging path %q is not a real directory", path), nil)
+		}
+		if err := durableRemoveAll(path, w.project.StateDir(), "orphan-install-staging"); err != nil {
+			return fmt.Errorf("clean orphan install staging %q: %w", path, err)
+		}
+	}
 	return nil
 }
 

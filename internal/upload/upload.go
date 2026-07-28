@@ -106,7 +106,7 @@ func StageZIP(ctx context.Context, parent string, src io.Reader, filename string
 		return nil, &safetree.LimitError{Limit: "request bytes", Max: maxZIPBytes, Actual: written}
 	}
 	maximumEntries := maxUploadZIPEntries(limits)
-	if err := safetree.PreflightZIP(spoolName, maximumEntries); err != nil {
+	if err := preflightZIP(spoolName, maximumEntries); err != nil {
 		if errors.Is(err, safetree.ErrLimitExceeded) {
 			return nil, err
 		}

@@ -637,9 +637,11 @@ func (w *projectWriter) recoverOperation(operationDir, operation string) error {
 			return finishRecovery(w.project, operationDir, operation, journal, destination, treeNew, "cleanup-committed")
 		case journal.Phase == "prepared" && lockSnapshotsEqual && !journal.HadDestination && destinationState == treeAbsent && stagingState == treeAbsent && backupState == treeAbsent:
 			// Restore can prepare an install for a missing destination without
-			// changing the lock. If it stops before transferring staging
-			// ownership, writer cleanup removes that tree. Roll back the empty
-			// operation so this or a later Restore can fetch it again.
+			// changing the lock. If it stops after writing the journal but before
+			// the writer drops its staging entry, writer cleanup normally removes
+			// that tree. Roll back the empty operation so this or a later Restore
+			// can fetch it again. If cleanup leaves the tree intact, the
+			// staging-present case above finishes it.
 			return finishRecovery(w.project, operationDir, operation, journal, destination, treeAbsent, "cleanup-rolled-back")
 		case journal.HadLock && (destinationState == treeOld || backupState == treeOld):
 			if err := restoreOldState(w.project, operationDir, operation, journal, destination, backup, destinationState, backupState, oldLockPath); err != nil {

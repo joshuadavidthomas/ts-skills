@@ -93,11 +93,10 @@ Use Machine A for curation and Machine B for installation. Both machines must pa
    ```
 
    Restore keeps the digest already recorded on Machine B rather than following the new current publication.
-7. To check header spoofing, send a request with an invented identity header. The recorded upload/publish actor must still match the Tailnet connection returned by `WhoIs`:
+7. To check header spoofing, configure a browser request-header tool to add `X-Forwarded-User: someone-else@example.com`, then upload and publish a disposable candidate. Its review provenance must still show the Tailnet identity returned by `WhoIs`, not the invented header. The automated boundary check is:
 
    ```console
-   curl -H 'X-Forwarded-User: someone-else@example.com' \
-     https://ts-skillsd.example-tailnet.ts.net/
+   go test ./internal/tailnet -run 'TestActorResolver'
    ```
 
 Stop after local verification if a corrupt-transfer test needs a modified test server. Do not alter a live tailnet or production registry to inject corruption.

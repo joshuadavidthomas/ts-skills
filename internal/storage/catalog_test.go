@@ -243,8 +243,18 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	if err := catalog.Close(); !errors.Is(err, ErrTreesOpen) {
 		t.Fatalf("Close with open tree = %v, want ErrTreesOpen", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
-		t.Fatal("catalog accepted an operation after Close started")
+	if catalog.closing || catalog.closed || catalog.dbClosed || catalog.lockClosed {
+		t.Fatal("Close with an open tree changed catalog resource ownership")
+	}
+	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err != nil {
+		t.Fatalf("catalog operation after ErrTreesOpen: %v", err)
+	}
+	secondTree, err := catalog.OpenCandidateTree(context.Background(), candidate.ID())
+	if err != nil {
+		t.Fatalf("open tree after ErrTreesOpen: %v", err)
+	}
+	if err := secondTree.Close(); err != nil {
+		t.Fatal(err)
 	}
 	if err := tree.Close(); err != nil {
 		t.Fatal(err)

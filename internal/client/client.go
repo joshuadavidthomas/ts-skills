@@ -147,11 +147,11 @@ func (r *Remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (re
 	return registry.NewPublicationID(responseSkill, digest)
 }
 
-func (r *Remote) fetchTree(ctx context.Context, publication registry.PublicationID) (_ install.FetchedSkill, err error) {
-	skill := publication.Skill()
+func (r *Remote) fetchTree(ctx context.Context, expected registry.PublicationID) (_ install.FetchedSkill, err error) {
+	requestedSkill := expected.Skill()
 	endpoint := r.endpoint(
-		"api", protocol.Version, "skills", skill.Namespace().String(), skill.Name().String(),
-		"publications", publication.Tree().String(), "tree.zip",
+		"api", protocol.Version, "skills", requestedSkill.Namespace().String(), requestedSkill.Name().String(),
+		"publications", expected.Tree().String(), "tree.zip",
 	)
 	response, err := r.get(ctx, endpoint, "application/zip")
 	if err != nil {
@@ -163,6 +163,13 @@ func (r *Remote) fetchTree(ctx context.Context, publication registry.Publication
 	}
 	if err := requireContentType(response.Header.Get("Content-Type"), "application/zip", false); err != nil {
 		return install.FetchedSkill{}, err
+	}
+	publication, err := parseTreePublication(response.Header)
+	if err != nil {
+		return install.FetchedSkill{}, err
+	}
+	if publication != expected {
+		return install.FetchedSkill{}, fmt.Errorf("%w: tree response identifies another publication", install.ErrIdentityMismatch)
 	}
 	if response.ContentLength > r.maxZIPBytes {
 		return install.FetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
@@ -200,7 +207,7 @@ func (r *Remote) fetchTree(ctx context.Context, publication registry.Publication
 	if err != nil {
 		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", protocol.ErrProtocol, err)
 	}
-	if directory.Document().Name != skill.Name() {
+	if directory.Document().Name != publication.Skill().Name() {
 		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", install.ErrIdentityMismatch)
 	}
 	actual, err := agentskill.SumTree(snapshot.FS(), ".")
@@ -218,9 +225,54 @@ func (r *Remote) fetchTree(ctx context.Context, publication registry.Publication
 	return fetched, nil
 }
 
+func parseTreePublication(header http.Header) (registry.PublicationID, error) {
+	namespaceText, err := requiredTreeHeader(header, protocol.HeaderPublicationNamespace)
+	if err != nil {
+		return registry.PublicationID{}, err
+	}
+	nameText, err := requiredTreeHeader(header, protocol.HeaderPublicationName)
+	if err != nil {
+		return registry.PublicationID{}, err
+	}
+	digestText, err := requiredTreeHeader(header, protocol.HeaderPublicationDigest)
+	if err != nil {
+		return registry.PublicationID{}, err
+	}
+
+	namespace, err := registry.ParseNamespace(namespaceText)
+	if err != nil || namespace.String() != namespaceText {
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", protocol.ErrProtocol)
+	}
+	name, err := agentskill.ParseName(nameText)
+	if err != nil || name.String() != nameText {
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", protocol.ErrProtocol)
+	}
+	skill, err := registry.NewSkillID(namespace, name)
+	if err != nil {
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", protocol.ErrProtocol, err)
+	}
+	digest, err := agentskill.ParseTreeDigest(digestText)
+	if err != nil || digest.String() != digestText {
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", protocol.ErrProtocol)
+	}
+	publication, err := registry.NewPublicationID(skill, digest)
+	if err != nil {
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", protocol.ErrProtocol, err)
+	}
+	return publication, nil
+}
+
+func requiredTreeHeader(header http.Header, name string) (string, error) {
+	values := header.Values(name)
+	if len(values) != 1 || values[0] == "" {
+		return "", fmt.Errorf("%w: tree response requires exactly one %s header", protocol.ErrProtocol, name)
+	}
+	return values[0], nil
+}
+
 func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree.Snapshot, err error) {
 	maximumEntries := int64(r.limits.MaxFiles)
-	if err := safetree.PreflightZIP(archivePath, maximumEntries); err != nil {
+	if err := preflightZIP(archivePath, maximumEntries); err != nil {
 		if errors.Is(err, safetree.ErrLimitExceeded) {
 			return nil, err
 		}

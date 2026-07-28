@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 )
 
+const installStagingPrefix = "staging-"
+
 type Project struct {
 	root string
 }
@@ -157,6 +159,9 @@ func createManagedTempDirectory(parent, pattern string) (string, error) {
 
 func rejectPathComponents(name string, allowMissing bool) error {
 	clean := filepath.Clean(name)
+	if err := rejectPlatformPathComponents(clean); err != nil {
+		return err
+	}
 	paths := make([]string, 0)
 	for current := clean; ; current = filepath.Dir(current) {
 		paths = append(paths, current)

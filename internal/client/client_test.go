@@ -4,9 +4,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +112,12 @@ func remoteForServer(t *testing.T, server *httptest.Server) *Remote {
 	return remote
 }
 
+func setClientTreeHeaders(header http.Header, namespace, name, digest string) {
+	header.Set(protocol.HeaderPublicationNamespace, namespace)
+	header.Set(protocol.HeaderPublicationName, name)
+	header.Set(protocol.HeaderPublicationDigest, digest)
+}
+
 func TestRootlessZIPDownloadLimitMatchesWebArchive(t *testing.T) {
 	limits := safetree.Limits{
 		MaxFiles: 2, MaxPathBytes: 8, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
@@ -130,6 +138,7 @@ func TestRootlessZIPDownloadLimitMatchesWebArchive(t *testing.T) {
 	responseBody := archive
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
+		setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 		_, _ = w.Write(responseBody)
 	}))
 	defer server.Close()
@@ -156,6 +165,51 @@ func TestRootlessZIPDownloadLimitMatchesWebArchive(t *testing.T) {
 	responseBody = append(bytes.Clone(archive), 0)
 	if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
 		t.Fatalf("oversize rootless ZIP error = %v, want %v", err, safetree.ErrLimitExceeded)
+	}
+}
+
+func TestDecodeZIPPreflightsEntryCount(t *testing.T) {
+	_, archive := clientTree(t, "entry count")
+	parent := t.TempDir()
+	archivePath := filepath.Join(parent, "tree.zip")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limits := safetree.PrototypeLimits()
+	limits.MaxFiles = 1
+	remote := &Remote{stagingParent: parent, limits: limits}
+	if _, err := remote.decodeZIP(context.Background(), archivePath); !errors.Is(err, safetree.ErrLimitExceeded) {
+		t.Fatalf("entry count error = %v, want ErrLimitExceeded", err)
+	}
+}
+
+func TestZIPPreflightRejectsUnderreportedEntriesAndZIP64(t *testing.T) {
+	_, archive := clientTree(t, "preflight formats")
+	end := bytes.LastIndex(archive, []byte{'P', 'K', 5, 6})
+	if end < 0 {
+		t.Fatal("test ZIP has no end record")
+	}
+
+	underreported := bytes.Clone(archive)
+	binary.LittleEndian.PutUint16(underreported[end+8:end+10], 1)
+	binary.LittleEndian.PutUint16(underreported[end+10:end+12], 1)
+	underreportedPath := filepath.Join(t.TempDir(), "underreported.zip")
+	if err := os.WriteFile(underreportedPath, underreported, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightZIP(underreportedPath, 2); err == nil {
+		t.Fatal("ZIP with an underreported central directory entry count was accepted")
+	}
+
+	zip64 := bytes.Clone(archive)
+	binary.LittleEndian.PutUint16(zip64[end+8:end+10], ^uint16(0))
+	binary.LittleEndian.PutUint16(zip64[end+10:end+12], ^uint16(0))
+	zip64Path := filepath.Join(t.TempDir(), "zip64.zip")
+	if err := os.WriteFile(zip64Path, zip64, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightZIP(zip64Path, 2); err == nil || errors.Is(err, safetree.ErrLimitExceeded) {
+		t.Fatalf("ZIP64 error = %v, want format rejection", err)
 	}
 }
 
@@ -186,6 +240,7 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
+		setClientTreeHeaders(w.Header(), "team", "sample", currentDigest.String())
 		_, _ = w.Write(treeZIP)
 	}))
 	defer server.Close()
@@ -224,6 +279,91 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 	}
 }
 
+func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testing.T) {
+	skill := clientSkill(t)
+	firstDigest, firstZIP := clientTree(t, "first complete tree")
+	secondDigest, secondZIP := clientTree(t, "second truncated tree")
+	currentDigest := firstDigest
+	treeZIP := firstZIP
+	truncateTree := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
+				Namespace: "team", Name: "sample", Digest: currentDigest.String(),
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		setClientTreeHeaders(w.Header(), "team", "sample", currentDigest.String())
+		if truncateTree {
+			w.Header().Set("Content-Length", fmt.Sprint(len(treeZIP)))
+			_, _ = w.Write(treeZIP[:len(treeZIP)/2])
+			return
+		}
+		_, _ = w.Write(treeZIP)
+	}))
+	defer server.Close()
+
+	installer, err := install.NewInstaller(remoteForServer(t, server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := install.OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := install.Current(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	documentPath := filepath.Join(project.SkillsDir(), "sample", "SKILL.md")
+	assetPath := filepath.Join(project.SkillsDir(), "sample", "assets", "data.txt")
+	documentBefore, err := os.ReadFile(documentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetBefore, err := os.ReadFile(assetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	currentDigest = secondDigest
+	treeZIP = secondZIP
+	truncateTree = true
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncated update error = %v, want io.ErrUnexpectedEOF", err)
+	}
+	documentAfter, err := os.ReadFile(documentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetAfter, err := os.ReadFile(assetPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockAfter, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(documentAfter, documentBefore) {
+		t.Fatalf("installed SKILL.md changed from %q to %q", documentBefore, documentAfter)
+	}
+	if !bytes.Equal(assetAfter, assetBefore) {
+		t.Fatalf("installed asset changed from %q to %q", assetBefore, assetAfter)
+	}
+	if !bytes.Equal(lockAfter, lockBefore) {
+		t.Fatal("truncated update changed the project lock")
+	}
+}
+
 func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 	skill := clientSkill(t)
 	digest, validZIP := clientTree(t, "valid")
@@ -249,6 +389,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 			name: "content type",
 			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/octet-stream")
+				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(validZIP)
 			}),
 			expectedErr: protocol.ErrProtocol,
@@ -258,6 +399,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/zip")
 				w.Header().Set("Content-Length", fmt.Sprint(int64(1)<<40))
+				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				w.WriteHeader(http.StatusOK)
 			}),
 			expectedErr: safetree.ErrLimitExceeded,
@@ -266,6 +408,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 			name: "unsafe path",
 			handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/zip")
+				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(unsafe.Bytes())
 			}),
 			expectedErr: protocol.ErrProtocol,
@@ -283,6 +426,115 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				t.Fatalf("error = %v, want %v", err, test.expectedErr)
 			}
 		})
+	}
+}
+
+func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
+	skill := clientSkill(t)
+	digest, archive := clientTree(t, "valid")
+	otherDigest, _ := clientTree(t, "another publication")
+
+	tests := []struct {
+		name        string
+		change      func(http.Header)
+		expectedErr error
+	}{
+		{name: "success"},
+		{
+			name: "missing namespace",
+			change: func(header http.Header) {
+				header.Del(protocol.HeaderPublicationNamespace)
+			},
+			expectedErr: protocol.ErrProtocol,
+		},
+		{
+			name: "wrong namespace",
+			change: func(header http.Header) {
+				header.Set(protocol.HeaderPublicationNamespace, "other")
+			},
+			expectedErr: install.ErrIdentityMismatch,
+		},
+		{
+			name: "missing name",
+			change: func(header http.Header) {
+				header.Del(protocol.HeaderPublicationName)
+			},
+			expectedErr: protocol.ErrProtocol,
+		},
+		{
+			name: "wrong name",
+			change: func(header http.Header) {
+				header.Set(protocol.HeaderPublicationName, "other")
+			},
+			expectedErr: install.ErrIdentityMismatch,
+		},
+		{
+			name: "missing digest",
+			change: func(header http.Header) {
+				header.Del(protocol.HeaderPublicationDigest)
+			},
+			expectedErr: protocol.ErrProtocol,
+		},
+		{
+			name: "wrong digest",
+			change: func(header http.Header) {
+				header.Set(protocol.HeaderPublicationDigest, otherDigest.String())
+			},
+			expectedErr: install.ErrIdentityMismatch,
+		},
+	}
+
+	for _, mode := range []string{"exact", "current"} {
+		for _, test := range tests {
+			t.Run(mode+"/"+test.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
+							Namespace: "team", Name: "sample", Digest: digest.String(),
+						})
+						return
+					}
+					w.Header().Set("Content-Type", "application/zip")
+					setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+					if test.change != nil {
+						test.change(w.Header())
+					}
+					_, _ = w.Write(archive)
+				}))
+				defer server.Close()
+
+				var requirement install.Requirement
+				var err error
+				if mode == "exact" {
+					requirement, err = install.Exact(skill, digest)
+				} else {
+					requirement, err = install.Current(skill)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				fetched, err := remoteForServer(t, server).Fetch(context.Background(), requirement)
+				if test.expectedErr != nil {
+					if !errors.Is(err, test.expectedErr) {
+						t.Fatalf("fetch error = %v, want %v", err, test.expectedErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fetched.Publication().Skill() != skill || fetched.Publication().Tree() != digest {
+					t.Fatalf("fetched publication = %s@%s", fetched.Publication().Skill().String(), fetched.Publication().Tree().String())
+				}
+				if contents, err := fs.ReadFile(fetched.Tree(), "assets/data.txt"); err != nil || string(contents) != "asset" {
+					t.Fatalf("rootless fetched asset = %q, %v", contents, err)
+				}
+				if err := fetched.Tree().Close(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
 	}
 }
 

@@ -47,6 +47,9 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set(protocol.HeaderPublicationNamespace, "team")
+		w.Header().Set(protocol.HeaderPublicationName, "sample")
+		w.Header().Set(protocol.HeaderPublicationDigest, digest.String())
 		_, _ = w.Write(archive.Bytes())
 	}))
 	defer server.Close()

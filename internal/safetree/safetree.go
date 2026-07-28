@@ -61,7 +61,7 @@ func (e *LimitError) Unwrap() error { return ErrLimitExceeded }
 type Builder struct {
 	path        string
 	limits      Limits
-	files       map[string]struct{}
+	files       map[string]string
 	directories map[string]string
 	bytes       int64
 	finished    bool
@@ -85,7 +85,7 @@ func NewBuilder(parent string, limits Limits) (*Builder, error) {
 		return nil, fmt.Errorf("create tree staging: %w", err)
 	}
 	return &Builder{
-		path: staging, limits: limits, files: make(map[string]struct{}), directories: make(map[string]string), removeAll: os.RemoveAll,
+		path: staging, limits: limits, files: make(map[string]string), directories: make(map[string]string), removeAll: os.RemoveAll,
 	}, nil
 }
 
@@ -108,16 +108,17 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 	if len(b.files)+1 > b.limits.MaxFiles {
 		return &LimitError{Limit: "files", Max: int64(b.limits.MaxFiles), Actual: int64(len(b.files) + 1)}
 	}
-	if _, exists := b.files[name]; exists {
-		return fmt.Errorf("%w: duplicate file %q", ErrInvalidPath, name)
+	key := canonicalPlatformPath(name)
+	if existing, exists := b.files[key]; exists {
+		return fmt.Errorf("%w: duplicate files %q and %q", ErrInvalidPath, existing, name)
 	}
-	if descendant, exists := b.directories[name]; exists {
+	if descendant, exists := b.directories[key]; exists {
 		return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, descendant)
 	}
 	var ancestor string
-	visitPathParents(name, func(parent string) bool {
-		if _, exists := b.files[parent]; exists {
-			ancestor = parent
+	visitPathParents(key, func(parent string) bool {
+		if existing, exists := b.files[parent]; exists {
+			ancestor = existing
 			return false
 		}
 		return true
@@ -156,8 +157,8 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 		_ = os.Remove(destination)
 		return fmt.Errorf("normalize staged file %q: %w", name, err)
 	}
-	b.files[name] = struct{}{}
-	visitPathParents(name, func(parent string) bool {
+	b.files[key] = name
+	visitPathParents(key, func(parent string) bool {
 		if _, exists := b.directories[parent]; !exists {
 			b.directories[parent] = name
 		}
@@ -336,8 +337,4 @@ func validatePath(name string, limits Limits) error {
 		}
 	}
 	return nil
-}
-
-func hasWindowsAlternateDataStream(component string) bool {
-	return strings.Contains(component, ":")
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/joshuadavidthomas/ts-skill-registry/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/storage"
@@ -307,6 +308,56 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	currentCatalog := fixture.get("/")
 	if !strings.Contains(currentCatalog, secondDigest) || strings.Contains(currentCatalog, firstDigest) {
 		t.Fatalf("catalog did not change current: %s", currentCatalog)
+	}
+}
+
+func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T) {
+	fixture := newWebFixture(t)
+	candidatePath := fixture.uploadZIP("Download route.\n")
+	digest := digestPattern.FindString(fixture.get(candidatePath))
+	response := postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+
+	request, err := http.NewRequest(
+		http.MethodGet,
+		fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/publications/"+digest+"/tree.zip",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = fixture.do(request, false)
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("tree status = %d: %s", response.StatusCode, body)
+	}
+	for header, want := range map[string]string{
+		protocol.HeaderPublicationNamespace: "team",
+		protocol.HeaderPublicationName:      "sample",
+		protocol.HeaderPublicationDigest:    digest,
+	} {
+		if got := response.Header.Get(header); got != want {
+			t.Fatalf("%s = %q, want %q", header, got, want)
+		}
+	}
+	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, file := range archive.File {
+		names = append(names, file.Name)
+	}
+	wantNames := []string{"SKILL.md", "assets/<script>.txt"}
+	if fmt.Sprint(names) != fmt.Sprint(wantNames) {
+		t.Fatalf("tree ZIP entries = %v, want %v", names, wantNames)
 	}
 }
 

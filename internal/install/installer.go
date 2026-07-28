@@ -194,7 +194,7 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 }
 
 func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (string, error) {
-	staged, err := createManagedTempDirectory(project.StateDir(), "staging-")
+	staged, err := createManagedTempDirectory(project.StateDir(), installStagingPrefix)
 	if err != nil {
 		return "", fmt.Errorf("create install staging: %w", err)
 	}

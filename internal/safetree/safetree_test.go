@@ -27,6 +27,12 @@ func TestBuilderRejectsPathsAndCollisionsBeforeWriting(t *testing.T) {
 	if err := builder.AddFile(context.Background(), "a/b", 1, bytes.NewReader([]byte("x"))); !errors.Is(err, ErrInvalidPath) {
 		t.Fatalf("prefix collision error = %v", err)
 	}
+	if err := builder.AddFile(context.Background(), "nested/child", 1, bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddFile(context.Background(), "nested", 1, bytes.NewReader([]byte("x"))); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("descendant collision error = %v", err)
+	}
 }
 
 func TestBuilderUsesActualBytesForLimits(t *testing.T) {
@@ -135,6 +141,82 @@ func TestSnapshotCloseRetainsStagingAfterRemovalFailure(t *testing.T) {
 	}
 	if _, err := fs.Stat(snapshot.FS(), "."); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("staging after retried Close: %v", err)
+	}
+}
+
+func TestInvalidWindowsPathComponent(t *testing.T) {
+	valid := []string{
+		"file",
+		"report.txt",
+		".hidden",
+		"clock",
+		"console",
+		"com0",
+		"com10",
+		"com⁴",
+		"lpt0",
+		"COMLPT1",
+	}
+	for _, component := range valid {
+		if InvalidWindowsPathComponent(component) {
+			t.Errorf("InvalidWindowsPathComponent(%q) = true, want false", component)
+		}
+	}
+
+	invalid := []string{
+		"name<alias",
+		"name>alias",
+		`name"alias`,
+		"name:stream",
+		"name/alias",
+		`name\alias`,
+		"name|alias",
+		"name?alias",
+		"name*alias",
+		"name\x00alias",
+		"name\x1falias",
+		"name.",
+		"name ",
+		"CON",
+		"con.txt",
+		"CoN .txt",
+		"PRN",
+		"aux.log",
+		"NUL",
+		"clock$",
+		"CLOCK$.txt",
+		"conin$",
+		"CONOUT$.log",
+		"COM1",
+		"com9.txt",
+		"LPT1",
+		"lpt9.log",
+		"COM¹",
+		"COM².txt",
+		"com³.log",
+		"LPT¹",
+		"LPT².txt",
+		"lpt³.log",
+	}
+	for _, component := range invalid {
+		if !InvalidWindowsPathComponent(component) {
+			t.Errorf("InvalidWindowsPathComponent(%q) = false, want true", component)
+		}
+	}
+}
+
+func TestWindowsCanonicalPathFoldsCaseAliases(t *testing.T) {
+	for _, aliases := range [][2]string{
+		{"SKILL.md", "skill.MD"},
+		{"Assets/Icon.svg", "assets/icon.SVG"},
+		{"Ångström", "ångström"},
+	} {
+		if first, second := windowsCanonicalPath(aliases[0]), windowsCanonicalPath(aliases[1]); first != second {
+			t.Errorf("canonical aliases %q and %q differ: %q != %q", aliases[0], aliases[1], first, second)
+		}
+	}
+	if parent := windowsCanonicalPath("Assets/Icon.svg")[:len("assets")]; parent != windowsCanonicalPath("ASSETS") {
+		t.Errorf("canonical prefix = %q, want %q", parent, windowsCanonicalPath("ASSETS"))
 	}
 }
 

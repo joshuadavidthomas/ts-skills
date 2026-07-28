@@ -1,4 +1,4 @@
-package safetree
+package client
 
 import (
 	"encoding/binary"
@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/joshuadavidthomas/ts-skill-registry/internal/safetree"
 )
 
 const (
@@ -17,10 +19,10 @@ const (
 	zipMaximumCommentLength  = 1<<16 - 1
 )
 
-// PreflightZIP checks the on-disk end record and entry count before archive/zip
-// allocates and decodes the central directory. ZIP64 and multi-disk archives are
-// outside the tree limits and are rejected.
-func PreflightZIP(archivePath string, maximumEntries int64) (err error) {
+// preflightZIP bounds classic ZIP entry metadata before archive/zip allocates
+// and decodes the central directory. Registry downloads do not accept ZIP64 or
+// multi-disk archives.
+func preflightZIP(archivePath string, maximumEntries int64) (err error) {
 	if maximumEntries <= 0 {
 		return fmt.Errorf("ZIP entry maximum must be positive")
 	}
@@ -36,10 +38,10 @@ func PreflightZIP(archivePath string, maximumEntries int64) (err error) {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("ZIP spool is not a regular file")
 	}
-	return preflightZIP(archive, info.Size(), maximumEntries)
+	return preflightZIPDirectory(archive, info.Size(), maximumEntries)
 }
 
-func preflightZIP(archive io.ReaderAt, size, maximumEntries int64) error {
+func preflightZIPDirectory(archive io.ReaderAt, size, maximumEntries int64) error {
 	if size < zipDirectoryEndLength {
 		return fmt.Errorf("ZIP end record is missing")
 	}
@@ -78,7 +80,7 @@ func preflightZIP(archive io.ReaderAt, size, maximumEntries int64) error {
 		return fmt.Errorf("multi-disk ZIP archives are not accepted")
 	}
 	if int64(records) > maximumEntries {
-		return &LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(records)}
+		return &safetree.LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(records)}
 	}
 
 	directoryStart := endOffset - int64(directorySize)

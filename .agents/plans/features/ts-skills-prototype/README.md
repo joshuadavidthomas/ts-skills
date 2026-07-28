@@ -3,8 +3,8 @@
 **Source roadmap item:** N/A
 **Source improvement plan:** N/A
 **Planned at:** 2026-07-27, working copy `xsprqlup` / `d8ede01a8663`
-**Status:** Ready for execution
-**Current gate:** Review the final executor plan’s resolved choices and type/interface contracts, then begin Phase 1.
+**Status:** Implemented
+**Current gate:** Run the human-controlled Tailnet enrollment, ACL, HTTPS, and two-machine smoke checks when deploying.
 
 ## Purpose
 
@@ -19,7 +19,7 @@ The work reaches one demonstrable path: a Tailnet user uploads one Agent Skill a
 | Artifact | Status | Purpose | Notes |
 |---|---|---|---|
 | [001-structure-outline](001-structure-outline.md) | Accepted | Split the accepted spec into implementation slices | Six phase boundaries |
-| [002-plan](002-plan.md) | Ready for execution | Define exact contracts and executor-safe implementation steps | Review resolved prototype choices before Phase 1 |
+| [002-plan](002-plan.md) | Implemented | Define exact contracts and executor-safe implementation steps | All six code phases and automated gates pass |
 
 ## Current Shape
 
@@ -45,9 +45,9 @@ The work reaches one demonstrable path: a Tailnet user uploads one Agent Skill a
 - Journaled replacement, one physical writer, fail-closed local edits, and complete recovery-state rules.
 - Tailnet TLS through `tsnet`; actual ACL, tag, auth key, MagicDNS, and HTTPS changes remain human-controlled deployment work.
 
-## Implementation Routing
+## Implementation Result
 
-Execute [`002-plan.md`](002-plan.md) directly as six phases. It defines exact type and interface signatures, ownership and lifecycle rules, invariants, dependency direction, production/test implementations, adapter mappings, transaction recovery, and boundary contract tests. Stop and hand back when one of its STOP conditions applies.
+All six phases in [`002-plan.md`](002-plan.md) are implemented. Package tests, race tests, vet, command builds, Windows cross-builds, restart checks, network install/restore checks, and transaction failure injection pass. Real Tailnet enrollment, policy changes, HTTPS enablement, and the two-machine smoke test remain human-controlled deployment work.
 
 ## Rejected or Deferred
 

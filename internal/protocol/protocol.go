@@ -4,6 +4,12 @@ import "errors"
 
 const Version = "v1"
 
+const (
+	HeaderPublicationNamespace = "X-TS-Skills-Publication-Namespace"
+	HeaderPublicationName      = "X-TS-Skills-Publication-Name"
+	HeaderPublicationDigest    = "X-TS-Skills-Publication-Digest"
+)
+
 type CurrentResponse struct {
 	Namespace string `json:"namespace"`
 	Name      string `json:"name"`

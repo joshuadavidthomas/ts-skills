@@ -59,8 +59,14 @@ func TestDecodeLockSortsCanonicalSkillIdentities(t *testing.T) {
 
 func TestLockCodecIsCanonicalAndStrict(t *testing.T) {
 	_, publication, _ := testPublication(t, "team", "sample", "one")
-	locked, _ := NewLockedSkill(publication)
-	lock, _ := NewLock([]LockedSkill{locked})
+	locked, err := NewLockedSkill(publication)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := NewLock([]LockedSkill{locked})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var encoded bytes.Buffer
 	if err := EncodeLock(&encoded, lock); err != nil {
 		t.Fatal(err)
@@ -76,6 +82,28 @@ func TestLockCodecIsCanonicalAndStrict(t *testing.T) {
 		if _, err := DecodeLock(strings.NewReader(malformed)); err == nil {
 			t.Fatalf("accepted malformed lock %q", malformed)
 		}
+	}
+}
+
+func TestDecodeLockRejectsDuplicateSkillEntries(t *testing.T) {
+	_, first, _ := testPublication(t, "team", "sample", "one")
+	_, second, _ := testPublication(t, "team", "sample", "two")
+	entry := func(publication registry.PublicationID) string {
+		return "\n[[skills]]\nskill = \"team/sample\"\ndigest = \"" + publication.Tree().String() + "\"\n"
+	}
+
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "identical full entries", encoded: "schema = 1\n" + entry(first) + entry(first)},
+		{name: "same identity with another digest", encoded: "schema = 1\n" + entry(first) + entry(second)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := DecodeLock(strings.NewReader(test.encoded)); err == nil {
+				t.Fatal("DecodeLock accepted duplicate full SkillID entries")
+			}
+		})
 	}
 }
 

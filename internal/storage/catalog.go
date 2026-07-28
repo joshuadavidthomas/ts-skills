@@ -123,13 +123,14 @@ func (c *Catalog) Close() error {
 	if c.closed {
 		return nil
 	}
-	c.closing = true
-
-	c.refsMu.Lock()
-	openTrees := c.openTrees
-	c.refsMu.Unlock()
-	if openTrees != 0 {
-		return fmt.Errorf("%w: %d", ErrTreesOpen, openTrees)
+	if !c.closing {
+		c.refsMu.Lock()
+		openTrees := c.openTrees
+		c.refsMu.Unlock()
+		if openTrees != 0 {
+			return fmt.Errorf("%w: %d", ErrTreesOpen, openTrees)
+		}
+		c.closing = true
 	}
 	if !c.dbClosed {
 		closeDB := c.closeDB

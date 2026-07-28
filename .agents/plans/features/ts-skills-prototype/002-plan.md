@@ -3,7 +3,7 @@ type: plan
 repo: ts-skill-registry
 branch: none
 sha: b231033509f5
-status: ready-for-execution
+status: implemented
 source_structure_outline: .agents/plans/features/ts-skills-prototype/001-structure-outline.md
 ---
 
@@ -875,7 +875,7 @@ func (w *projectWriter) close() error
 
 Use `<project>/.agents/.ts-skills/write.lock` with the pinned cross-platform file-lock library. Wait with context cancellation; a canceled wait returns `ErrBusy` wrapping the context cause. Immediately after successful acquisition, the caller defers `projectWriter.close`. Hold the writer through preflight, fetch, verification, destination replacement, and lock update.
 
-The caller immediately defers `verifiedTree.close` after each successful stage. `close` removes an owned unconsumed tree and is idempotent. `install` calls `transfer` only after the durable journal owns the path; transfer clears `owned`. During restore, retain every verified tree and its deferred cleanup until all entries pass preflight and fetching. `projectWriter.close` removes all tracked pre-journal staging before releasing the writer lock.
+The caller immediately defers `verifiedTree.close` after each successful stage. `close` removes an owned unconsumed tree and is idempotent. `install` calls `transfer` only after the durable journal owns the path; transfer clears `owned`. During restore, retain every verified tree and its deferred cleanup until all entries pass preflight and fetching. `projectWriter.close` attempts to remove all tracked pre-journal staging. If removal fails, it returns the error but releases exclusion; the path remains a validated top-level `staging-*` orphan under project transaction state, and the next writer durably removes such orphans before journal recovery. This handoff prevents a discarded writer from keeping the project locked forever without exposing partial destination or lock state.
 
 Before mutation:
 
@@ -890,18 +890,20 @@ Transaction journal:
 
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "operation": "<random-hex>",
   "skill": "team/pdf-processing",
   "old_digest": "sha256:... or empty",
   "new_digest": "sha256:...",
+  "old_lock_hash": "sha256 of exact prior lock bytes, or empty",
+  "new_lock_hash": "sha256 of exact new lock bytes",
   "had_lock": true,
   "had_destination": true,
-  "phase": "prepared|backup-created|destination-swapped|lock-committed"
+  "phase": "prepared|backup-created|destination-swapped|lock-committed|cleanup-committed|cleanup-rolled-back"
 }
 ```
 
-Write every journal revision through a temporary file, fsync it, atomically rename it, and fsync the operation directory. Keep an exact old-lock snapshot when `had_lock=true` and a complete new-lock file in the operation directory.
+Write every journal revision through a temporary file, fsync it, atomically rename it, and fsync the operation directory. Keep an exact old-lock snapshot when `had_lock=true` and a complete new-lock file in the operation directory. The lock hashes bind recovery to those complete snapshots after interrupted cleanup. `cleanup-committed` and `cleanup-rolled-back` durably record the chosen terminal state before snapshot deletion, so cleanup can resume without accepting an unrelated project lock. Schema 2 is the sole supported journal shape; do not add schema 1 compatibility.
 
 Sequence:
 
@@ -915,7 +917,7 @@ Sequence:
 
 On writer acquisition, remove any operation directory that has no durable journal: destination and lock mutation cannot begin before the `prepared` journal is durable. Fsync the operations parent after removal. During successful cleanup, remove backup/staging/lock snapshots first, remove the journal last, fsync the operation directory, then remove it and fsync the operations parent. This ordering ensures a journal-less directory never contains required rollback evidence.
 
-Recovery treats journal phase as a hint and decides from the actual old/new lock bytes and old/new destination digests. It first rejects any destination, backup, staging, or lock content matching neither recorded old nor new state. Then apply this idempotent table:
+Before a terminal cleanup phase, recovery treats journal phase as a hint and decides from the exact lock hashes and actual old/new destination digests. A terminal cleanup phase binds the already chosen outcome while evidence is removed. Recovery first rejects any destination, backup, staging, or lock content matching neither recorded old nor new state. Then apply this idempotent table:
 
 | Actual lock | Actual destination / backup / staging | Recovery |
 |---|---|---|

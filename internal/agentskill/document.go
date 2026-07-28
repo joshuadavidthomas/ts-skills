@@ -106,6 +106,12 @@ func validateFrontmatterTypes(document *yaml.Node) error {
 	}
 	for i := 0; i < len(mapping.Content); i += 2 {
 		key, value := mapping.Content[i], mapping.Content[i+1]
+		if key.Kind == yaml.ScalarNode && key.Value == "<<" && (key.Tag == "" || key.Tag == "!" || key.ShortTag() == "!!merge") {
+			return newValidationError(ErrInvalidDocument, "frontmatter", "top-level YAML merge keys are not accepted")
+		}
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return newValidationError(ErrInvalidDocument, "frontmatter", "top-level keys must be YAML string scalars")
+		}
 		switch key.Value {
 		case "name", "description", "license", "compatibility", "allowed-tools":
 			if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {

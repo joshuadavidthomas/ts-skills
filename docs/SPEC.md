@@ -1,8 +1,8 @@
 # ts-skills prototype specification
 
-Status: Draft for discussion
+Status: Implemented prototype v1
 
-This document defines the v1 prototype and its first scaffolding boundary. It leaves storage, protocol, and UI details open until a functional slice needs them.
+This document defines the v1 product boundary. The accepted executor plan at `.agents/plans/features/ts-skills-prototype/002-plan.md` records the storage, protocol, UI, transaction, and deployment choices made during implementation.
 
 ## Summary
 
@@ -97,7 +97,7 @@ A directory upload and a ZIP upload that reconstruct the same normalized files p
 4. It stages, validates, and verifies each tree.
 5. It restores missing or stale managed content without overwriting unrelated content.
 
-The detailed policy for local edits, interrupted replacement, and concurrent writers remains open.
+Installation fails closed on local edits, uses one writer lock per canonical project, and recovers interrupted replacement through a durable same-filesystem journal.
 
 ## Product requirements
 
@@ -154,7 +154,7 @@ The registry does not claim that this proves an upstream author or repository. U
 
 The prototype supports one project scope. The user supplies the project directory directly; the CLI does not search parent directories for a project root.
 
-The exact Agent Skills destination and project-lock path remain open. One physical project location has at most one locked digest for each skill identity.
+Skills install under `<project>/.agents/skills/<name>/`; the lock lives at `<project>/.agents/ts-skills.lock`. One physical project location has at most one locked digest for each skill identity.
 
 ### CLI configuration
 
@@ -166,7 +166,7 @@ A likely value is:
 registry = "https://ts-skillsd.example-tailnet.ts.net"
 ```
 
-The configuration path and development overrides remain open.
+The configuration lives at `os.UserConfigDir()/ts-skills/config.toml`. Loopback HTTP is accepted only for local tests and development.
 
 ### Project lock
 
@@ -177,7 +177,7 @@ Each lock entry contains only:
 
 The lock does not identify the registry in v1. The CLI uses its configured registry and rejects returned content that does not match the locked skill and digest.
 
-A lock contains at most one entry for each skill identity. Duplicate entries are invalid, including identical duplicates. TOML remains the preferred encoding; its path and full schema remain open.
+A lock contains at most one entry for each skill identity. Duplicate entries are invalid, including identical duplicates. The strict TOML schema and path are defined in the executor plan.
 
 ## Normalized tree digest
 
@@ -264,13 +264,13 @@ The basic web frontend needs only enough UI to:
 
 The frontend must render imported content as inert text. Mutations require Tailnet-derived identity, CSRF protection, output escaping, and request limits.
 
-The frontend framework, route structure, and amount of JavaScript remain open.
+The prototype uses server-rendered `html/template` pages and only enough browser JavaScript to encode directory-selection manifests.
 
 ## Tailnet service
 
 `ts-skillsd` runs through `tsnet` as a durable service identity. It should not need a matching listener on ordinary host interfaces.
 
-Tailnet policy controls reachability. The exact daemon enrollment, state directory, DNS name, and HTTPS setup remain open until the deployment slice.
+Tailnet policy controls reachability. `README.md` defines daemon enrollment, persistent state, MagicDNS, HTTPS, and smoke-test steps; policy and secret changes remain human-controlled.
 
 ## Success criteria
 
@@ -399,7 +399,7 @@ func (d Directory) Document() Document
 func (d Directory) Open(name string) (fs.File, error)
 ```
 
-`Directory` is a validated parser view over an `fs.FS`; it is not an immutable candidate snapshot. The future importer first copies an upload into owned staging storage, then loads and hashes that staged tree.
+`Directory` is a validated parser view over an `fs.FS`; it is not an immutable candidate snapshot. Capture first copies an upload into owned staging storage, then loads and hashes that staged tree.
 
 `Document()` returns an independent value. Callers cannot mutate maps or pointer-backed values held inside `Directory`.
 
@@ -492,7 +492,7 @@ The scaffold defines `LockedSkill`, not a lock aggregate. The lock codec slice w
 └── go.sum
 ```
 
-This is a starting layout. Web, daemon, source, storage, and protocol packages should appear only when functional work gives them a cohesive responsibility. Both `main` packages remain small composition points.
+The implemented layout adds web, daemon, storage, upload, protocol, client, config, CLI, and Tailnet packages at the boundaries defined by the executor plan. Both `main` packages remain small composition points.
 
 ## First scaffolding boundary
 
@@ -520,21 +520,21 @@ It does not establish:
 
 The next functional slice should exercise one in-process path: staged directory → candidate → publication → current resolution → explicit project installation → locked selection. ZIP, web, persistence, and Tailnet adapters then wrap behavior already proven in that path.
 
-## Remaining open questions
+## Resolved implementation choices
 
-1. What namespace syntax should the web and protocol boundaries accept?
-2. Where do CLI configuration and project locks live?
-3. What exact TOML schemas should configuration and locks use?
-4. Which project Agent Skills directory should the explicit project path contain?
-5. Which ZIP root shapes should upload accept?
-6. Which browsers must support directory selection, and what ZIP fallback copy should the UI show?
-7. What concrete upload limits are suitable for the team?
-8. What persistence system stores candidates, publications, current pointers, provenance, and tree content?
-9. What minimum review view is useful beyond `SKILL.md` and the file list?
-10. What daemon enrollment, state-directory, DNS, and HTTPS settings should the Tailnet deployment use?
-11. What replacement and recovery mechanism preserves the previous installation after interruption?
-12. How should concurrent CLI writers to one project behave?
-13. What should restore do when managed files have local edits?
+The executor plan resolves the prototype choices that this specification first left open:
+
+- strict NFKC namespace grammar;
+- one user config and one project digest lock in TOML;
+- project installation under `.agents/skills`;
+- rootless or one-wrapper ZIP input and browser directory manifests;
+- fixed request, expanded-tree, file, path, and depth limits;
+- SQLite facts plus immutable digest-addressed tree directories;
+- escaped `SKILL.md`, complete file list, provenance, and digest review;
+- Tailnet TLS through `tsnet` with connection-derived actors;
+- one physical project writer, durable journal recovery, and fail-closed local edits.
+
+Deployment-specific Tailnet ACL, tag, auth-key, MagicDNS, and HTTPS changes remain under human control.
 
 ## Related research
 

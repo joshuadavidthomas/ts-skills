@@ -1,13 +1,15 @@
 package install
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
-	"time"
 
 	"github.com/gofrs/flock"
 
@@ -91,6 +93,134 @@ func TestInstallerVerifiesBeforeReplacingDestination(t *testing.T) {
 	}
 	if _, err := fs.Stat(remote.last, "SKILL.md"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInstallRefusesUnmanagedDestinationWithoutChangingIt(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "managed replacement")
+	remote := &scriptedRemote{publication: publication, files: files}
+	installer, err := NewInstaller(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unmanagedPath := filepath.Join(destination, "SKILL.md")
+	unmanagedBytes := []byte("unmanaged bytes must survive\n")
+	if err := os.WriteFile(unmanagedPath, unmanagedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(unmanagedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := Current(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrUnmanagedDestination) {
+		t.Fatalf("Install error = %v, want ErrUnmanagedDestination", err)
+	}
+	after, err := os.ReadFile(unmanagedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("unmanaged destination changed from %q to %q", before, after)
+	}
+	if remote.last != nil {
+		t.Fatal("Install fetched a replacement before rejecting the unmanaged destination")
+	}
+	if _, err := os.Stat(project.LockPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Install created a lock for the rejected destination: %v", err)
+	}
+}
+
+func TestRestoreMissingLockedSkillPreservesUnmanagedContents(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "locked skill")
+	remote := &scriptedRemote{publication: publication, files: files}
+	installer, err := NewInstaller(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := Current(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(project.SkillsDir(), "sample")); err != nil {
+		t.Fatal(err)
+	}
+
+	unrelatedPath := filepath.Join(project.SkillsDir(), "notes.txt")
+	unrelatedBytes := []byte("project notes\n")
+	if err := os.WriteFile(unrelatedPath, unrelatedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unlockedPath := filepath.Join(project.SkillsDir(), "other", "assets", "preserve.bin")
+	if err := os.MkdirAll(filepath.Dir(unlockedPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	unlockedBytes := []byte{0x00, 0x01, 0xfe, 0xff}
+	if err := os.WriteFile(unlockedPath, unlockedBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unlockedDocumentPath := filepath.Join(project.SkillsDir(), "other", "SKILL.md")
+	unlockedDocumentBytes := []byte("---\nname: other\ndescription: Unlocked\n---\nDo not alter.\n")
+	if err := os.WriteFile(unlockedDocumentPath, unlockedDocumentBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installer.Restore(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md")); err != nil {
+		t.Fatalf("read restored locked skill: %v", err)
+	}
+	unrelatedAfter, err := os.ReadFile(unrelatedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unrelatedAfter, unrelatedBytes) {
+		t.Fatalf("unrelated file changed from %q to %q", unrelatedBytes, unrelatedAfter)
+	}
+	unlockedAfter, err := os.ReadFile(unlockedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unlockedAfter, unlockedBytes) {
+		t.Fatalf("unlocked skill asset changed from %v to %v", unlockedBytes, unlockedAfter)
+	}
+	unlockedDocumentAfter, err := os.ReadFile(unlockedDocumentPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(unlockedDocumentAfter, unlockedDocumentBytes) {
+		t.Fatalf("unlocked skill document changed from %q to %q", unlockedDocumentBytes, unlockedDocumentAfter)
+	}
+	lockAfter, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(lockAfter, lockBefore) {
+		t.Fatal("Restore rewrote the unchanged project lock")
 	}
 }
 
@@ -182,7 +312,7 @@ func TestVerifiedTreeCloseRetainsOwnershipAfterRemovalFailure(t *testing.T) {
 	}
 }
 
-func TestProjectWriterCloseCleansStagingBeforeReleasingLock(t *testing.T) {
+func TestProjectWriterCloseHandsFailedStagingToNextWriter(t *testing.T) {
 	project, err := OpenProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -191,11 +321,6 @@ func TestProjectWriterCloseCleansStagingBeforeReleasingLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		writer.removeStaging = os.RemoveAll
-		writer.closeLock = (*flock.Flock).Close
-		_ = writer.close()
-	})
 	failedStaging, err := os.MkdirTemp(project.StateDir(), "staging-failed-")
 	if err != nil {
 		t.Fatal(err)
@@ -214,47 +339,183 @@ func TestProjectWriterCloseCleansStagingBeforeReleasingLock(t *testing.T) {
 		}
 		return os.RemoveAll(path)
 	}
-	writer.closeLock = func(*flock.Flock) error {
+	writer.closeLock = func(lock *flock.Flock) error {
 		lockCloseCalls++
-		return nil
+		return lock.Close()
 	}
 	if err := writer.close(); !errors.Is(err, injected) {
-		t.Fatalf("first close error = %v, want injected failure", err)
+		t.Fatalf("close error = %v, want injected failure", err)
 	}
-	if writer.closed || writer.lock == nil || lockCloseCalls != 0 {
-		t.Fatal("writer released its lock before all staging was clean")
+	if !writer.closed || writer.lock != nil || lockCloseCalls != 1 {
+		t.Fatal("writer did not release its lock after staging cleanup failed")
 	}
-	if len(writer.staging) != 1 {
-		t.Fatalf("tracked staging after failed close = %d, want 1", len(writer.staging))
-	}
-	if _, found := writer.staging[failedStaging]; !found {
-		t.Fatal("failed staging entry was not retained")
+	if writer.staging != nil {
+		t.Fatal("closed writer retained staging ownership")
 	}
 	if _, err := os.Stat(cleanedStaging); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("successfully cleaned staging remains: %v", err)
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if _, err := project.acquireWriter(ctx); !errors.Is(err, ErrBusy) {
-		t.Fatalf("second writer while cleanup is pending = %v, want ErrBusy", err)
+	if _, err := os.Stat(failedStaging); err != nil {
+		t.Fatalf("failed staging was not left for handoff: %v", err)
 	}
 
-	writer.removeStaging = os.RemoveAll
-	writer.closeLock = (*flock.Flock).Close
-	if err := writer.close(); err != nil {
-		t.Fatal(err)
-	}
-	if !writer.closed || writer.lock != nil || len(writer.staging) != 0 {
-		t.Fatal("retried close did not release cleaned writer")
-	}
 	reopened, err := project.acquireWriter(context.Background())
+	if errors.Is(err, ErrBusy) {
+		t.Fatalf("orphan handoff retained the writer lock: %v", err)
+	}
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := os.Stat(failedStaging); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("next writer did not remove orphan staging: %v", err)
 	}
 	if err := reopened.close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestInstallCloseCleanupFailureIsRetriedByNextWriter(t *testing.T) {
+	skill, publication, files := testPublication(t, "team", "sample", "body")
+	remote := &scriptedRemote{publication: publication, files: files}
+	installer, err := NewInstaller(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := Current(skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("injected close staging cleanup failure")
+	projectWriterRemoveStaging = func(string) error { return injected }
+	t.Cleanup(func() { projectWriterRemoveStaging = os.RemoveAll })
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, injected) {
+		t.Fatalf("Install error = %v, want staging cleanup failure", err)
+	}
+	projectWriterRemoveStaging = os.RemoveAll
+
+	var orphan string
+	entries, err := os.ReadDir(project.StateDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), installStagingPrefix) {
+			if orphan != "" {
+				t.Fatal("Install left more than one orphan staging directory")
+			}
+			orphan = filepath.Join(project.StateDir(), entry.Name())
+		}
+	}
+	if orphan == "" {
+		t.Fatal("Install did not leave failed staging for the next writer")
+	}
+
+	writer, err := project.acquireWriter(context.Background())
+	if errors.Is(err, ErrBusy) {
+		t.Fatalf("next writer saw ErrBusy after close failure: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("next writer did not durably remove orphan staging: %v", err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAcquireWriterRetriesOrphanCleanupAndRejectsMalformedMatches(t *testing.T) {
+	t.Run("cleanup failure releases lock for retry", func(t *testing.T) {
+		project, err := OpenProject(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer, err := project.acquireWriter(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.close(); err != nil {
+			t.Fatal(err)
+		}
+		orphan, err := os.MkdirTemp(project.StateDir(), installStagingPrefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		injected := errors.New("injected orphan cleanup failure")
+		transactionFailure = func(point string) error {
+			if point == "before-remove-orphan-install-staging" {
+				return injected
+			}
+			return nil
+		}
+		t.Cleanup(func() { transactionFailure = nil })
+		if _, err := project.acquireWriter(context.Background()); !errors.Is(err, injected) {
+			t.Fatalf("first retry error = %v, want injected cleanup failure", err)
+		}
+		transactionFailure = nil
+
+		writer, err = project.acquireWriter(context.Background())
+		if errors.Is(err, ErrBusy) {
+			t.Fatalf("cleanup retry retained writer lock: %v", err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(orphan); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("retry did not remove orphan: %v", err)
+		}
+		if err := writer.close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("matching file is preserved", func(t *testing.T) {
+		project, err := OpenProject(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writer, err := project.acquireWriter(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.close(); err != nil {
+			t.Fatal(err)
+		}
+		malformed := filepath.Join(project.StateDir(), installStagingPrefix+"malformed")
+		contents := []byte("must not be removed")
+		if err := os.WriteFile(malformed, contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := project.acquireWriter(context.Background()); !errors.Is(err, ErrRecoveryRequired) {
+			t.Fatalf("malformed orphan error = %v, want ErrRecoveryRequired", err)
+		}
+		actual, err := os.ReadFile(malformed)
+		if err != nil || !bytes.Equal(actual, contents) {
+			t.Fatalf("malformed orphan changed to %q: %v", actual, err)
+		}
+		if err := os.Remove(malformed); err != nil {
+			t.Fatal(err)
+		}
+		writer, err = project.acquireWriter(context.Background())
+		if errors.Is(err, ErrBusy) {
+			t.Fatalf("malformed orphan failure retained writer lock: %v", err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.close(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }
 
 func TestProjectWriterCloseRetriesLockFailure(t *testing.T) {

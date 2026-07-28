@@ -1,5 +1,11 @@
+//go:build windows
+
 package safetree
 
 func invalidPlatformPathComponent(component string) bool {
-	return hasWindowsAlternateDataStream(component)
+	return InvalidWindowsPathComponent(component)
+}
+
+func canonicalPlatformPath(name string) string {
+	return windowsCanonicalPath(name)
 }

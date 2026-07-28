@@ -111,6 +111,32 @@ func TestParseRejectsNonStringMetadataEntries(t *testing.T) {
 	}
 }
 
+func TestParseRejectsTopLevelYAMLMergeKeys(t *testing.T) {
+	for _, mergeKey := range []string{"<<", "!!merge '<<'", "! <<"} {
+		t.Run(mergeKey, func(t *testing.T) {
+			source := fmt.Sprintf("---\ndefaults: &defaults\n  description: 123\nname: sample\n%s: *defaults\n---\n", mergeKey)
+			_, err := Parse([]byte(source))
+			requireInvalidDocumentField(t, err, "frontmatter")
+		})
+	}
+}
+
+func TestParseRejectsAliasedTopLevelKeys(t *testing.T) {
+	source := []byte("---\nfield: &field description\nname: sample\n*field: 123\n---\n")
+	_, err := Parse(source)
+	requireInvalidDocumentField(t, err, "frontmatter")
+}
+
+func TestParseAllowsQuotedMergeLikeUnknownField(t *testing.T) {
+	document, err := Parse([]byte("---\nname: sample\ndescription: A sample\n\"<<\": {description: 123}\n---\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Description != "A sample" {
+		t.Fatalf("description = %q", document.Description)
+	}
+}
+
 func TestParseAllowsUnknownFrontmatterNodeTypes(t *testing.T) {
 	tests := []struct {
 		name  string

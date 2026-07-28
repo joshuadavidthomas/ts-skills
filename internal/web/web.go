@@ -382,16 +382,18 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
-	publicationID, err := registry.NewPublicationID(skill, digest)
+	requestedPublication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
-	if _, err := h.catalog.Publication(r.Context(), publicationID); err != nil {
+	publication, err := h.catalog.Publication(r.Context(), requestedPublication)
+	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
 	}
-	tree, err := h.catalog.OpenPublicationTree(r.Context(), publicationID)
+	resolvedPublication := publication.ID()
+	tree, err := h.catalog.OpenPublicationTree(r.Context(), resolvedPublication)
 	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
@@ -408,9 +410,13 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		_ = archive.Close()
 		_ = os.Remove(name)
 	}()
+	resolvedSkill := resolvedPublication.Skill()
 	w.Header().Set("Content-Type", "application/zip")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+skill.Name().String()+`.zip"`)
-	http.ServeContent(w, r, skill.Name().String()+".zip", time.Time{}, archive)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+resolvedSkill.Name().String()+`.zip"`)
+	w.Header().Set(protocol.HeaderPublicationNamespace, resolvedSkill.Namespace().String())
+	w.Header().Set(protocol.HeaderPublicationName, resolvedSkill.Name().String())
+	w.Header().Set(protocol.HeaderPublicationDigest, resolvedPublication.Tree().String())
+	http.ServeContent(w, r, resolvedSkill.Name().String()+".zip", time.Time{}, archive)
 }
 
 func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
