@@ -4,18 +4,48 @@ A private [Agent Skills](docs/research/agentskills-spec.md) registry for your ta
 
 `ts-skillsd` serves a small web UI where tailnet users can browse skills and authorized curators can upload and publish them. `ts-skills` installs a published skill into a project and pins its exact content in a lock file.
 
-- **Content-addressed.** A publication is `namespace/name` plus the SHA-256 digest of its file tree, and is immutable once published. Repeated browser-directory uploads of the same files produce the same digest.
-- **No accounts.** The daemon serves only through [tsnet](https://tailscale.com/kb/1244/tsnet), so every upload and publish action is attributed to the Tailnet identity that made it and curation is scoped by an ACL application capability; there are no passwords, tokens, or API keys.
+- **Content-addressed.** A publication is `namespace/name` plus the SHA-256 digest of its file tree, and is immutable once published. Uploading the same files always produces the same digest.
+- **No accounts.** The daemon serves only through [tsnet](https://tailscale.com/kb/1244/tsnet), so every upload and publish action is attributed to the Tailnet identity that made it, and curation is scoped by an ACL application capability. There are no passwords, tokens, or API keys.
 - **Reproducible installs.** `ts-skills install` writes the skill under `<project>/.agents/skills/<name>/` and records its digest in `<project>/.agents/ts-skills.lock`. `ts-skills restore` recreates exactly what the lock says, even after the registry's current publication moves on.
+
+## Installation
+
+### Homebrew
+
+```bash
+brew tap joshuadavidthomas/homebrew
+brew install ts-skills
+```
+
+This installs both `ts-skills` and `ts-skillsd`.
+
+### Release binaries
+
+Each [GitHub release](https://github.com/joshuadavidthomas/ts-skills/releases) ships one archive per platform (Linux, macOS, Windows; amd64 and arm64) containing both binaries, with checksums and signed provenance attestations.
+
+### Go install
+
+With [Go](https://go.dev/) 1.26 or newer:
+
+```bash
+go install github.com/joshuadavidthomas/ts-skills/cmd/ts-skills@latest
+go install github.com/joshuadavidthomas/ts-skills/cmd/ts-skillsd@latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/joshuadavidthomas/ts-skills.git
+cd ts-skills
+just build
+```
 
 ## Quickstart
 
-You need Go 1.26 or newer. No Tailscale account, no configuration.
-
-Start a local registry in dev mode:
+Try the whole flow on one machine — no Tailscale account, no configuration. Start a local registry in dev mode:
 
 ```console
-TS_SKILLSD_DEV=1 go run ./cmd/ts-skillsd
+TS_SKILLSD_DEV=1 ts-skillsd
 ```
 
 Open <http://127.0.0.1:8080/upload> and publish the bundled example:
@@ -29,7 +59,7 @@ Install it into a scratch project:
 ```console
 mkdir -p /tmp/demo
 printf 'registry = "http://127.0.0.1:8080"\n' > /tmp/demo/config.toml
-go run ./cmd/ts-skills install --project /tmp/demo --config /tmp/demo/config.toml team/example-skill
+ts-skills install --project /tmp/demo --config /tmp/demo/config.toml team/example-skill
 ```
 
 That gives you:
@@ -43,7 +73,7 @@ Delete the installed skill and get it back exactly as pinned:
 
 ```console
 rm -rf /tmp/demo/.agents/skills/example-skill
-go run ./cmd/ts-skills restore --project /tmp/demo --config /tmp/demo/config.toml
+ts-skills restore --project /tmp/demo --config /tmp/demo/config.toml
 ```
 
 When you're done, stop the daemon with Ctrl-C and delete `/tmp/demo`. Dev-mode registry state lives in your user cache directory under `ts-skillsd-dev/`; delete it to start fresh.
@@ -57,10 +87,12 @@ See the [deployment guide](docs/deployment.md). In short: enable MagicDNS and HT
 ## Development
 
 ```console
-go test ./...
+just test    # tests with the race detector
+just lint    # pre-commit hooks, including golangci-lint
+just check   # tests, lint, vet, govulncheck, and module tidiness
 ```
 
-The test suite needs no Tailnet credentials. See the [development guide](docs/development.md) for focused tests, race and cross-platform checks, and how dev mode is wired.
+The test suite needs no Tailnet credentials. See the [development guide](docs/development.md) for focused tests and how dev mode is wired, and [releasing](docs/releasing.md) for how releases are cut.
 
 ## License
 

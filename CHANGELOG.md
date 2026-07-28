@@ -20,8 +20,4 @@ and this project attempts to adhere to [Semantic Versioning](https://semver.org/
 
 ## [Unreleased]
 
-### New Contributors
-
-- Josh Thomas <josh@joshthomas.dev> (maintainer)
-
-[unreleased]: https://github.com/joshuadavidthomas/ts-skills/compare/v0.11.0...HEAD
+[unreleased]: https://github.com/joshuadavidthomas/ts-skills/commits/main
