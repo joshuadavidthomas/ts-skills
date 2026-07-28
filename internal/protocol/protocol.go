@@ -30,6 +30,10 @@ const (
 
 var ErrProtocol = errors.New("invalid registry protocol response")
 
+var ErrInvalidRequest = errors.New("invalid registry request")
+
+var ErrInternal = errors.New("registry internal error")
+
 func StatusForCode(code string) (int, bool) {
 	switch code {
 	case CodeNotFound:

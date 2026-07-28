@@ -34,7 +34,7 @@ never reused or renumbered.)
 | 1 | [001](001-thread-context-through-tree-walks.md) | Thread context through tree walks and serving | L | — | DONE |
 | 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | DONE |
 | 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | DONE |
-| 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | TODO |
+| 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | DONE |
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | TODO |
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | TODO |
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | TODO |
@@ -79,6 +79,22 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 003 landed — `StageBrowserDirectory` and `decodeZIP` now
+  split AddFile outcomes into four classes: limit, cancellation
+  (`context.Canceled`/`DeadlineExceeded`, passed through), invalid path
+  (malformed/protocol wrap as before), and everything else (default
+  operational wrap, which web's `handleError` routes to 500). Added
+  `protocol.ErrInvalidRequest`/`protocol.ErrInternal` sentinels;
+  `responseError` maps `invalid_request`/`internal` onto them carrying the
+  server-sent prose, and `cli.commandError` gained matching branches.
+  Storage `ErrNotFound` returns now wrap the requested candidate /
+  publication / skill identity. Test note: the plan's pointed-to
+  safetree ctx-injection exemplar no longer exists after 001, and a
+  pre-canceled ctx can never reach `decodeZIP` through `fetchTree` (the
+  HTTP get fails first), so the cancellation tests call
+  `StageBrowserDirectory`/`decodeZIP` directly — the same pattern as
+  `TestDecodeZIPPreflightsEntryCount`. Next: 004.
 
 - **2026-07-28**: 002 landed — `runWithHandlerGate` derives a cancellable
   `serverCtx` from the run context, wires it as `http.Server.BaseContext`,

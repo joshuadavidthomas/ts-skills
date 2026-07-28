@@ -167,6 +167,10 @@ func commandError(operation string, err error) error {
 		return fmt.Errorf("cannot %s because the downloaded skill exceeds the configured safety limits: %w", operation, err)
 	case errors.Is(err, protocol.ErrProtocol):
 		return fmt.Errorf("cannot %s because the registry returned an invalid response; project files were not changed: %w", operation, err)
+	case errors.Is(err, protocol.ErrInvalidRequest):
+		return fmt.Errorf("cannot %s because the registry rejected the request as invalid: %w", operation, err)
+	case errors.Is(err, protocol.ErrInternal):
+		return fmt.Errorf("cannot %s because the registry could not complete the request: %w", operation, err)
 	default:
 		return fmt.Errorf("%s failed: %w", operation, err)
 	}

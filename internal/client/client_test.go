@@ -183,6 +183,60 @@ func TestDecodeZIPPreflightsEntryCount(t *testing.T) {
 	}
 }
 
+func TestDecodeZIPPreservesCancellation(t *testing.T) {
+	_, archive := clientTree(t, "cancellation")
+	parent := t.TempDir()
+	archivePath := filepath.Join(parent, "tree.zip")
+	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	remote := &Remote{stagingParent: t.TempDir(), limits: safetree.PrototypeLimits()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := remote.decodeZIP(ctx, archivePath)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled decodeZIP error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, protocol.ErrProtocol) {
+		t.Fatalf("canceled decodeZIP error flattened into ErrProtocol: %v", err)
+	}
+}
+
+func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
+	tests := map[string]struct {
+		code string
+		want error
+	}{
+		"not-found":       {protocol.CodeNotFound, registry.ErrNotFound},
+		"invalid-request": {protocol.CodeInvalidRequest, protocol.ErrInvalidRequest},
+		"too-large":       {protocol.CodeTooLarge, safetree.ErrLimitExceeded},
+		"internal":        {protocol.CodeInternal, protocol.ErrInternal},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			status, known := protocol.StatusForCode(test.code)
+			if !known {
+				t.Fatalf("test code %q has no wire status", test.code)
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: test.code, Message: "error mapping test"})
+			}))
+			defer server.Close()
+			remote := remoteForServer(t, server)
+			digest, _ := clientTree(t, "error mapping")
+			requirement, err := install.Exact(clientSkill(t), digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, test.want) {
+				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestZIPPreflightRejectsUnderreportedEntriesAndZIP64(t *testing.T) {
 	_, archive := clientTree(t, "preflight formats")
 	end := bytes.LastIndex(archive, []byte{'P', 'K', 5, 6})

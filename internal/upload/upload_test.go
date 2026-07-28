@@ -179,6 +179,26 @@ func TestBrowserDirectoryRejectsMalformedManifestAndPartSequence(t *testing.T) {
 	}
 }
 
+func TestBrowserDirectoryCancellationSurvivesStaging(t *testing.T) {
+	reader := directoryReader(t,
+		directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/SKILL.md","size":74}]`},
+		directoryPart{name: "file-0", filename: "SKILL.md", body: string(testSkill)},
+	)
+	first, err := reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = StageBrowserDirectory(ctx, t.TempDir(), first, reader, safetree.PrototypeLimits())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled directory error = %v, want context.Canceled", err)
+	}
+	if errors.Is(err, ErrMalformedUpload) {
+		t.Fatalf("canceled directory error flattened into malformed upload: %v", err)
+	}
+}
+
 func TestSubmissionOwnsAndRemovesSnapshot(t *testing.T) {
 	parent := t.TempDir()
 	submission, err := stageDirectory(t, parent, safetree.PrototypeLimits(),

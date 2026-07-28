@@ -788,7 +788,7 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := catalog.Candidate(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Candidate(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.ID().String()) {
 		t.Fatalf("Candidate error = %v", err)
 	}
 	if _, err := catalog.OpenCandidateTree(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
@@ -797,13 +797,14 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	if _, err := catalog.PublishCandidate(ctx, candidate.ID(), fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("PublishCandidate error = %v", err)
 	}
-	if _, err := catalog.Publication(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Publication(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) ||
+		!strings.Contains(err.Error(), candidate.Skill().String()) || !strings.Contains(err.Error(), candidate.Tree().String()) {
 		t.Fatalf("Publication error = %v", err)
 	}
 	if _, err := catalog.OpenPublicationTree(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("OpenPublicationTree error = %v", err)
 	}
-	if _, err := catalog.ResolveCurrent(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.ResolveCurrent(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill().String()) {
 		t.Fatalf("ResolveCurrent error = %v", err)
 	}
 	if _, err := catalog.SelectCurrent(ctx, publicationID, fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {

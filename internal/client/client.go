@@ -305,13 +305,17 @@ func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 		addErr := builder.AddFile(ctx, entry.Name, int64(entry.UncompressedSize64), input)
 		closeErr := input.Close()
 		if addErr != nil {
-			if errors.Is(addErr, safetree.ErrLimitExceeded) {
+			switch {
+			case errors.Is(addErr, safetree.ErrLimitExceeded):
 				return nil, addErr
+			case errors.Is(addErr, context.Canceled), errors.Is(addErr, context.DeadlineExceeded):
+				return nil, addErr
+			default:
+				return nil, fmt.Errorf("%w: unsafe tree archive entry: %w", protocol.ErrProtocol, addErr)
 			}
-			return nil, fmt.Errorf("%w: unsafe tree archive entry: %v", protocol.ErrProtocol, addErr)
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("%w: close tree archive entry: %v", protocol.ErrProtocol, closeErr)
+			return nil, fmt.Errorf("%w: close tree archive entry: %w", protocol.ErrProtocol, closeErr)
 		}
 	}
 	snapshot, err := builder.Finish()
@@ -354,11 +358,11 @@ func (r *Remote) responseError(response *http.Response) error {
 	case protocol.CodeNotFound:
 		return fmt.Errorf("%w: requested publication does not exist", registry.ErrNotFound)
 	case protocol.CodeInvalidRequest:
-		return fmt.Errorf("registry rejected the publication request")
+		return fmt.Errorf("%w: %s", protocol.ErrInvalidRequest, wire.Message)
 	case protocol.CodeTooLarge:
 		return fmt.Errorf("%w: registry could not return the tree within its limit", safetree.ErrLimitExceeded)
 	case protocol.CodeInternal:
-		return fmt.Errorf("registry could not complete the publication request")
+		return fmt.Errorf("%w: %s", protocol.ErrInternal, wire.Message)
 	default:
 		return fmt.Errorf("%w: unknown registry error", protocol.ErrProtocol)
 	}

@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,6 +91,28 @@ func TestRunRejectsMissingProjectAndInvalidDigest(t *testing.T) {
 	stdout, stderr = streams()
 	if err := Run(context.Background(), []string{"install", "--project", t.TempDir(), "--digest", "bad", "team/sample"}, strings.NewReader(""), stdout, stderr); err == nil || !strings.Contains(err.Error(), "--digest") {
 		t.Fatalf("invalid digest error = %v", err)
+	}
+}
+
+func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
+	tests := map[string]struct {
+		err  error
+		want string
+	}{
+		"invalid request": {protocol.ErrInvalidRequest, "cannot install because the registry rejected the request as invalid"},
+		"internal error":  {protocol.ErrInternal, "cannot install because the registry could not complete the request"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := fmt.Errorf("resolve current publication: %w", test.err)
+			got := commandError("install", err)
+			if !strings.Contains(got.Error(), test.want) {
+				t.Fatalf("commandError = %q, want wording %q", got.Error(), test.want)
+			}
+			if !errors.Is(got, test.err) {
+				t.Fatalf("commandError = %v, want errors.Is %v", got, test.err)
+			}
+		})
 	}
 }
 

@@ -20,7 +20,7 @@ func queryCandidate(ctx context.Context, queryRow func(context.Context, string, 
 		FROM candidates WHERE id = ?`, candidateIDBlob(id))
 	candidate, err := scanCandidate(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Candidate{}, registry.ErrNotFound
+		return registry.Candidate{}, fmt.Errorf("candidate %s: %w", id, registry.ErrNotFound)
 	}
 	if err != nil {
 		return registry.Candidate{}, fmt.Errorf("read candidate %s: %w", id, err)
@@ -81,7 +81,7 @@ func queryPublication(ctx context.Context, queryRow func(context.Context, string
 		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()))
 	publication, err := scanPublication(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Publication{}, registry.ErrNotFound
+		return registry.Publication{}, fmt.Errorf("publication %s at %s: %w", id.Skill(), id.Tree(), registry.ErrNotFound)
 	}
 	if err != nil {
 		return registry.Publication{}, fmt.Errorf("read publication %s at %s: %w", id.Skill(), id.Tree(), err)
@@ -155,7 +155,7 @@ func (c *Catalog) ResolveCurrent(ctx context.Context, skill registry.SkillID) (r
 		skill.Namespace().String(), skill.Name().String())
 	publication, err := scanPublication(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Publication{}, registry.ErrNotFound
+		return registry.Publication{}, fmt.Errorf("current publication for %s: %w", skill, registry.ErrNotFound)
 	}
 	if err != nil {
 		return registry.Publication{}, fmt.Errorf("resolve current publication for %s: %w", skill, err)

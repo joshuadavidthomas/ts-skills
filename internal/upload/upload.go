@@ -110,10 +110,16 @@ func StageBrowserDirectory(ctx context.Context, parent string, manifest *multipa
 		counter := &countingReader{source: part}
 		addErr := builder.AddFile(ctx, entry.Path, entry.Size, counter)
 		if addErr != nil {
-			if errors.Is(addErr, safetree.ErrLimitExceeded) {
+			switch {
+			case errors.Is(addErr, safetree.ErrLimitExceeded):
 				return nil, addErr
+			case errors.Is(addErr, context.Canceled), errors.Is(addErr, context.DeadlineExceeded):
+				return nil, addErr
+			case errors.Is(addErr, safetree.ErrInvalidPath):
+				return nil, malformed("directory path is unsafe or collides with another path", addErr)
+			default:
+				return nil, fmt.Errorf("stage uploaded file %q: %w", entry.Path, addErr)
 			}
-			return nil, malformed("directory path is unsafe or collides with another path", addErr)
 		}
 		if counter.count != entry.Size {
 			return nil, malformed(fmt.Sprintf("%s size does not match its manifest entry", expectedName), nil)
