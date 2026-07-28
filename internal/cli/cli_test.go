@@ -119,6 +119,50 @@ func TestRunRejectsMissingProjectAndInvalidDigest(t *testing.T) {
 	}
 }
 
+func TestRunHelpExitsCleanlyWithUsageOnStderr(t *testing.T) {
+	for _, command := range []string{"install", "restore"} {
+		var stdout, stderr bytes.Buffer
+		if err := Run(context.Background(), []string{command, "-h"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("Run(%q -h) = %v, want nil", command, err)
+		}
+		if !strings.Contains(stderr.String(), "Usage of ts-skills "+command) {
+			t.Fatalf("Run(%q -h) stderr = %q, want usage text", command, stderr.String())
+		}
+		if stdout.String() != "" {
+			t.Fatalf("Run(%q -h) stdout = %q, want empty", command, stdout.String())
+		}
+	}
+}
+
+func TestRunReportsUnknownFlagOnce(t *testing.T) {
+	for _, command := range []string{"install", "restore"} {
+		var stdout, stderr bytes.Buffer
+		err := Run(context.Background(), []string{command, "--bogus"}, strings.NewReader(""), &stdout, &stderr)
+		if err == nil {
+			t.Fatalf("Run(%q --bogus) = nil, want error", command)
+		}
+		if !AlreadyReported(err) {
+			t.Fatalf("Run(%q --bogus) error = %v, want AlreadyReported", command, err)
+		}
+		if !strings.Contains(stderr.String(), "flag provided but not defined") {
+			t.Fatalf("Run(%q --bogus) stderr = %q, want flag diagnostics", command, stderr.String())
+		}
+		if got := strings.Count(stderr.String(), err.Error()); got != 1 {
+			t.Fatalf("Run(%q --bogus) stderr = %q prints the error %d times", command, stderr.String(), got)
+		}
+	}
+}
+
+func TestAlreadyReportedRejectsUnreportedErrors(t *testing.T) {
+	if AlreadyReported(errors.New("plain")) {
+		t.Fatal("AlreadyReported(plain error) = true, want false")
+	}
+	wrapped := fmt.Errorf("outer: %w", reportedError{errors.New("inner")})
+	if !AlreadyReported(wrapped) {
+		t.Fatal("AlreadyReported(wrapped reportedError) = false, want true")
+	}
+}
+
 func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 	tests := map[string]struct {
 		err  error

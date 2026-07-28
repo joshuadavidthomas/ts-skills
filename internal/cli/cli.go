@@ -1,3 +1,4 @@
+// Flag diagnostics are printed by the FlagSet; errors are reported once.
 package cli
 
 import (
@@ -49,7 +50,11 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	projectPath := flags.String("project", "", "explicit project directory")
 	configPath := flags.String("config", "", "configuration file")
 	digestText := flags.String("digest", "", "exact sha256 tree digest")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Help was already printed by the FlagSet; help is not an error.
+			return nil
+		}
 		return err
 	}
 	if *projectPath == "" {
@@ -94,7 +99,11 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	flags.SetOutput(stderr)
 	projectPath := flags.String("project", "", "explicit project directory")
 	configPath := flags.String("config", "", "configuration file")
-	if err := flags.Parse(args); err != nil {
+	if err := parseFlags(flags, args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			// Help was already printed by the FlagSet; help is not an error.
+			return nil
+		}
 		return err
 	}
 	if *projectPath == "" {
@@ -113,6 +122,32 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	}
 	_, err = fmt.Fprintln(stdout, "Restored locked skills.")
 	return err
+}
+
+// parseFlags parses args with a ContinueOnError FlagSet that has already
+// written its diagnostics. flag.ErrHelp passes through untouched so the
+// caller can treat help as success; any other parse failure is wrapped in
+// reportedError because the FlagSet already printed cause and usage.
+func parseFlags(flags *flag.FlagSet, args []string) error {
+	err := flags.Parse(args)
+	if err != nil && !errors.Is(err, flag.ErrHelp) {
+		return reportedError{err}
+	}
+	return err
+}
+
+// reportedError marks errors whose diagnostics are already printed for the
+// user (by the FlagSet), so main exits without printing them again.
+type reportedError struct{ err error }
+
+func (e reportedError) Error() string { return e.err.Error() }
+func (e reportedError) Unwrap() error { return e.err }
+
+// AlreadyReported reports whether err's diagnostics were already shown to
+// the user, so the caller should exit nonzero without printing it again.
+func AlreadyReported(err error) bool {
+	var reported reportedError
+	return errors.As(err, &reported)
 }
 
 // Package-private test seams for construction and staging cleanup failures.

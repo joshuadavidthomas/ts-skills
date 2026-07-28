@@ -37,7 +37,7 @@ never reused or renumbered.)
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | DONE |
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | DONE |
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | DONE |
-| 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | TODO |
+| 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | DONE |
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | TODO |
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | TODO |
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | TODO |
@@ -79,6 +79,27 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 006 landed — `cli.parseFlags` wraps non-help parse
+  failures in an unexported `reportedError{}` (the FlagSet already printed
+  cause+usage); `flag.ErrHelp` passes through so each subcommand returns
+  nil for `-h`. `cli.AlreadyReported(err)` is the exported predicate;
+  `cmd/ts-skills/main.go` exits 1 silently when it matches, prints once
+  otherwise. `cmd/ts-skillsd/main.go` is now a thin `main` over
+  `run(os.Args[1:])` with straight-line early returns; the dev-mode
+  stderr banner and version fast-path stay byte-identical, and `stop()`
+  always runs because all defers live inside `run`. A package comment in
+  cli.go states the policy per the maintenance note. New tests cover
+  `-h` exiting nil with usage on stderr for both subcommands, unknown
+  flags satisfying `AlreadyReported` with the error text printed exactly
+  once, and `AlreadyReported` accepting a wrapped marker while rejecting
+  plain errors. Deviations from the plan text: (1) the plan sketched
+  wrapping parse errors inline at each subcommand; the wrapped
+  construction lives in one `parseFlags` helper since the pattern is
+  identical across subcommands; (2) one test assertion was corrected
+  mid-flight — the FlagSet itself echoes the error text to stderr, so
+  "not present in stderr" could never hold; the test now counts
+  occurrences and asserts exactly one print. Next: 017.
 
 - **2026-07-28**: 005 landed — `render`/`renderError` now execute templates
   into a buffer and commit status only after success (shared `writePage`
