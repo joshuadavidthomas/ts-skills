@@ -34,135 +34,167 @@ func NewInstaller(remote Remote) (*Installer, error) {
 	return &Installer{remote: remote}, nil
 }
 
-func (i *Installer) Install(ctx context.Context, project Project, requirement Requirement) (LockedSkill, error) {
+func (i *Installer) Install(ctx context.Context, project Project, requirement Requirement) (locked LockedSkill, err error) {
 	if project.root == "" || requirement.skill.String() == "" {
 		return LockedSkill{}, fmt.Errorf("install requires a valid project and requirement")
 	}
-	if err := prepareManagedDirectories(project); err != nil {
+	writer, err := project.acquireWriter(ctx)
+	if err != nil {
+		return LockedSkill{}, err
+	}
+	defer func() { err = errors.Join(err, writer.close()) }()
+
+	oldLock, _, _, err := writer.readLock()
+	if err != nil {
+		return LockedSkill{}, err
+	}
+	matchingDestination, err := writer.preflight(oldLock, requirement.Skill())
+	if err != nil {
 		return LockedSkill{}, err
 	}
 	fetched, err := i.remote.Fetch(ctx, requirement)
 	if err != nil {
 		return LockedSkill{}, fmt.Errorf("fetch skill %s: %w", requirement.skill.String(), err)
 	}
-	snapshot, publication, err := verifyFetched(ctx, project, requirement, fetched)
+	verified, err := writer.stageAndVerify(ctx, requirement, fetched)
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	defer snapshot.Close()
+	defer func() { err = errors.Join(err, verified.close()) }()
 
-	destination := filepath.Join(project.SkillsDir(), requirement.skill.Name().String())
-	if err := validateDestination(destination); err != nil {
-		return LockedSkill{}, err
-	}
-	staged, err := copySnapshotToProject(ctx, project, snapshot.FS())
+	locked, err = NewLockedSkill(verified.publication)
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	defer os.RemoveAll(staged)
-	if err := replaceDestination(destination, staged); err != nil {
+	newLock, err := oldLock.With(locked)
+	if err != nil {
 		return LockedSkill{}, err
 	}
-	return NewLockedSkill(publication)
+	if old, found := oldLock.Lookup(requirement.Skill()); matchingDestination && found && old.Publication() == verified.publication {
+		return locked, nil
+	}
+	if err := writer.install(ctx, verified, newLock); err != nil {
+		return LockedSkill{}, err
+	}
+	return locked, nil
 }
 
-func verifyFetched(ctx context.Context, project Project, requirement Requirement, fetched FetchedSkill) (snapshot *safetree.Snapshot, publication registry.PublicationID, err error) {
-	tree := fetched.Tree()
-	if tree == nil {
-		return nil, registry.PublicationID{}, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
+func (i *Installer) Restore(ctx context.Context, project Project) (err error) {
+	if project.root == "" {
+		return fmt.Errorf("restore requires a valid project")
 	}
-	defer func() {
-		closeErr := tree.Close()
-		if closeErr == nil {
-			return
-		}
-		if snapshot != nil {
-			closeErr = errors.Join(closeErr, snapshot.Close())
-			snapshot = nil
-		}
-		err = errors.Join(err, fmt.Errorf("close fetched tree: %w", closeErr))
-	}()
-
-	publication = fetched.Publication()
-	if publication.Skill() != requirement.Skill() {
-		return nil, registry.PublicationID{}, fmt.Errorf("%w: requested %s, received %s", ErrIdentityMismatch, requirement.Skill().String(), publication.Skill().String())
-	}
-	if digest, exact := requirement.ExactDigest(); exact && publication.Tree() != digest {
-		return nil, registry.PublicationID{}, fmt.Errorf("%w: registry returned a different exact digest", ErrIdentityMismatch)
-	}
-	snapshot, err = stageFetched(ctx, project.StateDir(), tree)
+	writer, err := project.acquireWriter(ctx)
 	if err != nil {
-		return nil, registry.PublicationID{}, fmt.Errorf("stage fetched tree: %w", err)
-	}
-	directory, err := agentskill.Load(snapshot.FS(), ".")
-	if err != nil {
-		_ = snapshot.Close()
-		return nil, registry.PublicationID{}, fmt.Errorf("validate fetched Agent Skill: %w", err)
-	}
-	if directory.Document().Name != requirement.Skill().Name() {
-		_ = snapshot.Close()
-		return nil, registry.PublicationID{}, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, directory.Document().Name.String())
-	}
-	actual, err := agentskill.SumTree(snapshot.FS(), ".")
-	if err != nil {
-		_ = snapshot.Close()
-		return nil, registry.PublicationID{}, fmt.Errorf("hash fetched tree: %w", err)
-	}
-	if actual != publication.Tree() {
-		_ = snapshot.Close()
-		return nil, registry.PublicationID{}, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), actual.String())
-	}
-	return snapshot, publication, nil
-}
-
-func prepareManagedDirectories(project Project) error {
-	if err := ensureRealDirectory(project.root, false); err != nil {
 		return err
 	}
-	for _, directory := range []string{filepath.Join(project.root, ".agents"), project.SkillsDir(), project.StateDir()} {
-		if err := ensureRealDirectory(directory, true); err != nil {
+	defer func() { err = errors.Join(err, writer.close()) }()
+
+	lock, _, _, err := writer.readLock()
+	if err != nil {
+		return err
+	}
+	missing := make([]registry.PublicationID, 0)
+	for _, locked := range lock.Skills() {
+		publication := locked.Publication()
+		matching, preflightErr := writer.preflight(lock, publication.Skill())
+		if preflightErr != nil {
+			return preflightErr
+		}
+		if !matching {
+			missing = append(missing, publication)
+		}
+	}
+
+	type repair struct {
+		verified *verifiedTree
+	}
+	repairs := make([]repair, 0, len(missing))
+	for _, publication := range missing {
+		requirement, exactErr := Exact(publication.Skill(), publication.Tree())
+		if exactErr != nil {
+			return exactErr
+		}
+		fetched, fetchErr := i.remote.Fetch(ctx, requirement)
+		if fetchErr != nil {
+			return fmt.Errorf("fetch locked skill %s: %w", publication.Skill().String(), fetchErr)
+		}
+		verified, verifyErr := writer.stageAndVerify(ctx, requirement, fetched)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		defer func() { err = errors.Join(err, verified.close()) }()
+		repairs = append(repairs, repair{verified: verified})
+	}
+
+	for _, repair := range repairs {
+		if err := writer.install(ctx, repair.verified, lock); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func ensureRealDirectory(name string, create bool) error {
-	info, err := os.Lstat(name)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return fmt.Errorf("managed path %q must be a real directory", name)
+func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirement, fetched FetchedSkill) (verified *verifiedTree, err error) {
+	tree := fetched.Tree()
+	if tree == nil {
+		return nil, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
+	}
+	defer func() {
+		closeErr := tree.Close()
+		if closeErr != nil {
+			if verified != nil {
+				closeErr = errors.Join(closeErr, verified.close())
+				verified = nil
+			}
+			err = errors.Join(err, fmt.Errorf("close fetched tree: %w", closeErr))
 		}
-		return nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) || !create {
-		return fmt.Errorf("inspect managed path %q: %w", name, err)
-	}
-	if err := ensureRealDirectory(filepath.Dir(name), false); err != nil {
-		return err
-	}
-	if err := os.Mkdir(name, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
-		return fmt.Errorf("create managed directory %q: %w", name, err)
-	}
-	return ensureRealDirectory(name, false)
-}
+	}()
 
-func validateDestination(destination string) error {
-	info, err := os.Lstat(destination)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+	publication := fetched.Publication()
+	if publication.Skill() != requirement.Skill() {
+		return nil, fmt.Errorf("%w: requested %s, received %s", ErrIdentityMismatch, requirement.Skill().String(), publication.Skill().String())
 	}
+	if digest, exact := requirement.ExactDigest(); exact && publication.Tree() != digest {
+		return nil, fmt.Errorf("%w: registry returned a different exact digest", ErrIdentityMismatch)
+	}
+	snapshot, err := stageFetched(ctx, w.project.StateDir(), tree)
 	if err != nil {
-		return fmt.Errorf("inspect skill destination: %w", err)
+		return nil, fmt.Errorf("stage fetched tree: %w", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("%w: %s", ErrUnmanagedDestination, destination)
+	defer func() {
+		if closeErr := snapshot.Close(); closeErr != nil {
+			if verified != nil {
+				closeErr = errors.Join(closeErr, verified.close())
+				verified = nil
+			}
+			err = errors.Join(err, fmt.Errorf("close verified fetch snapshot: %w", closeErr))
+		}
+	}()
+	directory, err := agentskill.Load(snapshot.FS(), ".")
+	if err != nil {
+		return nil, fmt.Errorf("validate fetched Agent Skill: %w", err)
 	}
-	return nil
+	if directory.Document().Name != requirement.Skill().Name() {
+		return nil, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, directory.Document().Name.String())
+	}
+	actual, err := agentskill.SumTree(snapshot.FS(), ".")
+	if err != nil {
+		return nil, fmt.Errorf("hash fetched tree: %w", err)
+	}
+	if actual != publication.Tree() {
+		return nil, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), actual.String())
+	}
+
+	staged, err := copySnapshotToProject(ctx, w.project, snapshot.FS())
+	if err != nil {
+		return nil, err
+	}
+	w.staging[staged] = struct{}{}
+	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, nil
 }
 
 func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (string, error) {
-	staged, err := os.MkdirTemp(project.StateDir(), "install-")
+	staged, err := os.MkdirTemp(project.StateDir(), "staging-")
 	if err != nil {
 		return "", fmt.Errorf("create install staging: %w", err)
 	}
@@ -198,39 +230,19 @@ func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (
 	if err != nil {
 		return "", fmt.Errorf("copy verified install tree: %w", err)
 	}
+	projectDevice, err := filesystemDevice(project.root)
+	if err != nil {
+		return "", err
+	}
+	stagingDevice, err := filesystemDevice(staged)
+	if err != nil {
+		return "", err
+	}
+	if projectDevice != stagingDevice {
+		return "", fmt.Errorf("verified staging is not on the project filesystem")
+	}
 	ok = true
 	return staged, nil
-}
-
-func replaceDestination(destination, staged string) error {
-	backup := destination + ".ts-skills-backup"
-	if _, err := os.Lstat(backup); err == nil {
-		return fmt.Errorf("%w: stale backup %s", ErrRecoveryRequired, backup)
-	} else if !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("inspect destination backup: %w", err)
-	}
-	_, destinationErr := os.Lstat(destination)
-	hadDestination := destinationErr == nil
-	if destinationErr != nil && !errors.Is(destinationErr, fs.ErrNotExist) {
-		return fmt.Errorf("inspect existing destination: %w", destinationErr)
-	}
-	if hadDestination {
-		if err := os.Rename(destination, backup); err != nil {
-			return fmt.Errorf("back up existing destination: %w", err)
-		}
-	}
-	if err := os.Rename(staged, destination); err != nil {
-		if hadDestination {
-			if rollbackErr := os.Rename(backup, destination); rollbackErr != nil {
-				return errors.Join(fmt.Errorf("install verified destination: %w", err), fmt.Errorf("%w: restore previous destination: %v", ErrRecoveryRequired, rollbackErr))
-			}
-		}
-		return fmt.Errorf("install verified destination: %w", err)
-	}
-	if hadDestination {
-		_ = os.RemoveAll(backup)
-	}
-	return nil
 }
 
 func stageFetched(ctx context.Context, parent string, source fs.FS) (_ *safetree.Snapshot, err error) {

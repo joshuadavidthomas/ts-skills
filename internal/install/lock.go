@@ -1,10 +1,15 @@
 package install
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"sort"
+	"strconv"
 
+	"github.com/joshuadavidthomas/ts-skill-registry/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Lock struct {
@@ -64,4 +69,83 @@ func (l Lock) With(skill LockedSkill) (Lock, error) {
 		all = append(all, skill)
 	}
 	return NewLock(all)
+}
+
+type lockDocument struct {
+	Schema *int        `toml:"schema"`
+	Skills []lockEntry `toml:"skills"`
+}
+
+type lockEntry struct {
+	Skill  string `toml:"skill"`
+	Digest string `toml:"digest"`
+}
+
+func DecodeLock(source io.Reader) (Lock, error) {
+	if source == nil {
+		return Lock{}, fmt.Errorf("decode project lock: reader is nil")
+	}
+	var document lockDocument
+	decoder := toml.NewDecoder(source)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&document); err != nil {
+		return Lock{}, fmt.Errorf("decode project lock: %w", err)
+	}
+	if document.Schema == nil {
+		return Lock{}, fmt.Errorf("decode project lock: schema is required")
+	}
+	if *document.Schema != 1 {
+		return Lock{}, fmt.Errorf("decode project lock: unsupported schema %d", *document.Schema)
+	}
+
+	skills := make([]LockedSkill, 0, len(document.Skills))
+	previousSkill := ""
+	for index, entry := range document.Skills {
+		if index > 0 && entry.Skill <= previousSkill {
+			return Lock{}, fmt.Errorf("decode project lock: skills must be sorted by canonical identity")
+		}
+		previousSkill = entry.Skill
+		identity, err := registry.ParseSkillID(entry.Skill)
+		if err != nil {
+			return Lock{}, fmt.Errorf("decode project lock skill %d: %w", index+1, err)
+		}
+		digest, err := agentskill.ParseTreeDigest(entry.Digest)
+		if err != nil {
+			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
+		}
+		publication, err := registry.NewPublicationID(identity, digest)
+		if err != nil {
+			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
+		}
+		locked, err := NewLockedSkill(publication)
+		if err != nil {
+			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
+		}
+		skills = append(skills, locked)
+	}
+	lock, err := NewLock(skills)
+	if err != nil {
+		return Lock{}, fmt.Errorf("decode project lock: %w", err)
+	}
+	return lock, nil
+}
+
+func EncodeLock(destination io.Writer, lock Lock) error {
+	if destination == nil {
+		return fmt.Errorf("encode project lock: writer is nil")
+	}
+	buffer := bufio.NewWriter(destination)
+	if _, err := buffer.WriteString("schema = 1\n"); err != nil {
+		return fmt.Errorf("encode project lock: %w", err)
+	}
+	for _, locked := range lock.Skills() {
+		publication := locked.Publication()
+		if _, err := fmt.Fprintf(buffer, "\n[[skills]]\nskill = %s\ndigest = %s\n", strconv.Quote(publication.Skill().String()), strconv.Quote(publication.Tree().String())); err != nil {
+			return fmt.Errorf("encode project lock: %w", err)
+		}
+	}
+	if err := buffer.Flush(); err != nil {
+		return fmt.Errorf("encode project lock: %w", err)
+	}
+	return nil
 }
