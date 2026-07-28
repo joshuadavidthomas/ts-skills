@@ -163,7 +163,7 @@ func (c *Catalog) ResolveCurrent(ctx context.Context, skill registry.SkillID) (r
 	return publication, nil
 }
 
-func (c *Catalog) ListPublishedSkills(ctx context.Context) ([]registry.SkillSummary, error) {
+func (c *Catalog) ListPublishedSkills(ctx context.Context) (summaries []registry.SkillSummary, err error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -176,9 +176,8 @@ func (c *Catalog) ListPublishedSkills(ctx context.Context) ([]registry.SkillSumm
 	if err != nil {
 		return nil, fmt.Errorf("list published skills: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
+	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	var summaries []registry.SkillSummary
 	for rows.Next() {
 		var namespaceText, nameText string
 		var digestBytes []byte

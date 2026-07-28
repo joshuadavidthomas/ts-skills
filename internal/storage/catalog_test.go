@@ -816,3 +816,42 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 		t.Fatalf("canceled RecordCandidate error = %v", err)
 	}
 }
+
+func TestPublishCandidateReportsRollbackFailure(t *testing.T) {
+	catalog := openCatalog(t, t.TempDir())
+	defer closeCatalog(t, catalog)
+	fixture := newFixture(t, "# Missing\n", "asset")
+	candidate := fixture.candidate(t)
+	injected := errors.New("injected rollback failure")
+	catalog.rollbackTx = func(tx *sql.Tx) error {
+		return errors.Join(tx.Rollback(), injected)
+	}
+	_, err := catalog.PublishCandidate(context.Background(), candidate.ID(), fixture.actor, time.Now())
+	if !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("PublishCandidate error = %v, want ErrNotFound", err)
+	}
+	if !errors.Is(err, injected) {
+		t.Fatalf("PublishCandidate error = %v, want rollback failure joined", err)
+	}
+}
+
+func TestPublishCandidateIgnoresPostCommitRollbackError(t *testing.T) {
+	catalog := openCatalog(t, t.TempDir())
+	defer closeCatalog(t, catalog)
+	fixture := newFixture(t, "# Sample\n", "asset")
+	candidate := fixture.candidate(t)
+	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
+		t.Fatal(err)
+	}
+	// After a successful commit Rollback reports sql.ErrTxDone; that must not
+	// be joined into the result. This seam returns it even on the post-commit
+	// rollback to prove the deferred rollback filters it.
+	catalog.rollbackTx = func(*sql.Tx) error { return sql.ErrTxDone }
+	published, err := catalog.PublishCandidate(context.Background(), candidate.ID(), fixture.actor, time.Now())
+	if err != nil {
+		t.Fatalf("PublishCandidate error = %v, want post-commit sql.ErrTxDone ignored", err)
+	}
+	if !published.Created() || !published.BecameCurrent() {
+		t.Fatalf("PublishCandidate result = %v, want created current publication", published)
+	}
+}

@@ -255,6 +255,47 @@ func TestInstallerPropagatesFetchedTreeCloseFailure(t *testing.T) {
 	}
 }
 
+func TestInstallerJoinsFetchedTreeCloseFailureIntoIdentityMismatch(t *testing.T) {
+	_, publication, files := testPublication(t, "team", "sample", "body")
+	injected := errors.New("injected fetched tree close failure")
+	remote := &scriptedRemote{publication: publication, files: files, closeErr: injected}
+	installer, err := NewInstaller(remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespace, err := registry.ParseNamespace("team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherName, err := agentskill.ParseName("other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := registry.NewSkillID(namespace, otherName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := Current(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = installer.Install(context.Background(), project, requirement)
+	if !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("Install error = %v, want identity mismatch", err)
+	}
+	if !errors.Is(err, injected) {
+		t.Fatalf("Install error = %v, want fetched close failure joined", err)
+	}
+	remote.last.closeErr = nil
+	if err := remote.last.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLockRejectsUnqualifiedNameCollision(t *testing.T) {
 	name, _ := agentskill.ParseName("same")
 	a, _ := registry.ParseNamespace("a")

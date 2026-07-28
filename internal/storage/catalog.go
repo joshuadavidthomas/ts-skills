@@ -22,18 +22,21 @@ var ErrTreesOpen = errors.New("registry trees remain open")
 var _ registry.CatalogRecords = (*Catalog)(nil)
 
 type Catalog struct {
-	db          *sql.DB
-	lock        *flock.Flock
-	stateDir    string
-	treesDir    string
-	tmpDir      string
-	stateMu     sync.RWMutex
-	closing     bool
-	closed      bool
-	dbClosed    bool
-	lockClosed  bool
-	closeDB     func(*sql.DB) error
-	closeLock   func(*flock.Flock) error
+	db         *sql.DB
+	lock       *flock.Flock
+	stateDir   string
+	treesDir   string
+	tmpDir     string
+	stateMu    sync.RWMutex
+	closing    bool
+	closed     bool
+	dbClosed   bool
+	lockClosed bool
+	closeDB    func(*sql.DB) error
+	closeLock  func(*flock.Flock) error
+	// rollbackTx is a package-private failure seam for proving transaction
+	// rollback failures are reported. Production uses (*sql.Tx).Rollback.
+	rollbackTx  func(*sql.Tx) error
 	refsMu      sync.Mutex
 	openTrees   int
 	digestMu    sync.Mutex
@@ -75,8 +78,10 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 		)
 	}
 	if !locked {
-		_ = stateLock.Close()
-		return nil, fmt.Errorf("lock registry state directory: %w", registry.ErrConflict)
+		return nil, errors.Join(
+			fmt.Errorf("lock registry state directory: %w", registry.ErrConflict),
+			stateLock.Close(),
+		)
 	}
 	defer func() {
 		if err != nil {
@@ -110,6 +115,7 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 		syncDirectory: syncDirectory,
 		closeDB:       (*sql.DB).Close,
 		closeLock:     (*flock.Flock).Close,
+		rollbackTx:    (*sql.Tx).Rollback,
 	}
 	return catalog, nil
 }
@@ -257,9 +263,7 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		return registry.PublishResult{}, fmt.Errorf("begin publish transaction: %w", err)
 	}
 	defer func() {
-		if err != nil {
-			err = errors.Join(err, tx.Rollback())
-		}
+		err = c.rollbackTransaction(tx, err)
 	}()
 
 	candidate, err := queryCandidate(ctx, tx.QueryRowContext, id)
@@ -296,10 +300,14 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		if err != nil {
 			return registry.PublishResult{}, err
 		}
+		repeated, err := registry.NewPublishResult(publication, false, false)
+		if err != nil {
+			return registry.PublishResult{}, err
+		}
 		if err := tx.Commit(); err != nil {
 			return registry.PublishResult{}, fmt.Errorf("commit repeated publication: %w", err)
 		}
-		return registry.NewPublishResult(publication, false, false)
+		return repeated, nil
 	}
 
 	currentResult, err := tx.ExecContext(ctx, `
@@ -318,10 +326,28 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 	if err != nil {
 		return registry.PublishResult{}, fmt.Errorf("insert first current publication: %w", err)
 	}
+	publishResult, err := registry.NewPublishResult(publication, true, becameCurrent)
+	if err != nil {
+		return registry.PublishResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return registry.PublishResult{}, fmt.Errorf("commit publication: %w", err)
 	}
-	return registry.NewPublishResult(publication, true, becameCurrent)
+	return publishResult, nil
+}
+
+// rollbackTransaction always rolls the transaction back so a panic cannot leak
+// it, joins a genuine rollback failure into err, and ignores the benign
+// sql.ErrTxDone returned after a successful commit.
+func (c *Catalog) rollbackTransaction(tx *sql.Tx, err error) error {
+	rollback := c.rollbackTx
+	if rollback == nil {
+		rollback = (*sql.Tx).Rollback
+	}
+	if rbErr := rollback(tx); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+		return errors.Join(err, rbErr)
+	}
+	return err
 }
 
 func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) (_ registry.CurrentPublication, err error) {
@@ -340,9 +366,7 @@ func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, 
 		return registry.CurrentPublication{}, fmt.Errorf("begin current selection transaction: %w", err)
 	}
 	defer func() {
-		if err != nil {
-			err = errors.Join(err, tx.Rollback())
-		}
+		err = c.rollbackTransaction(tx, err)
 	}()
 	if _, err := queryPublication(ctx, tx.QueryRowContext, id); err != nil {
 		return registry.CurrentPublication{}, err

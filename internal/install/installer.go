@@ -140,13 +140,14 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 		return nil, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
 	}
 	defer func() {
-		closeErr := tree.Close()
-		if closeErr != nil {
+		if closeErr := tree.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close fetched tree: %w", closeErr))
 			if verified != nil {
-				closeErr = errors.Join(closeErr, verified.close())
+				if removeErr := verified.close(); removeErr != nil {
+					err = errors.Join(err, fmt.Errorf("remove staged install tree: %w", removeErr))
+				}
 				verified = nil
 			}
-			err = errors.Join(err, fmt.Errorf("close fetched tree: %w", closeErr))
 		}
 	}()
 
@@ -163,11 +164,13 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 	}
 	defer func() {
 		if closeErr := snapshot.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close verified fetch snapshot: %w", closeErr))
 			if verified != nil {
-				closeErr = errors.Join(closeErr, verified.close())
+				if removeErr := verified.close(); removeErr != nil {
+					err = errors.Join(err, fmt.Errorf("remove staged install tree: %w", removeErr))
+				}
 				verified = nil
 			}
-			err = errors.Join(err, fmt.Errorf("close verified fetch snapshot: %w", closeErr))
 		}
 	}()
 	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
@@ -189,15 +192,15 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, nil
 }
 
-func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (string, error) {
-	staged, err := createManagedTempDirectory(project.StateDir(), installStagingPrefix)
+func copySnapshotToProject(ctx context.Context, project Project, source fs.FS) (staged string, err error) {
+	staged, err = createManagedTempDirectory(project.StateDir(), installStagingPrefix)
 	if err != nil {
 		return "", fmt.Errorf("create install staging: %w", err)
 	}
 	ok := false
 	defer func() {
 		if !ok {
-			_ = os.RemoveAll(staged)
+			err = errors.Join(err, os.RemoveAll(staged))
 		}
 	}()
 	err = fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {

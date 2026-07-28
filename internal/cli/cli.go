@@ -43,7 +43,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	}
 }
 
-func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	flags := flag.NewFlagSet("ts-skills install", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	projectPath := flags.String("project", "", "explicit project directory")
@@ -79,7 +79,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer func() { err = errors.Join(err, cleanup()) }()
 	locked, err := installer.Install(ctx, project, requirement)
 	if err != nil {
 		return commandError("install", err)
@@ -89,7 +89,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return err
 }
 
-func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) (err error) {
 	flags := flag.NewFlagSet("ts-skills restore", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	projectPath := flags.String("project", "", "explicit project directory")
@@ -107,7 +107,7 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer func() { err = errors.Join(err, cleanup()) }()
 	if err := installer.Restore(ctx, project); err != nil {
 		return commandError("restore", err)
 	}
@@ -115,36 +115,41 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	return err
 }
 
-func commandInstaller(configPath, projectPath string) (*install.Installer, install.Project, func(), error) {
+// Package-private test seams for construction and staging cleanup failures.
+var (
+	newClientRemote     = client.NewRemote
+	removeClientStaging = os.RemoveAll
+)
+
+func commandInstaller(configPath, projectPath string) (*install.Installer, install.Project, func() error, error) {
+	noop := func() error { return nil }
 	if configPath == "" {
 		var err error
 		configPath, err = config.DefaultPath()
 		if err != nil {
-			return nil, install.Project{}, func() {}, err
+			return nil, install.Project{}, noop, err
 		}
 	}
 	settings, err := config.Load(configPath)
 	if err != nil {
-		return nil, install.Project{}, func() {}, err
+		return nil, install.Project{}, noop, err
 	}
 	project, err := install.OpenProject(projectPath)
 	if err != nil {
-		return nil, install.Project{}, func() {}, err
+		return nil, install.Project{}, noop, err
 	}
 	staging, err := os.MkdirTemp("", "ts-skills-client-")
 	if err != nil {
-		return nil, install.Project{}, func() {}, fmt.Errorf("create client staging directory: %w", err)
+		return nil, install.Project{}, noop, fmt.Errorf("create client staging directory: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(staging) }
-	remote, err := client.NewRemote(settings.Registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
+	cleanup := func() error { return removeClientStaging(staging) }
+	remote, err := newClientRemote(settings.Registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
 	if err != nil {
-		cleanup()
-		return nil, install.Project{}, func() {}, err
+		return nil, install.Project{}, noop, errors.Join(err, cleanup())
 	}
 	installer, err := install.NewInstaller(remote)
 	if err != nil {
-		cleanup()
-		return nil, install.Project{}, func() {}, err
+		return nil, install.Project{}, noop, errors.Join(err, cleanup())
 	}
 	return installer, project, cleanup, nil
 }

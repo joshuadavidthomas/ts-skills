@@ -217,8 +217,7 @@ func copyTree(ctx context.Context, source fs.FS, destination string, step func(s
 		}
 		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
-			_ = input.Close()
-			return fmt.Errorf("create staged tree file %q: %w", name, err)
+			return fmt.Errorf("create staged tree file %q: %w", name, errors.Join(err, input.Close()))
 		}
 		_, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
 		closeOutputErr := output.Close()

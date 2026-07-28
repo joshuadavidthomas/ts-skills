@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,32 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/client"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
+
+func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("registry = \"http://127.0.0.1:9\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	constructErr := errors.New("injected registry client construction failure")
+	newClientRemote = func(*url.URL, *http.Client, string, safetree.Limits) (*client.Remote, error) {
+		return nil, constructErr
+	}
+	t.Cleanup(func() { newClientRemote = client.NewRemote })
+	cleanupErr := errors.New("injected staging removal failure")
+	removeClientStaging = func(string) error { return cleanupErr }
+	t.Cleanup(func() { removeClientStaging = os.RemoveAll })
+	_, _, _, err := commandInstaller(configPath, t.TempDir())
+	if !errors.Is(err, constructErr) {
+		t.Fatalf("commandInstaller error = %v, want construction failure", err)
+	}
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("commandInstaller error = %v, want staging cleanup failure", err)
+	}
+}
 
 func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 	files := fstest.MapFS{

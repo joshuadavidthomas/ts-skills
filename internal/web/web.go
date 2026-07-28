@@ -284,7 +284,14 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	defer func() { _ = submission.Close() }()
+	submissionClosed := false
+	defer func() {
+		// TODO(plan 005): log — on these early-return paths the error response
+		// is already committed, so a submission cleanup failure is invisible.
+		if !submissionClosed {
+			_ = submission.Close()
+		}
+	}()
 
 	source, err := registry.NewUploadSource(submission.Label())
 	if err != nil {
@@ -303,6 +310,11 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
+	if err := submission.Close(); err != nil {
+		h.handleError(w, err)
+		return
+	}
+	submissionClosed = true
 	http.Redirect(w, r, "/candidates/"+candidate.ID().String(), http.StatusSeeOther)
 }
 
@@ -479,15 +491,20 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, err)
 		return
 	}
-	defer func() { _ = tree.Close() }()
-
 	archive, err := h.rootlessZIP(r.Context(), tree)
+	// The archive holds everything the response needs, so the tree closes
+	// before any bytes are written and its close failure is still reportable.
+	if closeErr := tree.Close(); closeErr != nil {
+		err = errors.Join(err, closeErr)
+	}
 	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
 	}
 	defer func() {
 		name := archive.Name()
+		// TODO(plan 005): log — archive cleanup runs after the ZIP response is
+		// committed, so cleanup failures are invisible to the client.
 		_ = archive.Close()
 		_ = os.Remove(name)
 	}()
@@ -553,27 +570,23 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 	writer := zip.NewWriter(archive)
 	for _, name := range files {
 		if err := ctx.Err(); err != nil {
-			_ = writer.Close()
-			return nil, err
+			return nil, errors.Join(err, writer.Close())
 		}
 		header := &zip.FileHeader{Name: name, Method: zip.Store}
 		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 		header.SetMode(0o644)
 		output, err := writer.CreateHeader(header)
 		if err != nil {
-			_ = writer.Close()
-			return nil, fmt.Errorf("create tree archive entry: %w", err)
+			return nil, errors.Join(fmt.Errorf("create tree archive entry: %w", err), writer.Close())
 		}
 		input, err := tree.Open(name)
 		if err != nil {
-			_ = writer.Close()
-			return nil, fmt.Errorf("open published tree file: %w", err)
+			return nil, errors.Join(fmt.Errorf("open published tree file: %w", err), writer.Close())
 		}
 		_, copyErr := io.Copy(output, input)
-		closeErr := input.Close()
-		if err := errors.Join(copyErr, closeErr); err != nil {
-			_ = writer.Close()
-			return nil, fmt.Errorf("write tree archive entry: %w", err)
+		closeInputErr := input.Close()
+		if err := errors.Join(copyErr, closeInputErr); err != nil {
+			return nil, errors.Join(fmt.Errorf("write tree archive entry: %w", err), writer.Close())
 		}
 	}
 	if err := writer.Close(); err != nil {

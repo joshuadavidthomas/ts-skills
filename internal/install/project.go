@@ -143,16 +143,13 @@ func createManagedTempDirectory(parent, pattern string) (string, error) {
 		return "", err
 	}
 	if err := ensureRealDirectory(name, false); err != nil {
-		_ = os.RemoveAll(name)
-		return "", err
+		return "", errors.Join(err, os.RemoveAll(name))
 	}
 	if err := syncDirectory(name, "install-staging-created"); err != nil {
-		_ = os.RemoveAll(name)
-		return "", err
+		return "", errors.Join(err, os.RemoveAll(name))
 	}
 	if err := syncDirectory(parent, "install-staging-parent"); err != nil {
-		_ = os.RemoveAll(name)
-		return "", err
+		return "", errors.Join(err, os.RemoveAll(name))
 	}
 	return name, nil
 }

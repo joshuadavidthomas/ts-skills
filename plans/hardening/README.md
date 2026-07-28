@@ -35,7 +35,7 @@ never reused or renumbered.)
 | 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | DONE |
 | 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | DONE |
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | DONE |
-| 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | TODO |
+| 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | DONE |
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | TODO |
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | TODO |
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | TODO |
@@ -79,6 +79,31 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 004 landed — cleanup errors are joined on failure paths
+  across install (writer lock/recovery, staged-tree setup and copy,
+  snapshot/verified-tree closes now wrapped under their own labels),
+  storage (lock-conflict close, staged copy input close), web (submission
+  close before the redirect, ZIP-writer closes joined in `rootlessZIP`),
+  and cli (`commandInstaller` cleanup returns an error; `runInstall` /
+  `runRestore` join it via named-return defers). Catalog rollbacks always
+  run with a `sql.ErrTxDone` filter (new `rollbackTransaction` helper +
+  `rollbackTx` test seam), and `NewPublishResult` construction moved ahead
+  of `tx.Commit()`. New tests: install identity-mismatch path joins the
+  fetched-tree close failure; storage rollback failure is joined while
+  post-commit `sql.ErrTxDone` is not; cli constructor failure joins the
+  staging-removal failure. Deviations from the plan text: (1) two
+  pre-existing discards the current-state list missed were joined under
+  the same rule — `rootlessZIP`'s `writer.Close()` on its four error
+  paths, and `records.go`'s deferred `rows.Close()` in
+  `ListPublishedSkills` (one file beyond the in-scope list, required by
+  the step-6 audit); (2) `publicationTree`'s `tree.Close()` was hoisted
+  before the response rather than left discarded — the ZIP is fully built
+  first, so the close error is still reportable; the archive close/remove
+  stays discarded post-commit with a `TODO(plan 005)` marker, as do the
+  two page-handler `tree.Close()` defers and the upload handler's
+  early-return close (all demonstrably post-commit); (3) test-file
+  discards remain per the deferred test-error-checking sweep. Next: 005.
 
 - **2026-07-28**: 003 landed — `StageBrowserDirectory` and `decodeZIP` now
   split AddFile outcomes into four classes: limit, cancellation

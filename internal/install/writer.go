@@ -118,35 +118,31 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	fileLock := flock.New(lockPath, flock.SetPermissions(0o600))
 	locked, err := fileLock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {
-		_ = fileLock.Close()
+		closeErr := fileLock.Close()
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("%w: %w", ErrBusy, ctxErr)
+			return nil, errors.Join(fmt.Errorf("%w: %w", ErrBusy, ctxErr), closeErr)
 		}
-		return nil, fmt.Errorf("acquire project writer lock: %w", err)
+		return nil, errors.Join(fmt.Errorf("acquire project writer lock: %w", err), closeErr)
 	}
 	if !locked {
-		_ = fileLock.Close()
 		cause := ctx.Err()
 		if cause == nil {
 			cause = errors.New("writer lock was not acquired")
 		}
-		return nil, fmt.Errorf("%w: %w", ErrBusy, cause)
+		return nil, errors.Join(fmt.Errorf("%w: %w", ErrBusy, cause), fileLock.Close())
 	}
 	if err := rejectRegularFile(lockPath); err != nil {
-		_ = fileLock.Close()
-		return nil, err
+		return nil, errors.Join(err, fileLock.Close())
 	}
 	writer := &projectWriter{
 		project: p, lock: fileLock, staging: make(map[string]struct{}),
 		removeStaging: projectWriterRemoveStaging, closeLock: (*flock.Flock).Close,
 	}
 	if err := writer.recoverOrphanStaging(); err != nil {
-		_ = writer.close()
-		return nil, err
+		return nil, errors.Join(err, writer.close())
 	}
 	if err := writer.recover(); err != nil {
-		_ = writer.close()
-		return nil, err
+		return nil, errors.Join(err, writer.close())
 	}
 	return writer, nil
 }
