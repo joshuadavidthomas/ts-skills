@@ -39,7 +39,7 @@ never reused or renumbered.)
 | 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | DONE |
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | DONE |
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | DONE |
-| 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | TODO |
+| 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | DONE |
 | 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | TODO |
 | 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | TODO |
 | 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | TODO |
@@ -79,6 +79,27 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 018 landed — `storage.Catalog`'s four close booleans are
+  now one `closePhase` (`catalogOpen → catalogDatabaseOpen → catalogLockHeld
+  → catalogClosed`) whose comment states the legal progression; `Close`
+  walks it with fallthrough so a retried close resumes at the surviving
+  resource, and `withOpenState` rejects anything past `catalogOpen`. The
+  flag-combination close tests became behavior assertions: operations pass
+  after `ErrTreesOpen`, are rejected after close begins, resumption is
+  proven through the injected-closer call counts plus lifetime-lock
+  conflicts, and a closed catalog rejects operations while reopening a new
+  `OpenCatalog` succeeds. `PublishCandidate`/`Publish` return
+  `(Publication, error)`, `SelectCurrent`/`SetCurrent` return `error`, and
+  `PublishResult` is deleted — no production consumer existed (web
+  discards both results). `CurrentPublication` stays as the stored
+  audit-row shape: `SelectCurrent` still validates selections through
+  `NewCurrentPublication` before persisting `selected_*` columns, which
+  remain as stored audit data. Tests now read the catalog —
+  `ResolveCurrent`, `Publication`, repeated-publish equality — instead of
+  transition flags. Deviations from the plan text: `registry/model_test.go`
+  was touched to drop the dead `becameCurrent ⇒ created` invariant, one
+  file beyond the in-scope list; no other deviations. Next: 012.
 
 - **2026-07-28**: 017 landed — `Snapshot.FS` returns an unexported
   `closedFS{}` (opens fail `fs.ErrClosed`) for nil, zero-value, and

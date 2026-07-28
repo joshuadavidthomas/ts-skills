@@ -21,16 +21,13 @@ type Publication struct {
 	publishedAt time.Time
 }
 
+// CurrentPublication is the stored audit shape of a selection: who moved
+// the current pointer and when. Transitions persist it but do not return
+// it; a "who selected this" read model would be a deliberate registry read.
 type CurrentPublication struct {
 	publication PublicationID
 	selectedBy  Actor
 	selectedAt  time.Time
-}
-
-type PublishResult struct {
-	publication   Publication
-	created       bool
-	becameCurrent bool
 }
 
 type SkillSummary struct {
@@ -72,20 +69,6 @@ func NewCurrentPublication(publication PublicationID, actor Actor, selectedAt ti
 func (c CurrentPublication) Publication() PublicationID { return c.publication }
 func (c CurrentPublication) SelectedBy() Actor          { return c.selectedBy }
 func (c CurrentPublication) SelectedAt() time.Time      { return c.selectedAt }
-
-func NewPublishResult(publication Publication, created, becameCurrent bool) (PublishResult, error) {
-	if publication.id.skill.String() == "" {
-		return PublishResult{}, fmt.Errorf("publish result requires a publication")
-	}
-	if becameCurrent && !created {
-		return PublishResult{}, fmt.Errorf("an existing publication cannot become first current during publish")
-	}
-	return PublishResult{publication: publication, created: created, becameCurrent: becameCurrent}, nil
-}
-
-func (r PublishResult) Publication() Publication { return r.publication }
-func (r PublishResult) Created() bool            { return r.created }
-func (r PublishResult) BecameCurrent() bool      { return r.becameCurrent }
 
 func NewSkillSummary(skill SkillID, current PublicationID) (SkillSummary, error) {
 	if skill.String() == "" || current.skill.String() == "" || skill != current.skill {

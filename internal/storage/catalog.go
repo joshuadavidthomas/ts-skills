@@ -21,19 +21,31 @@ var ErrTreesOpen = errors.New("registry trees remain open")
 // single-process resource.
 var _ registry.CatalogRecords = (*Catalog)(nil)
 
+// closePhase states which owned resource Close releases next, so a failed
+// Close can be retried and resumes exactly where it stopped. The legal
+// progression is linear: catalogOpen accepts operations; catalogDatabaseOpen
+// has passed the open-tree check and rejects operations but has not yet
+// closed the database; catalogLockHeld has closed the database and still
+// holds the lifetime lock; catalogClosed has released everything.
+type closePhase uint8
+
+const (
+	catalogOpen closePhase = iota
+	catalogDatabaseOpen
+	catalogLockHeld
+	catalogClosed
+)
+
 type Catalog struct {
-	db         *sql.DB
-	lock       *flock.Flock
-	stateDir   string
-	treesDir   string
-	tmpDir     string
-	stateMu    sync.RWMutex
-	closing    bool
-	closed     bool
-	dbClosed   bool
-	lockClosed bool
-	closeDB    func(*sql.DB) error
-	closeLock  func(*flock.Flock) error
+	db        *sql.DB
+	lock      *flock.Flock
+	stateDir  string
+	treesDir  string
+	tmpDir    string
+	stateMu   sync.RWMutex
+	phase     closePhase
+	closeDB   func(*sql.DB) error
+	closeLock func(*flock.Flock) error
 	// rollbackTx is a package-private failure seam for proving transaction
 	// rollback failures are reported. Production uses (*sql.Tx).Rollback.
 	rollbackTx  func(*sql.Tx) error
@@ -126,19 +138,19 @@ func (c *Catalog) Close() error {
 	}
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	if c.closed {
+	switch c.phase {
+	case catalogClosed:
 		return nil
-	}
-	if !c.closing {
+	case catalogOpen:
 		c.refsMu.Lock()
 		openTrees := c.openTrees
 		c.refsMu.Unlock()
 		if openTrees != 0 {
 			return fmt.Errorf("%w: %d", ErrTreesOpen, openTrees)
 		}
-		c.closing = true
-	}
-	if !c.dbClosed {
+		c.phase = catalogDatabaseOpen
+		fallthrough
+	case catalogDatabaseOpen:
 		closeDB := c.closeDB
 		if closeDB == nil {
 			closeDB = (*sql.DB).Close
@@ -146,9 +158,9 @@ func (c *Catalog) Close() error {
 		if err := closeDB(c.db); err != nil {
 			return fmt.Errorf("close registry database: %w", err)
 		}
-		c.dbClosed = true
-	}
-	if !c.lockClosed {
+		c.phase = catalogLockHeld
+		fallthrough
+	case catalogLockHeld:
 		closeLock := c.closeLock
 		if closeLock == nil {
 			closeLock = (*flock.Flock).Close
@@ -156,9 +168,8 @@ func (c *Catalog) Close() error {
 		if err := closeLock(c.lock); err != nil {
 			return fmt.Errorf("close registry lifetime lock: %w", err)
 		}
-		c.lockClosed = true
+		c.phase = catalogClosed
 	}
-	c.closed = true
 	return nil
 }
 
@@ -167,7 +178,7 @@ func (c *Catalog) withOpenState() (func(), error) {
 		return nil, fmt.Errorf("registry storage is nil")
 	}
 	c.stateMu.RLock()
-	if c.closing {
+	if c.phase != catalogOpen {
 		c.stateMu.RUnlock()
 		return nil, fmt.Errorf("registry storage is closed")
 	}
@@ -252,15 +263,15 @@ func (c *Catalog) Candidate(ctx context.Context, id registry.CandidateID) (regis
 	return queryCandidate(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (_ registry.PublishResult, err error) {
+func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (_ registry.Publication, err error) {
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	defer done()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return registry.PublishResult{}, fmt.Errorf("begin publish transaction: %w", err)
+		return registry.Publication{}, fmt.Errorf("begin publish transaction: %w", err)
 	}
 	defer func() {
 		err = c.rollbackTransaction(tx, err)
@@ -268,15 +279,15 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 
 	candidate, err := queryCandidate(ctx, tx.QueryRowContext, id)
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	publication, err := registry.NewPublication(publicationID, id, actor, at)
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 
 	result, err := tx.ExecContext(ctx, `
@@ -289,27 +300,25 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		actor.ID(), actor.Display(), at.UnixNano(),
 	)
 	if err != nil {
-		return registry.PublishResult{}, fmt.Errorf("insert publication: %w", err)
+		return registry.Publication{}, fmt.Errorf("insert publication: %w", err)
 	}
 	inserted, err := exactlyZeroOrOne(result)
 	if err != nil {
-		return registry.PublishResult{}, fmt.Errorf("insert publication: %w", err)
+		return registry.Publication{}, fmt.Errorf("insert publication: %w", err)
 	}
 	if !inserted {
 		publication, err = queryPublication(ctx, tx.QueryRowContext, publicationID)
 		if err != nil {
-			return registry.PublishResult{}, err
-		}
-		repeated, err := registry.NewPublishResult(publication, false, false)
-		if err != nil {
-			return registry.PublishResult{}, err
+			return registry.Publication{}, err
 		}
 		if err := tx.Commit(); err != nil {
-			return registry.PublishResult{}, fmt.Errorf("commit repeated publication: %w", err)
+			return registry.Publication{}, fmt.Errorf("commit repeated publication: %w", err)
 		}
-		return repeated, nil
+		return publication, nil
 	}
 
+	// A first publication for the skill becomes current immediately; the
+	// conflict clause leaves any earlier selection in place.
 	currentResult, err := tx.ExecContext(ctx, `
 		INSERT INTO current_publications(
 			namespace, name, tree_digest,
@@ -320,20 +329,15 @@ func (c *Catalog) PublishCandidate(ctx context.Context, id registry.CandidateID,
 		actor.ID(), actor.Display(), at.UnixNano(),
 	)
 	if err != nil {
-		return registry.PublishResult{}, fmt.Errorf("insert first current publication: %w", err)
+		return registry.Publication{}, fmt.Errorf("insert first current publication: %w", err)
 	}
-	becameCurrent, err := exactlyZeroOrOne(currentResult)
-	if err != nil {
-		return registry.PublishResult{}, fmt.Errorf("insert first current publication: %w", err)
-	}
-	publishResult, err := registry.NewPublishResult(publication, true, becameCurrent)
-	if err != nil {
-		return registry.PublishResult{}, err
+	if _, err := exactlyZeroOrOne(currentResult); err != nil {
+		return registry.Publication{}, fmt.Errorf("insert first current publication: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return registry.PublishResult{}, fmt.Errorf("commit publication: %w", err)
+		return registry.Publication{}, fmt.Errorf("commit publication: %w", err)
 	}
-	return publishResult, nil
+	return publication, nil
 }
 
 // rollbackTransaction always rolls the transaction back so a panic cannot leak
@@ -350,26 +354,27 @@ func (c *Catalog) rollbackTransaction(tx *sql.Tx, err error) error {
 	return err
 }
 
-func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) (_ registry.CurrentPublication, err error) {
+func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) (err error) {
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.CurrentPublication{}, err
+		return err
 	}
 	defer done()
-	selected, err := registry.NewCurrentPublication(id, actor, at)
-	if err != nil {
-		return registry.CurrentPublication{}, err
+	// Selections are persisted as stored audit data only through the
+	// validated shape; the transition itself has no read model.
+	if _, err := registry.NewCurrentPublication(id, actor, at); err != nil {
+		return err
 	}
 
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return registry.CurrentPublication{}, fmt.Errorf("begin current selection transaction: %w", err)
+		return fmt.Errorf("begin current selection transaction: %w", err)
 	}
 	defer func() {
 		err = c.rollbackTransaction(tx, err)
 	}()
 	if _, err := queryPublication(ctx, tx.QueryRowContext, id); err != nil {
-		return registry.CurrentPublication{}, err
+		return err
 	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO current_publications(
@@ -385,12 +390,12 @@ func (c *Catalog) SelectCurrent(ctx context.Context, id registry.PublicationID, 
 		actor.ID(), actor.Display(), at.UnixNano(),
 	)
 	if err != nil {
-		return registry.CurrentPublication{}, fmt.Errorf("select current publication: %w", err)
+		return fmt.Errorf("select current publication: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return registry.CurrentPublication{}, fmt.Errorf("commit current selection: %w", err)
+		return fmt.Errorf("commit current selection: %w", err)
 	}
-	return selected, nil
+	return nil
 }
 
 func exactlyZeroOrOne(result sql.Result) (bool, error) {

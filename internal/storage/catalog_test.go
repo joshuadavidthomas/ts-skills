@@ -137,15 +137,16 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !firstPublished.Created() || !firstPublished.BecameCurrent() {
-		t.Fatalf("first publication flags = created %t, current %t", firstPublished.Created(), firstPublished.BecameCurrent())
+	currentAfterFirst, err := catalog.ResolveCurrent(ctx, first.Skill())
+	if err != nil || currentAfterFirst != firstPublished {
+		t.Fatalf("first publication did not become current (%#v, %v)", currentAfterFirst, err)
 	}
 	repeated, err := catalog.PublishCandidate(ctx, first.ID(), firstFixture.actor, publishedAt.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repeated.Created() || repeated.BecameCurrent() || repeated.Publication() != firstPublished.Publication() {
-		t.Fatalf("repeated publication = %#v", repeated)
+	if repeated != firstPublished {
+		t.Fatalf("repeated publication = %#v, want %#v", repeated, firstPublished)
 	}
 
 	equivalent := firstFixture.candidate(t)
@@ -156,7 +157,7 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if equivalentPublished.Created() || equivalentPublished.Publication().Candidate() != first.ID() {
+	if equivalentPublished.ID() != firstPublished.ID() || equivalentPublished.Candidate() != first.ID() {
 		t.Fatalf("equivalent publication = %#v", equivalentPublished)
 	}
 
@@ -168,16 +169,20 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !secondPublished.Created() || secondPublished.BecameCurrent() {
-		t.Fatalf("second publication flags = created %t, current %t", secondPublished.Created(), secondPublished.BecameCurrent())
+	if secondPublished.ID() == firstPublished.ID() {
+		t.Fatalf("second publication reused the first publication: %#v", secondPublished)
+	}
+	currentAfterSecond, err := catalog.ResolveCurrent(ctx, first.Skill())
+	if err != nil || currentAfterSecond != firstPublished {
+		t.Fatalf("second publication moved current to %#v (%v)", currentAfterSecond, err)
 	}
 	selectedAt := publishedAt.Add(4 * time.Hour)
-	selected, err := catalog.SelectCurrent(ctx, secondPublished.Publication().ID(), firstFixture.actor, selectedAt)
-	if err != nil {
+	if err := catalog.SelectCurrent(ctx, secondPublished.ID(), firstFixture.actor, selectedAt); err != nil {
 		t.Fatal(err)
 	}
-	if selected.Publication() != secondPublished.Publication().ID() || !selected.SelectedAt().Equal(selectedAt) {
-		t.Fatalf("selected publication = %#v", selected)
+	selectedNow, err := catalog.ResolveCurrent(ctx, first.Skill())
+	if err != nil || selectedNow != secondPublished {
+		t.Fatalf("explicit selection resolved to %#v (%v)", selectedNow, err)
 	}
 
 	closeCatalog(t, catalog)
@@ -188,28 +193,28 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if err != nil || stored != first {
 		t.Fatalf("candidate after restart = %#v, %v", stored, err)
 	}
-	exact, err := catalog.Publication(ctx, firstPublished.Publication().ID())
+	exact, err := catalog.Publication(ctx, firstPublished.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exact != firstPublished.Publication() {
-		t.Fatalf("publication after restart = %#v, want %#v", exact, firstPublished.Publication())
+	if exact != firstPublished {
+		t.Fatalf("publication after restart = %#v, want %#v", exact, firstPublished)
 	}
 	current, err := catalog.ResolveCurrent(ctx, first.Skill())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.ID() != secondPublished.Publication().ID() {
+	if current.ID() != secondPublished.ID() {
 		t.Fatalf("current after restart = %#v", current.ID())
 	}
 	summaries, err := catalog.ListPublishedSkills(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summaries) != 1 || summaries[0].Skill() != first.Skill() || summaries[0].Current() != secondPublished.Publication().ID() {
+	if len(summaries) != 1 || summaries[0].Skill() != first.Skill() || summaries[0].Current() != secondPublished.ID() {
 		t.Fatalf("summaries after restart = %#v", summaries)
 	}
-	publicationTree, err := catalog.OpenPublicationTree(ctx, secondPublished.Publication().ID())
+	publicationTree, err := catalog.OpenPublicationTree(ctx, secondPublished.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,9 +248,6 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	}
 	if err := catalog.Close(); !errors.Is(err, ErrTreesOpen) {
 		t.Fatalf("Close with open tree = %v, want ErrTreesOpen", err)
-	}
-	if catalog.closing || catalog.closed || catalog.dbClosed || catalog.lockClosed {
-		t.Fatal("Close with an open tree changed catalog resource ownership")
 	}
 	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err != nil {
 		t.Fatalf("catalog operation after ErrTreesOpen: %v", err)
@@ -294,9 +296,6 @@ func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	if err := catalog.Close(); !errors.Is(err, injectedDB) {
 		t.Fatalf("first Close error = %v, want database failure", err)
 	}
-	if !catalog.closing || catalog.closed || catalog.dbClosed || catalog.lockClosed {
-		t.Fatal("database close failure changed catalog resource ownership")
-	}
 	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
 		t.Fatal("catalog accepted an operation after database close started")
 	}
@@ -316,9 +315,8 @@ func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	if err := catalog.Close(); !errors.Is(err, injectedLock) {
 		t.Fatalf("second Close error = %v, want lock failure", err)
 	}
-	if !catalog.dbClosed || catalog.lockClosed || catalog.closed {
-		t.Fatal("lock close failure changed catalog lock ownership")
-	}
+	// The retry resumed at the database close (second call, succeeding this
+	// time) and then failed on the lock.
 	if databaseCloseCalls != 2 {
 		t.Fatalf("database close calls = %d, want 2", databaseCloseCalls)
 	}
@@ -339,8 +337,8 @@ func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if !catalog.closed || !catalog.dbClosed || !catalog.lockClosed {
-		t.Fatal("successful retry did not close every catalog resource")
+	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
+		t.Fatal("catalog accepted an operation after full close")
 	}
 	if err := catalog.Close(); err != nil {
 		t.Fatalf("Close after full success: %v", err)
@@ -807,7 +805,7 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	if _, err := catalog.ResolveCurrent(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill().String()) {
 		t.Fatalf("ResolveCurrent error = %v", err)
 	}
-	if _, err := catalog.SelectCurrent(ctx, publicationID, fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
+	if err := catalog.SelectCurrent(ctx, publicationID, fixture.actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("SelectCurrent error = %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
@@ -868,7 +866,8 @@ func TestPublishCandidateIgnoresPostCommitRollbackError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PublishCandidate error = %v, want post-commit sql.ErrTxDone ignored", err)
 	}
-	if !published.Created() || !published.BecameCurrent() {
-		t.Fatalf("PublishCandidate result = %v, want created current publication", published)
+	current, err := catalog.ResolveCurrent(context.Background(), candidate.Skill())
+	if err != nil || current != published {
+		t.Fatalf("publication not current after ignored rollback error (%#v, %v)", current, err)
 	}
 }

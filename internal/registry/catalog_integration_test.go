@@ -79,55 +79,53 @@ func (m *memoryCatalogRecords) OpenCandidateTree(ctx context.Context, id registr
 	return &memoryTree{files: cloneMapFS(tree)}, nil
 }
 
-func (m *memoryCatalogRecords) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (registry.PublishResult, error) {
+func (m *memoryCatalogRecords) PublishCandidate(ctx context.Context, id registry.CandidateID, actor registry.Actor, at time.Time) (registry.Publication, error) {
 	if err := ctx.Err(); err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	candidate, exists := m.candidates[id]
 	if !exists {
-		return registry.PublishResult{}, registry.ErrNotFound
+		return registry.Publication{}, registry.ErrNotFound
 	}
 	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	if publication, exists := m.publications[publicationID]; exists {
-		return registry.NewPublishResult(publication, false, false)
+		return publication, nil
 	}
 	publication, err := registry.NewPublication(publicationID, id, actor, at)
 	if err != nil {
-		return registry.PublishResult{}, err
+		return registry.Publication{}, err
 	}
 	m.publications[publicationID] = publication
-	becameCurrent := false
 	if _, exists := m.current[candidate.Skill()]; !exists {
 		selected, err := registry.NewCurrentPublication(publicationID, actor, at)
 		if err != nil {
-			return registry.PublishResult{}, err
+			return registry.Publication{}, err
 		}
 		m.current[candidate.Skill()] = selected
-		becameCurrent = true
 	}
-	return registry.NewPublishResult(publication, true, becameCurrent)
+	return publication, nil
 }
 
-func (m *memoryCatalogRecords) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) (registry.CurrentPublication, error) {
+func (m *memoryCatalogRecords) SelectCurrent(ctx context.Context, id registry.PublicationID, actor registry.Actor, at time.Time) error {
 	if err := ctx.Err(); err != nil {
-		return registry.CurrentPublication{}, err
+		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.publications[id]; !exists {
-		return registry.CurrentPublication{}, registry.ErrNotFound
+		return registry.ErrNotFound
 	}
 	selected, err := registry.NewCurrentPublication(id, actor, at)
 	if err != nil {
-		return registry.CurrentPublication{}, err
+		return err
 	}
 	m.current[id.Skill()] = selected
-	return selected, nil
+	return nil
 }
 
 func (m *memoryCatalogRecords) ListPublishedSkills(ctx context.Context) ([]registry.SkillSummary, error) {
@@ -327,22 +325,23 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !firstPublish.Created() || !firstPublish.BecameCurrent() {
-		t.Fatalf("first publish flags = created %t, current %t", firstPublish.Created(), firstPublish.BecameCurrent())
+	current, err := catalog.ResolveCurrent(ctx, firstCandidate.Skill())
+	if err != nil || current != firstPublish {
+		t.Fatalf("first publish did not become current (%#v, %v)", current, err)
 	}
 	repeated, err := catalog.Publish(ctx, firstCandidate.ID(), actor, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repeated.Created() || repeated.BecameCurrent() || repeated.Publication().ID() != firstPublish.Publication().ID() {
-		t.Fatalf("repeated publish = %#v", repeated)
+	if repeated.ID() != firstPublish.ID() || repeated != firstPublish {
+		t.Fatalf("repeated publish returned %#v, want %#v", repeated, firstPublish)
 	}
 	equivalentCandidate := capture(t, catalog, namespace, provenance, skillSource("# First\n", "first"))
 	equivalent, err := catalog.Publish(ctx, equivalentCandidate.ID(), actor, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if equivalent.Created() || equivalent.Publication().ID() != firstPublish.Publication().ID() || equivalent.Publication().Candidate() != firstCandidate.ID() {
+	if equivalent.ID() != firstPublish.ID() || equivalent.Candidate() != firstCandidate.ID() {
 		t.Fatalf("equivalent candidate created another publication: %#v", equivalent)
 	}
 
@@ -351,42 +350,38 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !secondPublish.Created() || secondPublish.BecameCurrent() {
-		t.Fatalf("second publish flags = created %t, current %t", secondPublish.Created(), secondPublish.BecameCurrent())
-	}
-	current, err := catalog.ResolveCurrent(ctx, firstCandidate.Skill())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if current.ID() != firstPublish.Publication().ID() {
-		t.Fatalf("second publish moved current to %s", current.ID().Tree())
-	}
-	selected, err := catalog.SetCurrent(ctx, secondPublish.Publication().ID(), actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.Publication() != secondPublish.Publication().ID() {
-		t.Fatalf("selected publication = %#v", selected.Publication())
+	if secondPublish.ID() == firstPublish.ID() {
+		t.Fatalf("second publish returned the first publication %#v", secondPublish)
 	}
 	current, err = catalog.ResolveCurrent(ctx, firstCandidate.Skill())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.ID() != secondPublish.Publication().ID() {
+	if current.ID() != firstPublish.ID() {
+		t.Fatalf("second publish moved current to %s", current.ID().Tree())
+	}
+	if err := catalog.SetCurrent(ctx, secondPublish.ID(), actor, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	current, err = catalog.ResolveCurrent(ctx, firstCandidate.Skill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ID() != secondPublish.ID() {
 		t.Fatalf("explicit selection did not move current")
 	}
 	summaries, err := catalog.ListSkills(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summaries) != 1 || summaries[0].Current() != secondPublish.Publication().ID() {
+	if len(summaries) != 1 || summaries[0].Current() != secondPublish.ID() {
 		t.Fatalf("skill summaries = %#v", summaries)
 	}
-	exact, err := catalog.Publication(ctx, secondPublish.Publication().ID())
+	exact, err := catalog.Publication(ctx, secondPublish.ID())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if exact.ID() != secondPublish.Publication().ID() {
+	if exact.ID() != secondPublish.ID() {
 		t.Fatalf("exact publication lookup = %#v", exact.ID())
 	}
 	publicationTree, err := catalog.OpenPublicationTree(ctx, exact.ID())
@@ -412,7 +407,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.SetCurrent(ctx, unknownPublication, actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
+	if err := catalog.SetCurrent(ctx, unknownPublication, actor, time.Now()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("select unpublished identity error = %v", err)
 	}
 }
@@ -478,8 +473,8 @@ func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Publication() != published.Publication().ID() {
-		t.Fatalf("locked publication = %#v, want %#v", locked.Publication(), published.Publication().ID())
+	if locked.Publication() != published.ID() {
+		t.Fatalf("locked publication = %#v, want %#v", locked.Publication(), published.ID())
 	}
 
 	asset, err := os.ReadFile(project.SkillsDir() + "/sample/assets/data.txt")
@@ -500,7 +495,7 @@ func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if installedDigest != published.Publication().ID().Tree() {
-		t.Fatalf("installed digest = %s, want %s", installedDigest, published.Publication().ID().Tree())
+	if installedDigest != published.ID().Tree() {
+		t.Fatalf("installed digest = %s, want %s", installedDigest, published.ID().Tree())
 	}
 }

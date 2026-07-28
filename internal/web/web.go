@@ -42,8 +42,8 @@ type Catalog interface {
 	Capture(context.Context, registry.CaptureRequest) (registry.Candidate, error)
 	Candidate(context.Context, registry.CandidateID) (registry.Candidate, error)
 	OpenCandidateTree(context.Context, registry.CandidateID) (registry.Tree, error)
-	Publish(context.Context, registry.CandidateID, registry.Actor, time.Time) (registry.PublishResult, error)
-	SetCurrent(context.Context, registry.PublicationID, registry.Actor, time.Time) (registry.CurrentPublication, error)
+	Publish(context.Context, registry.CandidateID, registry.Actor, time.Time) (registry.Publication, error)
+	SetCurrent(context.Context, registry.PublicationID, registry.Actor, time.Time) error
 	ListSkills(context.Context) ([]registry.SkillSummary, error)
 	ResolveCurrent(context.Context, registry.SkillID) (registry.Publication, error)
 	Publication(context.Context, registry.PublicationID) (registry.Publication, error)
@@ -453,7 +453,7 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	if _, err := h.catalog.SetCurrent(r.Context(), publication, identity.Actor, time.Now().UTC()); err != nil {
+	if err := h.catalog.SetCurrent(r.Context(), publication, identity.Actor, time.Now().UTC()); err != nil {
 		h.handleError(w, r, err)
 		return
 	}

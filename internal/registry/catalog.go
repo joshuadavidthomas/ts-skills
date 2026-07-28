@@ -28,8 +28,8 @@ type CatalogRecords interface {
 	RecordCandidate(context.Context, Candidate, agentskill.Directory) error
 	Candidate(context.Context, CandidateID) (Candidate, error)
 	OpenCandidateTree(context.Context, CandidateID) (Tree, error)
-	PublishCandidate(context.Context, CandidateID, Actor, time.Time) (PublishResult, error)
-	SelectCurrent(context.Context, PublicationID, Actor, time.Time) (CurrentPublication, error)
+	PublishCandidate(context.Context, CandidateID, Actor, time.Time) (Publication, error)
+	SelectCurrent(context.Context, PublicationID, Actor, time.Time) error
 	ListPublishedSkills(context.Context) ([]SkillSummary, error)
 	ResolveCurrent(context.Context, SkillID) (Publication, error)
 	Publication(context.Context, PublicationID) (Publication, error)
@@ -96,10 +96,10 @@ func (c *Catalog) Candidate(ctx context.Context, id CandidateID) (Candidate, err
 func (c *Catalog) OpenCandidateTree(ctx context.Context, id CandidateID) (Tree, error) {
 	return c.records.OpenCandidateTree(ctx, id)
 }
-func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at time.Time) (PublishResult, error) {
+func (c *Catalog) Publish(ctx context.Context, id CandidateID, actor Actor, at time.Time) (Publication, error) {
 	return c.records.PublishCandidate(ctx, id, actor, at)
 }
-func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, actor Actor, at time.Time) (CurrentPublication, error) {
+func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, actor Actor, at time.Time) error {
 	return c.records.SelectCurrent(ctx, id, actor, at)
 }
 func (c *Catalog) ListSkills(ctx context.Context) ([]SkillSummary, error) {

@@ -32,12 +32,8 @@ func TestIdentityAndEntityInvariants(t *testing.T) {
 	if err != nil || candidate.Skill() != skill {
 		t.Fatalf("candidate = %#v, %v", candidate, err)
 	}
-	publication, err := NewPublication(publicationID, candidateID, actor, time.Now())
-	if err != nil {
+	if _, err := NewPublication(publicationID, candidateID, actor, time.Now()); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := NewPublishResult(publication, false, true); err == nil {
-		t.Fatal("existing publication became first current")
 	}
 	otherName, _ := agentskill.ParseName("other")
 	otherSkill, _ := NewSkillID(skill.Namespace(), otherName)
