@@ -1,0 +1,153 @@
+package agentskill
+
+import (
+	"bytes"
+	"fmt"
+	"io"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
+)
+
+const Filename = "SKILL.md"
+
+type Frontmatter struct {
+	Name          Name
+	Description   string
+	License       *string
+	Compatibility *string
+	Metadata      map[string]string
+	AllowedTools  *string
+}
+
+type Document struct {
+	Frontmatter
+	Instructions string
+}
+
+type frontmatterYAML struct {
+	Name          string            `yaml:"name"`
+	Description   string            `yaml:"description"`
+	License       *string           `yaml:"license"`
+	Compatibility *string           `yaml:"compatibility"`
+	Metadata      map[string]string `yaml:"metadata"`
+	AllowedTools  *string           `yaml:"allowed-tools"`
+}
+
+func Parse(src []byte) (Document, error) {
+	if !utf8.Valid(src) {
+		return Document{}, newValidationError(ErrInvalidDocument, Filename, "must be valid UTF-8")
+	}
+	frontmatter, instructions, err := splitDocument(src)
+	if err != nil {
+		return Document{}, err
+	}
+
+	var raw frontmatterYAML
+	decoder := yaml.NewDecoder(bytes.NewReader(frontmatter))
+	if err := decoder.Decode(&raw); err != nil {
+		return Document{}, newValidationError(ErrInvalidDocument, "frontmatter", err.Error())
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("contains more than one YAML document")
+		}
+		return Document{}, newValidationError(ErrInvalidDocument, "frontmatter", err.Error())
+	}
+
+	name, err := ParseName(raw.Name)
+	if err != nil {
+		return Document{}, newValidationError(ErrInvalidDocument, "name", err.Error())
+	}
+	if n := utf8.RuneCountInString(raw.Description); n < 1 || n > 1024 {
+		return Document{}, newValidationError(ErrInvalidDocument, "description", "must contain 1 to 1024 Unicode scalar values")
+	}
+	if raw.Compatibility != nil {
+		if n := utf8.RuneCountInString(*raw.Compatibility); n < 1 || n > 500 {
+			return Document{}, newValidationError(ErrInvalidDocument, "compatibility", "must contain 1 to 500 Unicode scalar values when present")
+		}
+	}
+	if raw.License != nil && *raw.License == "" {
+		return Document{}, newValidationError(ErrInvalidDocument, "license", "must not be empty when present")
+	}
+	if raw.AllowedTools != nil && *raw.AllowedTools == "" {
+		return Document{}, newValidationError(ErrInvalidDocument, "allowed-tools", "must not be empty when present")
+	}
+
+	return Document{
+		Frontmatter: Frontmatter{
+			Name:          name,
+			Description:   raw.Description,
+			License:       cloneString(raw.License),
+			Compatibility: cloneString(raw.Compatibility),
+			Metadata:      cloneMetadata(raw.Metadata),
+			AllowedTools:  cloneString(raw.AllowedTools),
+		},
+		Instructions: string(instructions),
+	}, nil
+}
+
+func splitDocument(src []byte) ([]byte, []byte, error) {
+	first, rest, ok := nextLine(src)
+	if !ok || !bytes.Equal(first, []byte("---")) {
+		return nil, nil, newValidationError(ErrInvalidDocument, "frontmatter", "must start with a complete --- line")
+	}
+	frontmatterStart := len(src) - len(rest)
+	cursor := frontmatterStart
+	for len(rest) > 0 {
+		line, next, _ := nextLine(rest)
+		consumed := len(rest) - len(next)
+		if bytes.Equal(line, []byte("---")) {
+			return src[frontmatterStart:cursor], next, nil
+		}
+		cursor += consumed
+		rest = next
+	}
+	return nil, nil, newValidationError(ErrInvalidDocument, "frontmatter", "missing closing --- line")
+}
+
+func nextLine(src []byte) (line, rest []byte, ok bool) {
+	if len(src) == 0 {
+		return nil, nil, false
+	}
+	if i := bytes.IndexByte(src, '\n'); i >= 0 {
+		line = src[:i]
+		if len(line) > 0 && line[len(line)-1] == '\r' {
+			line = line[:len(line)-1]
+		}
+		return line, src[i+1:], true
+	}
+	line = src
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		line = line[:len(line)-1]
+	}
+	return line, nil, true
+}
+
+func cloneString(src *string) *string {
+	if src == nil {
+		return nil
+	}
+	value := *src
+	return &value
+}
+
+func cloneMetadata(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func cloneDocument(src Document) Document {
+	src.License = cloneString(src.License)
+	src.Compatibility = cloneString(src.Compatibility)
+	src.AllowedTools = cloneString(src.AllowedTools)
+	src.Metadata = cloneMetadata(src.Metadata)
+	return src
+}
