@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -613,6 +616,160 @@ func TestResolveTreeFileRespectsCancellation(t *testing.T) {
 	cancel()
 	if _, err := resolveTreeFile(ctx, tree, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("resolveTreeFile with cancelled context error = %v", err)
+	}
+}
+
+// recordSlogHandler captures log records so tests can assert that
+// unexpected and post-commit failures reach the operator log.
+type recordSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *recordSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *recordSlogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, record)
+	return nil
+}
+
+func (h *recordSlogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *recordSlogHandler) WithGroup(string) slog.Handler      { return h }
+
+// contains reports whether any captured record carries the text in its
+// message or one of its attribute values.
+func (h *recordSlogHandler) contains(want string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, record := range h.records {
+		if strings.Contains(record.Message, want) {
+			return true
+		}
+		found := false
+		record.Attrs(func(attr slog.Attr) bool {
+			if strings.Contains(attr.Value.String(), want) {
+				found = true
+			}
+			return !found
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func failingTemplates(names ...string) *template.Template {
+	funcs := template.FuncMap{
+		"boom": func() (string, error) { return "", errors.New("template boom") },
+	}
+	var pages *template.Template
+	for _, name := range names {
+		if pages == nil {
+			pages = template.Must(template.New(name).Funcs(funcs).Parse(`{{boom}}`))
+			continue
+		}
+		pages = template.Must(pages.New(name).Funcs(funcs).Parse(`{{boom}}`))
+	}
+	return pages
+}
+
+func TestRenderFallsBackWhenPageTemplateFails(t *testing.T) {
+	pages := failingTemplates("page")
+	template.Must(pages.New("error").Parse(`<h1>{{.Title}}</h1><p>{{.Action}}</p>`))
+	h := &handler{pages: pages, options: Options{Logger: discardLogger()}}
+
+	recorder := httptest.NewRecorder()
+	h.render(recorder, http.StatusOK, "page", nil)
+
+	// The 200 must never commit: the response is the buffered 500 fallback.
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	if !strings.Contains(recorder.Body.String(), "Page could not be rendered") {
+		t.Fatalf("body = %q, want the generic error page", recorder.Body.String())
+	}
+}
+
+func TestRenderErrorFallsBackToPlaintextWhenErrorTemplateFails(t *testing.T) {
+	h := &handler{pages: failingTemplates("error"), options: Options{Logger: discardLogger()}}
+
+	recorder := httptest.NewRecorder()
+	h.renderError(recorder, http.StatusInternalServerError, "Unreachable", "Never rendered")
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	if got := recorder.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
+		t.Fatalf("content type = %q, want the plaintext fallback", got)
+	}
+	if !strings.Contains(recorder.Body.String(), "Internal Server Error") {
+		t.Fatalf("body = %q, want the plaintext status text", recorder.Body.String())
+	}
+}
+
+func TestHandleErrorLogsUnexpectedFailure(t *testing.T) {
+	pages, err := template.ParseFS(templatesFS, "templates/*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured := &recordSlogHandler{}
+	h := &handler{pages: pages, options: Options{Logger: slog.New(captured)}}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/candidates", nil)
+	h.handleError(recorder, request, errors.New("catalog storage unavailable"))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	if body := recorder.Body.String(); strings.Contains(body, "catalog storage unavailable") {
+		t.Fatalf("response leaked the internal error: %q", body)
+	}
+	for _, want := range []string{"web request failed", "catalog storage unavailable", "POST", "/candidates"} {
+		if !captured.contains(want) {
+			t.Errorf("log has no record carrying %q", want)
+		}
+	}
+}
+
+type errListSkillsCatalog struct{ Catalog }
+
+func (c errListSkillsCatalog) ListSkills(context.Context) ([]registry.SkillSummary, error) {
+	return nil, errors.New("catalog storage unavailable")
+}
+
+func TestNewHandlerDefaultsLogger(t *testing.T) {
+	captured := &recordSlogHandler{}
+	restore := slog.Default()
+	slog.SetDefault(slog.New(captured))
+	defer slog.SetDefault(restore)
+
+	key, err := NewCSRFKey(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := NewHandler(errListSkillsCatalog{}, &fixedActorResolver{}, Options{
+		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	if !captured.contains("catalog storage unavailable") {
+		t.Error("nil option logger did not fall through to slog.Default()")
 	}
 }
 

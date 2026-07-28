@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"io"
 	"io/fs"
+	"log/slog"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -77,6 +78,9 @@ type Options struct {
 	Limits        safetree.Limits
 	CSRFKey       CSRFKey
 	SecureCookies bool
+	// Logger receives diagnostics for unexpected request failures and
+	// post-commit cleanup failures; nil selects slog.Default().
+	Logger *slog.Logger
 }
 
 type handler struct {
@@ -98,6 +102,9 @@ func NewHandler(catalog Catalog, actors ActorResolver, options Options) (http.Ha
 	}
 	if err := safetree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
 	}
 	info, err := os.Stat(options.StagingParent)
 	if err != nil {
@@ -175,7 +182,7 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	}
 	summaries, err := h.catalog.ListSkills(r.Context())
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	views := make([]skillView, 0, len(summaries))
@@ -206,22 +213,26 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 	}
 	publication, err := h.catalog.ResolveCurrent(r.Context(), skill)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	tree, err := h.catalog.OpenPublicationTree(r.Context(), publication.ID())
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
-	defer func() { _ = tree.Close() }()
+	defer func() {
+		if err := tree.Close(); err != nil {
+			h.options.Logger.Warn("web publication tree close failed", "error", err)
+		}
+	}()
 	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this skill.")
 		return
 	}
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	resolved := publication.ID()
@@ -262,7 +273,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	body := multipart.NewReader(r.Body, parameters["boundary"])
 	namespaceText, err := nextTextPart(body, "namespace", 1024)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	namespace, err := registry.ParseNamespace(namespaceText)
@@ -272,24 +283,26 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	part, nextErr := body.NextPart()
 	if nextErr != nil {
-		h.handleError(w, malformedRequest("a directory manifest must follow namespace", nextErr))
+		h.handleError(w, r, malformedRequest("a directory manifest must follow namespace", nextErr))
 		return
 	}
 	if part.FormName() != "manifest" {
-		h.handleError(w, malformedRequest("skill upload must contain a directory manifest", nil))
+		h.handleError(w, r, malformedRequest("skill upload must contain a directory manifest", nil))
 		return
 	}
 	submission, err := upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, part, body, h.options.Limits)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	submissionClosed := false
 	defer func() {
-		// TODO(plan 005): log — on these early-return paths the error response
-		// is already committed, so a submission cleanup failure is invisible.
+		// On these early-return paths the error response is already
+		// committed, so a cleanup failure is operator-only diagnostics.
 		if !submissionClosed {
-			_ = submission.Close()
+			if err := submission.Close(); err != nil {
+				h.options.Logger.Warn("web upload cleanup failed", "error", err)
+			}
 		}
 	}()
 
@@ -300,18 +313,18 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	provenance, err := registry.NewProvenance(source, identity.Actor, time.Now().UTC())
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	candidate, err := h.catalog.Capture(r.Context(), registry.CaptureRequest{
 		Namespace: namespace, Source: submission.FS(), Root: submission.Root(), Provenance: provenance,
 	})
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	if err := submission.Close(); err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	submissionClosed = true
@@ -341,33 +354,37 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	candidate, err := h.catalog.Candidate(r.Context(), id)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	tree, err := h.catalog.OpenCandidateTree(r.Context(), id)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
-	defer func() { _ = tree.Close() }()
+	defer func() {
+		if err := tree.Close(); err != nil {
+			h.options.Logger.Warn("web candidate tree close failed", "error", err)
+		}
+	}()
 	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this candidate.")
 		return
 	}
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	_, publicationErr := h.catalog.Publication(r.Context(), publicationID)
 	published := publicationErr == nil
 	if publicationErr != nil && !errors.Is(publicationErr, registry.ErrNotFound) {
-		h.handleError(w, publicationErr)
+		h.handleError(w, r, publicationErr)
 		return
 	}
 	provenance := candidate.Provenance()
@@ -397,7 +414,7 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.catalog.Publish(r.Context(), id, identity.Actor, time.Now().UTC()); err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/candidates/"+id.String(), http.StatusSeeOther)
@@ -414,30 +431,30 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		h.handleError(w, malformedRequest("current publication form is invalid", err))
+		h.handleError(w, r, malformedRequest("current publication form is invalid", err))
 		return
 	}
 	if len(r.Form["skill"]) != 1 || len(r.Form["digest"]) != 1 {
-		h.handleError(w, malformedRequest("current publication form must contain one skill and digest", nil))
+		h.handleError(w, r, malformedRequest("current publication form must contain one skill and digest", nil))
 		return
 	}
 	skill, err := registry.ParseSkillID(r.Form.Get("skill"))
 	if err != nil {
-		h.handleError(w, malformedRequest("current skill identity is invalid", err))
+		h.handleError(w, r, malformedRequest("current skill identity is invalid", err))
 		return
 	}
 	digest, err := agentskill.ParseTreeDigest(r.Form.Get("digest"))
 	if err != nil {
-		h.handleError(w, malformedRequest("current tree digest is invalid", err))
+		h.handleError(w, r, malformedRequest("current tree digest is invalid", err))
 		return
 	}
 	publication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	if _, err := h.catalog.SetCurrent(r.Context(), publication, identity.Actor, time.Now().UTC()); err != nil {
-		h.handleError(w, err)
+		h.handleError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -502,11 +519,12 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
+		// Cleanup runs after the ZIP response is committed, so a failure is
+		// operator-only diagnostics.
 		name := archive.Name()
-		// TODO(plan 005): log — archive cleanup runs after the ZIP response is
-		// committed, so cleanup failures are invisible to the client.
-		_ = archive.Close()
-		_ = os.Remove(name)
+		if err := errors.Join(archive.Close(), os.Remove(name)); err != nil {
+			h.options.Logger.Warn("web archive cleanup failed", "archive", name, "error", err)
+		}
 	}()
 	resolvedSkill := resolvedPublication.Skill()
 	w.Header().Set("Content-Type", "application/zip")
@@ -786,7 +804,7 @@ func malformedRequest(problem string, cause error) error {
 	return fmt.Errorf("%w: %s: %w", upload.ErrMalformedUpload, problem, cause)
 }
 
-func (h *handler) handleError(w http.ResponseWriter, err error) {
+func (h *handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	var maxBytes *http.MaxBytesError
 	switch {
 	case errors.Is(err, safetree.ErrLimitExceeded), errors.As(err, &maxBytes):
@@ -799,18 +817,43 @@ func (h *handler) handleError(w http.ResponseWriter, err error) {
 	case errors.Is(err, registry.ErrConflict):
 		h.renderError(w, http.StatusConflict, "Registry item conflicts with existing data", "Reload the page before trying again.")
 	default:
+		h.options.Logger.Error("web request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		h.renderError(w, http.StatusInternalServerError, "Request could not be completed", "Try again. If this keeps happening, contact the registry operator.")
 	}
 }
 
+// render executes the page template into a buffer before committing any
+// response bytes: only a fully rendered page earns a status, and a template
+// failure falls back to the generic 500 page instead of leaving a half-written
+// body under a 2xx header.
 func (h *handler) render(w http.ResponseWriter, status int, name string, data any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	if err := h.pages.ExecuteTemplate(w, name, data); err != nil {
+	var page bytes.Buffer
+	if err := h.pages.ExecuteTemplate(&page, name, data); err != nil {
+		h.options.Logger.Error("web page template failed", "template", name, "error", err)
+		h.renderError(w, http.StatusInternalServerError, "Page could not be rendered", "Try again. If this keeps happening, contact the registry operator.")
 		return
 	}
+	h.writePage(w, status, page.Bytes())
 }
 
 func (h *handler) renderError(w http.ResponseWriter, status int, title, action string) {
-	h.render(w, status, "error", struct{ Title, Action string }{title, action})
+	var page bytes.Buffer
+	if err := h.pages.ExecuteTemplate(&page, "error", struct{ Title, Action string }{title, action}); err != nil {
+		// Nothing is committed yet, so plain text can still take over the
+		// response; a second WriteHeader would be a bug.
+		h.options.Logger.Error("web error template failed", "error", err)
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	h.writePage(w, status, page.Bytes())
+}
+
+// writePage commits a fully rendered page. A body write failure arrives
+// after the status is committed, so it is log-only.
+func (h *handler) writePage(w http.ResponseWriter, status int, page []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if _, err := w.Write(page); err != nil {
+		h.options.Logger.Warn("web response write failed", "error", err)
+	}
 }

@@ -36,7 +36,7 @@ never reused or renumbered.)
 | 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | DONE |
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | DONE |
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | DONE |
-| 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | TODO |
+| 6 | [005](005-web-handler-error-hygiene.md) | Buffer templates before status; log unexpected errors | S | 004 | DONE |
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | TODO |
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | TODO |
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | TODO |
@@ -79,6 +79,29 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 005 landed — `render`/`renderError` now execute templates
+  into a buffer and commit status only after success (shared `writePage`
+  helper); a failed page template falls back to the buffered 500 error page,
+  and a failed error template degrades to `http.Error` plaintext. The
+  default branch of `handleError` logs `web request failed` with method,
+  path, and cause while the response stays generic. Post-commit failures are
+  logged at Warn: buffered-body writes, the upload early-return submission
+  close, the publication archive close/remove, and the two page-handler
+  `tree.Close()` defers. `Options.Logger` (*slog.Logger, nil defaults to
+  `slog.Default()`) carries the logger. New tests cover the buffered 500
+  fallback, the plaintext double-failure fallback, default-branch logging
+  (message, method, path; generic response asserted leak-free), and the nil
+  logger's fall-through to `slog.Default()` proven through a full
+  `NewHandler`-built request. Deviations from the plan text: (1)
+  `handleError` gained an `*http.Request` parameter so the default branch
+  can log method/path as the plan suggested; the 23 call sites were
+  rewritten with a one-shot replacement script, deleted after use per the
+  repo's scripted-edit rule; (2) the two page-handler `tree.Close()` defers
+  004's log said carried `TODO(plan 005)` markers were in fact unmarked —
+  logged under the same post-commit rule anyway; (3) `daemon.go` needed no
+  edits — no daemon logger exists to wire, so both construction sites
+  (production and dev) ride the nil default. Next: 006.
 
 - **2026-07-28**: 004 landed — cleanup errors are joined on failure paths
   across install (writer lock/recovery, staged-tree setup and copy,
