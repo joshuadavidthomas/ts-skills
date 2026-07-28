@@ -2,13 +2,6 @@
 {{template "head" ""}}
 {{template "header" .}}
 <main class="mx-auto w-full max-w-5xl flex-1 px-4 py-6">
-  <div class="mb-6 flex items-center justify-between gap-4">
-    <div>
-      <h2 class="text-2xl font-semibold text-gray-800">Published skills</h2>
-      <p class="mt-1 text-sm text-gray-500">Skills ready to install from this tailnet.</p>
-    </div>
-    {{if .Skills}}<a href="/upload" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Upload a skill</a>{{end}}
-  </div>
   {{if .Skills}}
   <div class="overflow-x-auto rounded-lg border border-gray-200 bg-white">
     <table class="w-full border-collapse">
