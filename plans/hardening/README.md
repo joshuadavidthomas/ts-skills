@@ -48,7 +48,7 @@ never reused or renumbered.)
 | 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | DONE |
 | 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | DONE |
 | 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | DONE |
-| 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | TODO |
+| 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | DONE |
 | 19 | [007](007-apply-portable-safetree-rules.md) | Apply Windows path restrictions on every platform | S | — (needs owner sign-off, see plan) | TODO |
 | 20 | [008](008-split-transaction-file.md) | Split internal/install/transaction.go by concern | M | 001, 004, 011, 015 | TODO |
 
@@ -79,6 +79,8 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 020 landed — `client.Origin` now parses and holds the validated registry base as an opaque value. Config produces it, the CLI passes it through, and `NewRemote` accepts no raw URL. `Origin.URL` returns a copy for `net/url` consumers. Parser tests cover accepted forms and every rejected origin shape; config's output feeds the real client constructor. `go test -race ./internal/config/ ./internal/client/ ./internal/cli/ -count=1` and `just check` passed. Deviation: `internal/web/network_install_test.go` adapted its direct test-only `NewRemote` call to parse an Origin; this was required by the API boundary. The daemon retains its separate dev-listener loopback check; it is not registry-origin validation. Next: 007.
 
 - **2026-07-28**: 019 landed — `Run` and `RunDev` now validate their own mode, build a complete runtime, then hand it to `serve`. The factory seam, fabricated production config in dev mode, and serving-time incomplete-runtime check are gone. Builders take normalized configs and return runtime values; shared serving owns handler gating, shutdown, draining, and cleanup unchanged. Serving tests now build real complete runtimes directly, and a `RunDev` test proves invalid loopback configuration cannot start a listener. `go test -race ./internal/daemon/ -count=1`, `just build`, `rg "runtimeFactory" internal/daemon`, and `just check` passed. Deviation: none. Next: 020.
 

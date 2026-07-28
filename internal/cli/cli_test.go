@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +28,7 @@ func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	constructErr := errors.New("injected registry client construction failure")
-	newClientRemote = func(*url.URL, *http.Client, string, safetree.Limits) (*client.Remote, error) {
+	newClientRemote = func(client.Origin, *http.Client, string, safetree.Limits) (*client.Remote, error) {
 		return nil, constructErr
 	}
 	t.Cleanup(func() { newClientRemote = client.NewRemote })

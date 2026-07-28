@@ -12,9 +12,9 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -70,7 +70,7 @@ func remoteForServer(t *testing.T, server *httptest.Server) *Remote {
 
 func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits safetree.Limits) *Remote {
 	t.Helper()
-	origin, err := url.Parse(server.URL)
+	origin, err := ParseOrigin(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +79,60 @@ func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits saf
 		t.Fatal(err)
 	}
 	return remote
+}
+
+func TestParseOrigin(t *testing.T) {
+	valid := map[string]string{
+		"HTTPS":          "https://registry.example.ts.net",
+		"HTTPS slash":    "https://registry.example.ts.net/",
+		"localhost HTTP": "http://localhost:8080",
+		"IPv4 loopback":  "http://127.0.0.1:8080",
+		"IPv6 loopback":  "http://[::1]:8080",
+	}
+	for name, text := range valid {
+		t.Run(name, func(t *testing.T) {
+			origin, err := ParseOrigin(text)
+			if err != nil {
+				t.Fatalf("ParseOrigin(%q): %v", text, err)
+			}
+			if got := origin.String(); got != strings.TrimSuffix(text, "/") {
+				t.Fatalf("origin.String() = %q, want %q", got, strings.TrimSuffix(text, "/"))
+			}
+		})
+	}
+
+	invalid := []string{
+		"",
+		"/relative",
+		"ftp://registry.example.ts.net",
+		"https://",
+		"mailto:registry@example.ts.net",
+		"http://registry.example.ts.net",
+		"https://user@registry.example.ts.net",
+		"https://registry.example.ts.net/path",
+		"https://registry.example.ts.net?query=yes",
+		"https://registry.example.ts.net?",
+		"https://registry.example.ts.net#fragment",
+	}
+	for _, text := range invalid {
+		t.Run("reject "+text, func(t *testing.T) {
+			if _, err := ParseOrigin(text); err == nil {
+				t.Fatalf("ParseOrigin(%q) succeeded", text)
+			}
+		})
+	}
+}
+
+func TestOriginURLReturnsFreshCopy(t *testing.T) {
+	origin, err := ParseOrigin("https://registry.example.ts.net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := origin.URL()
+	url.Path = "/changed"
+	if got := origin.String(); got != "https://registry.example.ts.net" {
+		t.Fatalf("origin.String() after URL mutation = %q", got)
+	}
 }
 
 func setClientTreeHeaders(header http.Header, namespace, name, digest string) {

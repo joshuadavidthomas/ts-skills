@@ -41,7 +41,7 @@ func networkInstaller(t *testing.T, fixture *webFixture) (*install.Installer, re
 
 func networkInstallerWithClient(t *testing.T, fixture *webFixture, httpClient *http.Client) (*install.Installer, registry.SkillID) {
 	t.Helper()
-	origin, err := url.Parse(fixture.server.URL)
+	origin, err := client.ParseOrigin(fixture.server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

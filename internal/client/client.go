@@ -26,6 +26,44 @@ import (
 
 const maxJSONResponseBytes int64 = 64 << 10
 
+// Origin is a validated registry base: HTTPS, or loopback HTTP; host only —
+// no path, credentials, query, or fragment.
+type Origin struct{ url url.URL }
+
+// ParseOrigin parses and validates a registry origin.
+func ParseOrigin(text string) (Origin, error) {
+	source, err := url.Parse(text)
+	if err != nil {
+		return Origin{}, err
+	}
+	if source.Scheme != "https" && source.Scheme != "http" {
+		return Origin{}, fmt.Errorf("URL scheme must be HTTPS or loopback HTTP")
+	}
+	if source.Host == "" || source.Hostname() == "" || source.Opaque != "" {
+		return Origin{}, fmt.Errorf("URL must have an origin host")
+	}
+	if source.User != nil || source.RawQuery != "" || source.ForceQuery || source.Fragment != "" {
+		return Origin{}, fmt.Errorf("URL must not contain user info, a query, or a fragment")
+	}
+	if (source.Path != "" && source.Path != "/") || (source.RawPath != "" && source.RawPath != "/") {
+		return Origin{}, fmt.Errorf("URL must not contain a path")
+	}
+	if source.Scheme == "http" && !isLoopbackHost(source.Hostname()) {
+		return Origin{}, fmt.Errorf("cleartext HTTP is allowed only for a loopback host")
+	}
+	source.Path = ""
+	source.RawPath = ""
+	return Origin{url: *source}, nil
+}
+
+// URL returns a fresh URL for consumers of net/url APIs.
+func (o Origin) URL() *url.URL {
+	clone := o.url
+	return &clone
+}
+
+func (o Origin) String() string { return o.url.String() }
+
 type Remote struct {
 	baseURL       *url.URL
 	client        *http.Client
@@ -34,11 +72,8 @@ type Remote struct {
 	maxZIPBytes   int64
 }
 
-func NewRemote(baseURL *url.URL, httpClient *http.Client, stagingParent string, limits safetree.Limits) (*Remote, error) {
-	base, err := validateOrigin(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("registry origin: %w", err)
-	}
+func NewRemote(origin Origin, httpClient *http.Client, stagingParent string, limits safetree.Limits) (*Remote, error) {
+	base := origin.URL()
 	if httpClient == nil {
 		return nil, fmt.Errorf("registry HTTP client must be provided")
 	}
@@ -434,31 +469,6 @@ func (t *fetchedTree) Close() error {
 	}
 	t.snapshot = nil
 	return nil
-}
-
-func validateOrigin(source *url.URL) (*url.URL, error) {
-	if source == nil {
-		return nil, fmt.Errorf("URL is required")
-	}
-	if source.Scheme != "https" && source.Scheme != "http" {
-		return nil, fmt.Errorf("URL scheme must be HTTPS or loopback HTTP")
-	}
-	if source.Host == "" || source.Hostname() == "" || source.Opaque != "" {
-		return nil, fmt.Errorf("URL must have an origin host")
-	}
-	if source.User != nil || source.RawQuery != "" || source.ForceQuery || source.Fragment != "" {
-		return nil, fmt.Errorf("URL must not contain user info, a query, or a fragment")
-	}
-	if (source.Path != "" && source.Path != "/") || (source.RawPath != "" && source.RawPath != "/") {
-		return nil, fmt.Errorf("URL must not contain a path")
-	}
-	if source.Scheme == "http" && !isLoopbackHost(source.Hostname()) {
-		return nil, fmt.Errorf("cleartext HTTP is allowed only for a loopback host")
-	}
-	clone := *source
-	clone.Path = ""
-	clone.RawPath = ""
-	return &clone, nil
 }
 
 func isLoopbackHost(host string) bool {

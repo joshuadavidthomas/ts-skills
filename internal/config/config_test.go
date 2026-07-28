@@ -1,10 +1,15 @@
 package config
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/joshuadavidthomas/ts-skills/internal/client"
+	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 func TestLoadAcceptsOnlyOneStrictRegistryOrigin(t *testing.T) {
@@ -27,25 +32,33 @@ func TestLoadAcceptsOnlyOneStrictRegistryOrigin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if loaded.Registry == nil || loaded.Registry.String() != test.wantURL {
+			if loaded.Registry.String() != test.wantURL {
 				t.Fatalf("registry = %v, want %s", loaded.Registry, test.wantURL)
 			}
 		})
 	}
 }
 
-func TestLoadRejectsUnknownMissingAndNonOriginRegistryValues(t *testing.T) {
+func TestLoadProducesOriginAcceptedByRemote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`registry = "http://127.0.0.1:8080"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.NewRemote(loaded.Registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
+		t.Fatalf("NewRemote(config registry): %v", err)
+	}
+}
+
+func TestLoadRejectsMissingAndUnknownFields(t *testing.T) {
 	invalid := []string{
 		``,
+		`registry = ""`,
 		`other = "https://registry.example.ts.net"`,
 		"registry = \"https://registry.example.ts.net\"\nother = true\n",
-		`registry = "http://registry.example.ts.net"`,
-		`registry = "ftp://registry.example.ts.net"`,
-		`registry = "https://user@registry.example.ts.net"`,
-		`registry = "https://registry.example.ts.net/path"`,
-		`registry = "https://registry.example.ts.net?query=yes"`,
-		`registry = "https://registry.example.ts.net#fragment"`,
-		`registry = "/relative"`,
 	}
 	for _, body := range invalid {
 		name := body
