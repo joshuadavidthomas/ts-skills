@@ -45,7 +45,7 @@ never reused or renumbered.)
 | 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | DONE |
 | 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | DONE |
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | DONE |
-| 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | TODO |
+| 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | DONE |
 | 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | TODO |
 | 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | TODO |
 | 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | TODO |
@@ -79,6 +79,8 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 013 landed — `protocol` now defines the v1 rootless ZIP contract: classic, single-disk, Store-only entries with a 256-byte per-entry metadata allowance. `TreeArchiveCeiling` derives a safe envelope from tree limits, including overflow protection; client and web use it, and web rejects an archive that exceeds it. Client rejects deflated entries alongside malformed ZIP forms. Archive rejection tests now run through `Remote.Fetch` over HTTP; the direct decode test remains only for the deterministic cancellation mapping it covers. The web download test proves the encoder's output stays below the shared ceiling and contains Store-only entries. `go test -race ./internal/protocol/ ./internal/client/ ./internal/web/ -count=1` passed. Deviation: `internal/web/web_test.go` joined the scope because the plan's stated web-conformance test required it; the plan scope now records that file. Next: 014.
 
 - **2026-07-28**: 009 landed — `registry.Curator` now carries the actor
   authorized to change the catalog. `Capture`, `Publish`, and `SetCurrent`

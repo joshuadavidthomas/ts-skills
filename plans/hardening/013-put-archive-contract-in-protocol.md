@@ -71,7 +71,7 @@ moves only the *envelope contract*, not the expanded-tree limits.
 - `internal/protocol/protocol.go` (+ new test file) — the archive contract
 - `internal/client/client.go`, `internal/client/client_test.go`,
   `internal/client/zip_preflight.go`
-- `internal/web/web.go` (encoder references the contract)
+- `internal/web/web.go`, `internal/web/web_test.go` (encoder conformance)
 
 **Out of scope**:
 - Expanded-tree limits (`safetree.Limits`) — unchanged.

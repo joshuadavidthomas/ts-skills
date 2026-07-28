@@ -79,10 +79,11 @@ type Options struct {
 }
 
 type handler struct {
-	catalog  Catalog
-	curators CuratorResolver
-	options  Options
-	pages    *template.Template
+	catalog         Catalog
+	curators        CuratorResolver
+	options         Options
+	pages           *template.Template
+	maxArchiveBytes int64
 }
 
 func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (http.Handler, error) {
@@ -97,6 +98,10 @@ func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (htt
 	}
 	if err := safetree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
+	}
+	maxArchiveBytes, err := protocol.TreeArchiveCeiling(options.Limits)
+	if err != nil {
+		return nil, fmt.Errorf("web tree archive limits: %w", err)
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -116,7 +121,7 @@ func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (htt
 	if err != nil {
 		return nil, fmt.Errorf("open embedded web assets: %w", err)
 	}
-	h := &handler{catalog: catalog, curators: curators, options: options, pages: pages}
+	h := &handler{catalog: catalog, curators: curators, options: options, pages: pages, maxArchiveBytes: maxArchiveBytes}
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
@@ -569,7 +574,8 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 		if err := ctx.Err(); err != nil {
 			return nil, errors.Join(err, writer.Close())
 		}
-		header := &zip.FileHeader{Name: name, Method: zip.Store}
+		// V1 tree archives use protocol.TreeArchiveZIPMethod for every entry.
+		header := &zip.FileHeader{Name: name, Method: protocol.TreeArchiveZIPMethod}
 		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 		header.SetMode(0o644)
 		output, err := writer.CreateHeader(header)
@@ -588,6 +594,13 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 	}
 	if err := writer.Close(); err != nil {
 		return nil, fmt.Errorf("finish tree archive: %w", err)
+	}
+	info, err := archive.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat tree archive: %w", err)
+	}
+	if info.Size() > h.maxArchiveBytes {
+		return nil, &safetree.LimitError{Limit: "archive bytes", Max: h.maxArchiveBytes, Actual: info.Size()}
 	}
 	if err := archive.Sync(); err != nil {
 		return nil, fmt.Errorf("sync tree archive: %w", err)

@@ -24,15 +24,7 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-const (
-	maxJSONResponseBytes int64 = 64 << 10
-
-	// rootlessZIPEntryFixedBytes accounts for the local file header, data
-	// descriptor, central directory header, and the extended timestamp copied
-	// into both headers by web.rootlessZIP. The path follows each header.
-	rootlessZIPEntryFixedBytes int64 = 30 + 16 + 46 + 9 + 9
-	rootlessZIPEndBytes        int64 = 22
-)
+const maxJSONResponseBytes int64 = 64 << 10
 
 type Remote struct {
 	baseURL       *url.URL
@@ -63,7 +55,7 @@ func NewRemote(baseURL *url.URL, httpClient *http.Client, stagingParent string, 
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	maxZIPBytes, err := maxRootlessZIPBytes(limits)
+	maxZIPBytes, err := protocol.TreeArchiveCeiling(limits)
 	if err != nil {
 		return nil, fmt.Errorf("registry tree limits: %w", err)
 	}
@@ -292,8 +284,8 @@ func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 		}
 	}()
 	for _, entry := range archive.File {
-		if entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
-			return nil, fmt.Errorf("%w: tree archive contains a directory, link, encrypted entry, or special file", protocol.ErrProtocol)
+		if entry.Method != protocol.TreeArchiveZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: tree archive contains an unsupported entry", protocol.ErrProtocol)
 		}
 		if entry.UncompressedSize64 > math.MaxInt64 {
 			return nil, &safetree.LimitError{Limit: "file bytes", Max: r.limits.MaxFileBytes, Actual: math.MaxInt64}
@@ -366,27 +358,6 @@ func (r *Remote) responseError(response *http.Response) error {
 	default:
 		return fmt.Errorf("%w: unknown registry error", protocol.ErrProtocol)
 	}
-}
-
-func maxRootlessZIPBytes(limits safetree.Limits) (int64, error) {
-	pathBytes := int64(limits.MaxPathBytes)
-	if pathBytes > (math.MaxInt64-rootlessZIPEntryFixedBytes)/2 {
-		return 0, fmt.Errorf("limits are too large to bound a publication archive")
-	}
-	entryBytes := rootlessZIPEntryFixedBytes + 2*pathBytes
-	fileCount := int64(limits.MaxFiles)
-
-	// A tree may hit either the aggregate byte limit or every file's byte
-	// limit. Use the smaller capacity so this is the exact maximum payload.
-	expandedBytes := limits.MaxExpandedBytes
-	if fileCount <= limits.MaxExpandedBytes/limits.MaxFileBytes {
-		expandedBytes = fileCount * limits.MaxFileBytes
-	}
-	if expandedBytes > math.MaxInt64-rootlessZIPEndBytes ||
-		fileCount > (math.MaxInt64-rootlessZIPEndBytes-expandedBytes)/entryBytes {
-		return 0, fmt.Errorf("limits are too large to bound a publication archive")
-	}
-	return expandedBytes + fileCount*entryBytes + rootlessZIPEndBytes, nil
 }
 
 func (r *Remote) endpoint(parts ...string) string {

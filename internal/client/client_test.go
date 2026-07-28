@@ -64,48 +64,17 @@ func clientTree(t *testing.T, body string) (agentskill.TreeDigest, []byte) {
 	return digest, archive.Bytes()
 }
 
-func boundaryClientTree(t *testing.T, limits safetree.Limits) (agentskill.TreeDigest, []byte) {
-	t.Helper()
-	skillDocument := []byte("---\nname: sample\ndescription: Boundary test\n---\nBoundary.\n")
-	assetSize := int(limits.MaxExpandedBytes) - len(skillDocument)
-	if len(skillDocument) > int(limits.MaxFileBytes) || assetSize < 0 || int64(assetSize) > limits.MaxFileBytes {
-		t.Fatal("boundary test limits do not fit fixture contents")
-	}
-	files := fstest.MapFS{
-		"SKILL.md": {Data: skillDocument},
-		"asset.md": {Data: bytes.Repeat([]byte("a"), assetSize)},
-	}
-	digest, err := agentskill.SumTree(context.Background(), files, ".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var archive bytes.Buffer
-	writer := zip.NewWriter(&archive)
-	for _, name := range []string{"SKILL.md", "asset.md"} {
-		header := &zip.FileHeader{Name: name, Method: zip.Store}
-		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
-		header.SetMode(0o644)
-		entry, err := writer.CreateHeader(header)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := entry.Write(files[name].Data); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return digest, archive.Bytes()
+func remoteForServer(t *testing.T, server *httptest.Server) *Remote {
+	return remoteForServerWithLimits(t, server, safetree.PrototypeLimits())
 }
 
-func remoteForServer(t *testing.T, server *httptest.Server) *Remote {
+func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits safetree.Limits) *Remote {
 	t.Helper()
 	origin, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote, err := NewRemote(origin, &http.Client{Timeout: 5 * time.Second}, t.TempDir(), safetree.PrototypeLimits())
+	remote, err := NewRemote(origin, &http.Client{Timeout: 5 * time.Second}, t.TempDir(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,23 +87,15 @@ func setClientTreeHeaders(header http.Header, namespace, name, digest string) {
 	header.Set(protocol.HeaderPublicationDigest, digest)
 }
 
-func TestRootlessZIPDownloadLimitMatchesWebArchive(t *testing.T) {
+func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	limits := safetree.Limits{
-		MaxFiles: 2, MaxPathBytes: 8, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
+		MaxFiles: 2, MaxPathBytes: 16, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
 	}
-	digest, archive := boundaryClientTree(t, limits)
-	maximum, err := maxRootlessZIPBytes(limits)
+	digest, archive := clientTree(t, "archive ceiling")
+	maximum, err := protocol.TreeArchiveCeiling(limits)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := int64(100 + 2*(30+8+9+16+46+8+9) + 22)
-	if maximum != want {
-		t.Fatalf("maximum rootless ZIP bytes = %d, want %d", maximum, want)
-	}
-	if int64(len(archive)) != maximum {
-		t.Fatalf("boundary rootless ZIP bytes = %d, want %d", len(archive), maximum)
-	}
-
 	responseBody := archive
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
@@ -142,47 +103,28 @@ func TestRootlessZIPDownloadLimitMatchesWebArchive(t *testing.T) {
 		_, _ = w.Write(responseBody)
 	}))
 	defer server.Close()
-	origin, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote, err := NewRemote(origin, &http.Client{Timeout: 5 * time.Second}, t.TempDir(), limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	remote := remoteForServerWithLimits(t, server, limits)
 	requirement, err := install.Exact(clientSkill(t), digest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fetched, err := remote.Fetch(context.Background(), requirement)
 	if err != nil {
-		t.Fatalf("fetch boundary rootless ZIP: %v", err)
+		t.Fatalf("fetch tree archive: %v", err)
 	}
 	if err := fetched.Tree().Close(); err != nil {
 		t.Fatal(err)
 	}
 
-	responseBody = append(bytes.Clone(archive), 0)
+	responseBody = append(bytes.Clone(archive), bytes.Repeat([]byte{0}, int(maximum)+1-len(archive))...)
 	if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
-		t.Fatalf("oversize rootless ZIP error = %v, want %v", err, safetree.ErrLimitExceeded)
+		t.Fatalf("oversize tree archive error = %v, want %v", err, safetree.ErrLimitExceeded)
 	}
 }
 
-func TestDecodeZIPPreflightsEntryCount(t *testing.T) {
-	_, archive := clientTree(t, "entry count")
-	parent := t.TempDir()
-	archivePath := filepath.Join(parent, "tree.zip")
-	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	limits := safetree.PrototypeLimits()
-	limits.MaxFiles = 1
-	remote := &Remote{stagingParent: parent, limits: limits}
-	if _, err := remote.decodeZIP(context.Background(), archivePath); !errors.Is(err, safetree.ErrLimitExceeded) {
-		t.Fatalf("entry count error = %v, want ErrLimitExceeded", err)
-	}
-}
-
+// TestDecodeZIPPreservesCancellation stays below Fetch because Fetch has no
+// synchronization point between spooling an HTTP response and decoding it.
+// It verifies that AddFile cancellation stays distinct from protocol errors.
 func TestDecodeZIPPreservesCancellation(t *testing.T) {
 	_, archive := clientTree(t, "cancellation")
 	parent := t.TempDir()
@@ -237,47 +179,70 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 	}
 }
 
-func TestZIPPreflightRejectsUnderreportedEntriesAndZIP64(t *testing.T) {
-	_, archive := clientTree(t, "preflight formats")
+func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
+	digest, archive := clientTree(t, "archive format")
 	end := bytes.LastIndex(archive, []byte{'P', 'K', 5, 6})
 	if end < 0 {
 		t.Fatal("test ZIP has no end record")
 	}
-
 	underreported := bytes.Clone(archive)
 	binary.LittleEndian.PutUint16(underreported[end+8:end+10], 1)
 	binary.LittleEndian.PutUint16(underreported[end+10:end+12], 1)
-	underreportedPath := filepath.Join(t.TempDir(), "underreported.zip")
-	if err := os.WriteFile(underreportedPath, underreported, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preflightZIP(underreportedPath, 2); err == nil {
-		t.Fatal("ZIP with an underreported central directory entry count was accepted")
-	}
-
 	zip64 := bytes.Clone(archive)
 	binary.LittleEndian.PutUint16(zip64[end+8:end+10], ^uint16(0))
 	binary.LittleEndian.PutUint16(zip64[end+10:end+12], ^uint16(0))
-	zip64Path := filepath.Join(t.TempDir(), "zip64.zip")
-	if err := os.WriteFile(zip64Path, zip64, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := preflightZIP(zip64Path, 2); err == nil || errors.Is(err, safetree.ErrLimitExceeded) {
-		t.Fatalf("ZIP64 error = %v, want format rejection", err)
-	}
-}
 
-func TestRootlessZIPDownloadLimitUsesPerFileCapacity(t *testing.T) {
-	limits := safetree.Limits{
-		MaxFiles: 2, MaxPathBytes: 8, MaxDepth: 2, MaxFileBytes: 4, MaxExpandedBytes: 100,
+	var deflated bytes.Buffer
+	writer := zip.NewWriter(&deflated)
+	deflatedFiles := map[string][]byte{
+		"SKILL.md":        []byte("---\nname: sample\ndescription: Client test\n---\narchive format"),
+		"assets/data.txt": []byte("asset"),
 	}
-	maximum, err := maxRootlessZIPBytes(limits)
-	if err != nil {
+	for _, name := range []string{"SKILL.md", "assets/data.txt"} {
+		entry, err := writer.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := entry.Write(deflatedFiles[name]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	want := int64(2*4 + 2*(30+8+9+16+46+8+9) + 22)
-	if maximum != want {
-		t.Fatalf("maximum rootless ZIP bytes = %d, want %d", maximum, want)
+
+	limited := safetree.PrototypeLimits()
+	limited.MaxFiles = 1
+	tests := map[string]struct {
+		archive []byte
+		limits  safetree.Limits
+		want    error
+	}{
+		"too many entries":      {archive: archive, limits: limited, want: safetree.ErrLimitExceeded},
+		"underreported entries": {archive: underreported, limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
+		"ZIP64":                 {archive: zip64, limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
+		"deflated entry":        {archive: deflated.Bytes(), limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/zip")
+				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+				_, _ = w.Write(test.archive)
+			}))
+			defer server.Close()
+			requirement, err := install.Exact(clientSkill(t), digest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = remoteForServerWithLimits(t, server, test.limits).Fetch(context.Background(), requirement)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
+			}
+			if name == "ZIP64" && errors.Is(err, safetree.ErrLimitExceeded) {
+				t.Fatalf("ZIP64 error = %v, want format rejection", err)
+			}
+		})
 	}
 }
 
@@ -424,7 +389,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 	requirement, _ := install.Exact(skill, digest)
 	var unsafe bytes.Buffer
 	unsafeWriter := zip.NewWriter(&unsafe)
-	entry, _ := unsafeWriter.Create("../SKILL.md")
+	entry, _ := unsafeWriter.CreateHeader(&zip.FileHeader{Name: "../SKILL.md", Method: zip.Store})
 	_, _ = entry.Write([]byte("unsafe"))
 	_ = unsafeWriter.Close()
 

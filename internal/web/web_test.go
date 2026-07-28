@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -460,17 +461,55 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
+	ceiling, err := protocol.TreeArchiveCeiling(safetree.PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(body)) > ceiling {
+		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", len(body), ceiling)
+	}
 	archive, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var names []string
 	for _, file := range archive.File {
+		if file.Method != protocol.TreeArchiveZIPMethod {
+			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, protocol.TreeArchiveZIPMethod)
+		}
 		names = append(names, file.Name)
 	}
 	wantNames := []string{"SKILL.md", "assets/<script>.txt"}
 	if fmt.Sprint(names) != fmt.Sprint(wantNames) {
 		t.Fatalf("tree ZIP entries = %v, want %v", names, wantNames)
+	}
+}
+
+func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
+	limits := safetree.Limits{
+		MaxFiles: 2, MaxPathBytes: 15, MaxDepth: 2, MaxFileBytes: 1, MaxExpandedBytes: 2,
+	}
+	ceiling, err := protocol.TreeArchiveCeiling(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &handler{options: Options{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
+	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
+		"SKILL.md":        {Data: []byte("s")},
+		"assets/data.txt": {Data: []byte("a")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := archive.Name()
+	info, err := archive.Stat()
+	closeErr := archive.Close()
+	removeErr := os.Remove(name)
+	if err := errors.Join(err, closeErr, removeErr); err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > ceiling {
+		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", info.Size(), ceiling)
 	}
 }
 
