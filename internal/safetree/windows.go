@@ -43,6 +43,6 @@ func isWindowsReservedDeviceName(component string) bool {
 	}
 }
 
-func windowsCanonicalPath(name string) string {
+func canonicalPath(name string) string {
 	return strings.ToUpper(name)
 }

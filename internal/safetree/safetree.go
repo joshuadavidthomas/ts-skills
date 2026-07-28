@@ -108,7 +108,7 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 	if len(b.files)+1 > b.limits.MaxFiles {
 		return &LimitError{Limit: "files", Max: int64(b.limits.MaxFiles), Actual: int64(len(b.files) + 1)}
 	}
-	key := canonicalPlatformPath(name)
+	key := canonicalPath(name)
 	if existing, exists := b.files[key]; exists {
 		return fmt.Errorf("%w: duplicate files %q and %q", ErrInvalidPath, existing, name)
 	}
@@ -344,7 +344,7 @@ func validatePath(name string, limits Limits) error {
 		return &LimitError{Limit: "path depth", Max: int64(limits.MaxDepth), Actual: int64(depth)}
 	}
 	for _, part := range strings.Split(name, "/") {
-		if part == "" || part == "." || part == ".." || path.Clean(part) != part || invalidPlatformPathComponent(part) {
+		if part == "" || part == "." || part == ".." || path.Clean(part) != part || InvalidWindowsPathComponent(part) {
 			return fmt.Errorf("%w: %q", ErrInvalidPath, name)
 		}
 	}

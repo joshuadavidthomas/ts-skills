@@ -192,7 +192,7 @@ func multipartRequest(t *testing.T, target string, parts []formPart) *http.Reque
 func skillDirectoryParts(instructions string) []formPart {
 	skill := "---\nname: sample\ndescription: Web test\n---\n" + instructions
 	asset := "inert asset"
-	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/<script>.txt","size":%d}]`, len(skill), len(asset))
+	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/inert.txt","size":%d}]`, len(skill), len(asset))
 	return []formPart{
 		{name: "namespace", body: []byte("team")},
 		{name: "manifest", body: []byte(manifest)},
@@ -270,8 +270,8 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	}
 	skill := "---\nname: sample\ndescription: Web test\n---\n" + instructions
 	expected, err := agentskill.SumTree(context.Background(), fstest.MapFS{
-		"sample/SKILL.md":            {Data: []byte(skill)},
-		"sample/assets/<script>.txt": {Data: []byte("inert asset")},
+		"sample/SKILL.md":         {Data: []byte(skill)},
+		"sample/assets/inert.txt": {Data: []byte("inert asset")},
 	}, "sample")
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +312,7 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	if strings.Contains(firstReview, "<script>globalThis.pwned") {
 		t.Fatal("imported SKILL.md rendered as active script")
 	}
-	for _, escaped := range []string{"&lt;script&gt;globalThis.pwned", `href="?file=assets/%3Cscript%3E.txt"`, "Curator &lt;One&gt;"} {
+	for _, escaped := range []string{"&lt;script&gt;globalThis.pwned", `href="?file=assets/inert.txt"`, "Curator &lt;One&gt;"} {
 		if !strings.Contains(firstReview, escaped) {
 			t.Fatalf("review does not contain escaped %q: %s", escaped, firstReview)
 		}
@@ -479,7 +479,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 		}
 		names = append(names, file.Name)
 	}
-	wantNames := []string{"SKILL.md", "assets/<script>.txt"}
+	wantNames := []string{"SKILL.md", "assets/inert.txt"}
 	if fmt.Sprint(names) != fmt.Sprint(wantNames) {
 		t.Fatalf("tree ZIP entries = %v, want %v", names, wantNames)
 	}
@@ -578,13 +578,13 @@ func TestReviewAndSkillPagesSelectExactTreeFiles(t *testing.T) {
 			t.Fatalf("default page does not show SKILL.md: %s", defaultPage)
 		}
 		if !strings.Contains(defaultPage, `<span class="block py-1 font-medium text-gray-600">assets/</span>`) ||
-			!strings.Contains(defaultPage, `href="?file=assets/%3Cscript%3E.txt"`) {
+			!strings.Contains(defaultPage, `href="?file=assets/inert.txt"`) {
 			t.Fatalf("page does not show the nested asset link: %s", defaultPage)
 		}
 
-		selectedPath := pagePath + "?file=" + url.QueryEscape("assets/<script>.txt")
+		selectedPath := pagePath + "?file=" + url.QueryEscape("assets/inert.txt")
 		selectedPage := fixture.get(selectedPath)
-		if !strings.Contains(selectedPage, "inert asset") || !strings.Contains(selectedPage, `>assets/&lt;script&gt;.txt</h3>`) {
+		if !strings.Contains(selectedPage, "inert asset") || !strings.Contains(selectedPage, `>assets/inert.txt</h3>`) {
 			t.Fatalf("selected asset is not shown in the content pane: %s", selectedPage)
 		}
 

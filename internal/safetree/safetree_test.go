@@ -35,6 +35,36 @@ func TestBuilderRejectsPathsAndCollisionsBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestBuilderRejectsWindowsReservedNamesOnAllPlatforms(t *testing.T) {
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = builder.Close() }()
+
+	for _, name := range []string{"CON.txt", "con", "LPT1.md", "trailing.", "trailing "} {
+		err := builder.AddFile(context.Background(), name, 1, bytes.NewReader([]byte("x")))
+		if !errors.Is(err, ErrInvalidPath) {
+			t.Errorf("AddFile(%q) error = %v, want ErrInvalidPath", name, err)
+		}
+	}
+}
+
+func TestBuilderRejectsCaseAliasOnAllPlatforms(t *testing.T) {
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = builder.Close() }()
+
+	if err := builder.AddFile(context.Background(), "Readme.md", 1, bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.AddFile(context.Background(), "README.md", 1, bytes.NewReader([]byte("x"))); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("case alias error = %v, want ErrInvalidPath", err)
+	}
+}
+
 func TestBuilderUsesActualBytesForLimits(t *testing.T) {
 	limits := PrototypeLimits()
 	limits.MaxFileBytes = 3
@@ -240,18 +270,18 @@ func TestInvalidWindowsPathComponent(t *testing.T) {
 	}
 }
 
-func TestWindowsCanonicalPathFoldsCaseAliases(t *testing.T) {
+func TestCanonicalPathFoldsCaseAliases(t *testing.T) {
 	for _, aliases := range [][2]string{
 		{"SKILL.md", "skill.MD"},
 		{"Assets/Icon.svg", "assets/icon.SVG"},
 		{"Ångström", "ångström"},
 	} {
-		if first, second := windowsCanonicalPath(aliases[0]), windowsCanonicalPath(aliases[1]); first != second {
+		if first, second := canonicalPath(aliases[0]), canonicalPath(aliases[1]); first != second {
 			t.Errorf("canonical aliases %q and %q differ: %q != %q", aliases[0], aliases[1], first, second)
 		}
 	}
-	if parent := windowsCanonicalPath("Assets/Icon.svg")[:len("assets")]; parent != windowsCanonicalPath("ASSETS") {
-		t.Errorf("canonical prefix = %q, want %q", parent, windowsCanonicalPath("ASSETS"))
+	if parent := canonicalPath("Assets/Icon.svg")[:len("assets")]; parent != canonicalPath("ASSETS") {
+		t.Errorf("canonical prefix = %q, want %q", parent, canonicalPath("ASSETS"))
 	}
 }
 
