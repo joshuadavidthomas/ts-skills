@@ -268,7 +268,7 @@ func newCatalogFixture(t *testing.T) (*registry.Catalog, *memoryCatalogRecords, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := registry.NewUploadSource(registry.UploadDirectory, "sample")
+	source, err := registry.NewUploadSource("sample")
 	if err != nil {
 		t.Fatal(err)
 	}

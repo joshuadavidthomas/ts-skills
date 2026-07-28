@@ -8,7 +8,7 @@ This document defines the v1 product boundary. The accepted executor plan at `.a
 
 `ts-skills` is a private Agent Skills registry for a team on a Tailnet.
 
-A team member uses a basic web frontend to upload one skill as either a ZIP file or a browser-selected directory. The registry captures the complete tree, validates it, computes its digest, and presents it for review. Publishing makes that exact tree available to the team.
+A team member uses a basic web frontend to upload one skill as a browser-selected directory. The registry captures the complete tree, validates it, computes its digest, and presents it for review. Publishing makes that exact tree available to the team.
 
 The `ts-skills` CLI installs a published skill into one explicit project and records its exact tree digest in a project lock. Restore uses that digest rather than the registry’s moving current selection.
 
@@ -27,8 +27,7 @@ The prototype includes:
 
 - one central `ts-skillsd` service on the Tailnet;
 - persistent registry state across daemon restarts;
-- ZIP upload through the web frontend;
-- directory selection through the web frontend;
+- directory selection and upload through the web frontend;
 - one Agent Skill per upload;
 - immutable candidates for review;
 - immutable publications identified by skill and tree digest;
@@ -54,7 +53,7 @@ The prototype does not include:
 - registry-assigned versions or version ranges;
 - multiple configured registries.
 
-A curator may still obtain a third-party skill from Git or HTTP manually, then upload its ZIP or directory. Automating that acquisition can follow once the curate-and-install path works.
+Directory-only upload is a deliberate v1 narrowing from the original ZIP-and-directory scope. A curator with a ZIP extracts it locally, then selects the extracted skill directory in the web frontend. A curator may still obtain a third-party skill from Git or HTTP manually; automating that acquisition can follow once the curate-and-install path works.
 
 ## Access model
 
@@ -67,7 +66,7 @@ The prototype has no namespace ownership policy or role hierarchy beyond this cu
 ### Upload and publish
 
 1. A team member opens the registry web frontend.
-2. They choose one ZIP file or one local directory.
+2. They choose one local skill directory.
 3. The browser uploads the selected files and their relative paths.
 4. The daemon validates and stages the complete tree.
 5. The daemon computes its normalized tree digest and creates an immutable candidate.
@@ -76,7 +75,7 @@ The prototype has no namespace ownership policy or role hierarchy beyond this cu
 8. The first publication for a skill becomes current automatically.
 9. Later publications require an explicit action to become current.
 
-A directory upload and a ZIP upload that reconstruct the same normalized files produce the same tree digest.
+Repeated directory uploads that contain the same normalized paths and bytes produce the same tree digest.
 
 ### Install
 
@@ -143,7 +142,7 @@ Each skill has at most one current publication. The first publication becomes cu
 
 The prototype records provenance available at its upload boundary:
 
-- uploaded filename for a ZIP, or selected directory name;
+- selected directory name;
 - submitting Tailnet identity;
 - submission time;
 - resulting skill identity and tree digest.
@@ -207,7 +206,7 @@ The tree digest ignores:
 
 Symlinks and special files are rejected. Paths must be valid UTF-8, use `/` separators, and contain no empty, `.` or `..` segments.
 
-Since browser directory selection cannot report POSIX executable bits, both upload forms normalize modes away. On systems with POSIX modes, installation creates directories as traversable and regular files as non-executable. Direct execution of bundled scripts is outside the prototype; agents may invoke them through an interpreter.
+Since browser directory selection cannot report POSIX executable bits, uploads normalize modes away. On systems with POSIX modes, installation creates directories as traversable and regular files as non-executable. Direct execution of bundled scripts is outside the prototype; agents may invoke them through an interpreter.
 
 ### Hash framing
 
@@ -231,7 +230,7 @@ Scaffold tests must include fixed vectors for:
 
 Upload and installation treat skill content as data. They do not run scripts, package-manager hooks, MCP commands, or instructions from `SKILL.md`.
 
-Both ZIP and directory uploads pass through one normalized ingestion path. Before candidate creation, the daemon must:
+Browser-selected directories pass through one normalized ingestion path. Before candidate creation, the daemon must:
 
 - validate paths before writing them;
 - reject traversal, absolute paths, links, special files, and path collisions;
@@ -249,14 +248,13 @@ Before installation, the CLI must:
 - avoid overwriting unrelated content;
 - preserve the previous valid installation when replacement fails.
 
-The concrete limits, archive library, replacement mechanism, and crash-recovery policy remain implementation decisions.
+The concrete limits, download archive library, replacement mechanism, and crash-recovery policy remain implementation decisions.
 
 ## Web frontend
 
 The basic web frontend needs only enough UI to:
 
 - browse published skills;
-- upload a ZIP;
 - select and upload a directory;
 - inspect a candidate’s `SKILL.md` and complete file list;
 - publish a candidate;
@@ -277,18 +275,17 @@ Tailnet policy controls reachability. `README.md` defines daemon enrollment, per
 The prototype succeeds when:
 
 1. `ts-skillsd` persists registry state and is reachable by allowed Tailnet users.
-2. A user can upload one conforming skill as a ZIP.
-3. A user can upload the same skill through browser directory selection.
-4. Both forms produce the same digest when their paths and contents match.
-5. The registry shows the captured `SKILL.md`, complete file list, provenance, and digest before publication.
-6. Publishing makes the exact candidate available to the CLI.
-7. The first publication becomes current, and later current changes require an explicit action.
-8. `ts-skills` installs the current publication into an explicit project.
-9. An exact install and restore use the requested tree digest.
-10. The project lock contains one `(SkillID, TreeDigest)` entry per managed skill.
-11. Changing the current publication does not change an existing lock.
-12. Corrupt or mismatched content fails before replacing a valid installation or lock.
-13. Upload, review, download, and installation execute none of the skill’s content.
+2. A user can upload one conforming skill through browser directory selection.
+3. Repeated uploads produce the same digest when their paths and contents match.
+4. The registry shows the captured `SKILL.md`, complete file list, provenance, and digest before publication.
+5. Publishing makes the exact candidate available to the CLI.
+6. The first publication becomes current, and later current changes require an explicit action.
+7. `ts-skills` installs the current publication into an explicit project.
+8. An exact install and restore use the requested tree digest.
+9. The project lock contains one `(SkillID, TreeDigest)` entry per managed skill.
+10. Changing the current publication does not change an existing lock.
+11. Corrupt or mismatched content fails before replacing a valid installation or lock.
+12. Upload, review, download, and installation execute none of the skill’s content.
 
 ## Out of scope for the prototype
 
@@ -512,13 +509,13 @@ It does not establish:
 - upload handling;
 - HTTP routes or wire structs;
 - web framework or templates;
-- ZIP extraction;
+- publication ZIP download or extraction;
 - lock or config codecs;
 - installation transactions;
 - `tsnet` startup;
 - final package boundaries.
 
-The next functional slice should exercise one in-process path: staged directory → candidate → publication → current resolution → explicit project installation → locked selection. ZIP, web, persistence, and Tailnet adapters then wrap behavior already proven in that path.
+The next functional slice should exercise one in-process path: staged directory → candidate → publication → current resolution → explicit project installation → locked selection. Publication ZIP download, web, persistence, and Tailnet adapters then wrap behavior already proven in that path.
 
 ## Resolved implementation choices
 
@@ -527,7 +524,7 @@ The executor plan resolves the prototype choices that this specification first l
 - strict NFKC namespace grammar;
 - one user config and one project digest lock in TOML;
 - project installation under `.agents/skills`;
-- rootless or one-wrapper ZIP input and browser directory manifests;
+- browser directory manifests for upload and rootless ZIP archives for publication download;
 - fixed request, expanded-tree, file, path, and depth limits;
 - SQLite facts plus immutable digest-addressed tree directories;
 - escaped `SKILL.md`, complete file list, provenance, and digest review;

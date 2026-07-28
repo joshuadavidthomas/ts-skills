@@ -209,14 +209,13 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 	provenance := candidate.Provenance()
 	result, err := c.db.ExecContext(ctx, `
 		INSERT INTO candidates(
-			id, namespace, name, tree_digest, source_kind, source_label,
+			id, namespace, name, tree_digest, source_label,
 			submitted_actor_id, submitted_actor_display, submitted_at_ns
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
 		candidateIDBlob(candidate.ID()),
 		candidate.Skill().Namespace().String(),
 		candidate.Skill().Name().String(),
 		digestBlob(candidate.Tree()),
-		int64(provenance.Source().Kind()),
 		provenance.Source().Label(),
 		provenance.SubmittedBy().ID(),
 		provenance.SubmittedBy().Display(),

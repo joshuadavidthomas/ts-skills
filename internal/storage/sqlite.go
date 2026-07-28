@@ -11,7 +11,7 @@ import (
 	"modernc.org/sqlite"
 )
 
-const schemaVersion = 1
+const schemaVersion = 2
 
 const schema = `
 CREATE TABLE candidates(
@@ -19,7 +19,6 @@ CREATE TABLE candidates(
   namespace TEXT NOT NULL,
   name TEXT NOT NULL,
   tree_digest BLOB NOT NULL CHECK(length(tree_digest) = 32),
-  source_kind INTEGER NOT NULL,
   source_label TEXT NOT NULL,
   submitted_actor_id TEXT NOT NULL,
   submitted_actor_display TEXT NOT NULL,
@@ -111,7 +110,7 @@ func initializeSchema(ctx context.Context, db *sql.DB) (_ error) {
 	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("create registry schema: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 1`); err != nil {
+	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
 		return fmt.Errorf("set registry schema version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

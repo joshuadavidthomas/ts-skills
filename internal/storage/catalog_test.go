@@ -49,7 +49,7 @@ func newFixture(t *testing.T, instructions, asset string) catalogFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source, err := registry.NewUploadSource(registry.UploadDirectory, "sample")
+	source, err := registry.NewUploadSource("sample")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,8 +111,8 @@ func TestCatalogPersistsFactsTreesAndTransitionsAcrossRestart(t *testing.T) {
 	if stored.ID() != first.ID() || stored.Skill() != first.Skill() || stored.Tree() != first.Tree() {
 		t.Fatalf("stored candidate = %#v, want %#v", stored, first)
 	}
-	if stored.Provenance().Source().Kind() != registry.UploadDirectory || stored.Provenance().Source().Label() != "sample" ||
-		stored.Provenance().SubmittedBy() != firstFixture.actor || !stored.Provenance().SubmittedAt().Equal(first.Provenance().SubmittedAt()) {
+	if stored.Provenance().Source().Label() != "sample" || stored.Provenance().SubmittedBy() != firstFixture.actor ||
+		!stored.Provenance().SubmittedAt().Equal(first.Provenance().SubmittedAt()) {
 		t.Fatalf("stored provenance = %#v, want %#v", stored.Provenance(), first.Provenance())
 	}
 
@@ -469,14 +469,14 @@ func TestOpenCatalogRejectsUnknownSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`PRAGMA user_version = 2`); err != nil {
+	if _, err := db.Exec(`PRAGMA user_version = 3`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := OpenCatalog(context.Background(), state); err == nil {
-		t.Fatal("OpenCatalog accepted schema version 2")
+		t.Fatal("OpenCatalog accepted schema version 3")
 	}
 	catalog := openCatalogAfterResetVersion(t, state, databasePath)
 	closeCatalog(t, catalog)

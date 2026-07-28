@@ -82,7 +82,7 @@ The client machine must itself be on the tailnet and allowed by policy to reach 
 
 Use machine A for curation and machine B for installation.
 
-1. On A, open `https://ts-skillsd.example-tailnet.ts.net/upload`, upload [`examples/example-skill`](../examples/example-skill) under namespace `team`, review it, and publish. Uploading the same files as a ZIP and as a browser-selected directory should show the same digest.
+1. On A, open `https://ts-skillsd.example-tailnet.ts.net/upload`, select [`examples/example-skill`](../examples/example-skill) under namespace `team`, review it, and publish. Selecting the same directory again should show the same digest.
 2. On B, install it into a scratch project:
 
    ```console

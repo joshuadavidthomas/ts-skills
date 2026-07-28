@@ -15,7 +15,7 @@ import (
 
 func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id registry.CandidateID) (registry.Candidate, error) {
 	row := queryRow(ctx, `
-		SELECT id, namespace, name, tree_digest, source_kind, source_label,
+		SELECT id, namespace, name, tree_digest, source_label,
 		       submitted_actor_id, submitted_actor_display, submitted_at_ns
 		FROM candidates WHERE id = ?`, candidateIDBlob(id))
 	candidate, err := scanCandidate(row)
@@ -33,10 +33,10 @@ func scanCandidate(row *sql.Row) (registry.Candidate, error) {
 		idBlob, digestBlob                   []byte
 		namespaceText, nameText, sourceLabel string
 		actorID, actorDisplay                string
-		sourceKind, submittedAtNanoseconds   int64
+		submittedAtNanoseconds               int64
 	)
 	if err := row.Scan(
-		&idBlob, &namespaceText, &nameText, &digestBlob, &sourceKind, &sourceLabel,
+		&idBlob, &namespaceText, &nameText, &digestBlob, &sourceLabel,
 		&actorID, &actorDisplay, &submittedAtNanoseconds,
 	); err != nil {
 		return registry.Candidate{}, err
@@ -53,7 +53,7 @@ func scanCandidate(row *sql.Row) (registry.Candidate, error) {
 	if err != nil {
 		return registry.Candidate{}, err
 	}
-	source, err := registry.NewUploadSource(registry.UploadKind(sourceKind), sourceLabel)
+	source, err := registry.NewUploadSource(sourceLabel)
 	if err != nil {
 		return registry.Candidate{}, fmt.Errorf("decode candidate source: %w", err)
 	}

@@ -247,7 +247,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaType, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "multipart/form-data" || parameters["boundary"] == "" {
-		h.renderError(w, http.StatusBadRequest, "Upload format is invalid", "Submit the ZIP or directory from the upload page.")
+		h.renderError(w, http.StatusBadRequest, "Upload format is invalid", "Submit the directory from the upload page.")
 		return
 	}
 	body := multipart.NewReader(r.Body, parameters["boundary"])
@@ -263,43 +263,23 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	part, nextErr := body.NextPart()
 	if nextErr != nil {
-		h.handleError(w, malformedRequest("a skill upload part must follow namespace", nextErr))
+		h.handleError(w, malformedRequest("a directory manifest must follow namespace", nextErr))
 		return
 	}
-
-	var submission *upload.Submission
-	var kind registry.UploadKind
-	switch part.FormName() {
-	case "archive":
-		kind = registry.UploadZIP
-		if part.FileName() == "" {
-			h.handleError(w, malformedRequest("archive part must carry a filename", nil))
-			return
-		}
-		submission, err = upload.StageZIP(r.Context(), h.options.StagingParent, part, part.FileName(), h.options.Limits)
-		if err == nil {
-			if extra, nextErr := body.NextPart(); nextErr != io.EOF {
-				if nextErr == nil {
-					_ = extra.Close()
-				}
-				err = malformedRequest("ZIP upload contains an extra multipart part", nextErr)
-			}
-		}
-	case "manifest":
-		kind = registry.UploadDirectory
-		submission, err = upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, part, body, h.options.Limits)
-	default:
-		err = malformedRequest("skill upload must contain an archive or a directory manifest", nil)
+	if part.FormName() != "manifest" {
+		h.handleError(w, malformedRequest("skill upload must contain a directory manifest", nil))
+		return
 	}
+	submission, err := upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, part, body, h.options.Limits)
 	if err != nil {
 		h.handleError(w, err)
 		return
 	}
 	defer submission.Close()
 
-	source, err := registry.NewUploadSource(kind, submission.Label())
+	source, err := registry.NewUploadSource(submission.Label())
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the ZIP or selected directory and try again.")
+		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the selected directory and try again.")
 		return
 	}
 	provenance, err := registry.NewProvenance(source, identity.Actor, time.Now().UTC())

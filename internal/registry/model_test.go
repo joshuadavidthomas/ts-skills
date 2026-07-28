@@ -17,7 +17,7 @@ func testValues(t *testing.T) (SkillID, CandidateID, Actor, Provenance) {
 		t.Fatal(err)
 	}
 	actor, _ := NewActor("user:1", "Person")
-	source, _ := NewUploadSource(UploadZIP, "sample.zip")
+	source, _ := NewUploadSource("sample")
 	provenance, _ := NewProvenance(source, actor, time.Now())
 	return skill, candidate, actor, provenance
 }

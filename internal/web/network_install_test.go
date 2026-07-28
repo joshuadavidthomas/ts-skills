@@ -24,7 +24,7 @@ import (
 
 func publishWebCandidate(t *testing.T, fixture *webFixture, instructions string) string {
 	t.Helper()
-	candidatePath := fixture.uploadZIP(instructions)
+	candidatePath := fixture.uploadDirectory(instructions)
 	digest := digestPattern.FindString(fixture.get(candidatePath))
 	response := postForm(t, fixture, candidatePath+"/publish", nil)
 	_ = response.Body.Close()

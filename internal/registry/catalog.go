@@ -60,7 +60,7 @@ func NewCatalog(records CatalogRecords, stagingParent string, limits safetree.Li
 }
 
 func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidate, error) {
-	if request.Namespace.canonical == "" || request.Source == nil || request.Provenance.source.kind == 0 {
+	if request.Namespace.canonical == "" || request.Source == nil || request.Provenance.source.label == "" {
 		return Candidate{}, fmt.Errorf("capture requires namespace, source, and provenance")
 	}
 	snapshot, err := safetree.StageFS(ctx, c.stagingParent, request.Source, request.Root, c.limits)

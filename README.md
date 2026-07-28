@@ -4,7 +4,7 @@ A private [Agent Skills](docs/research/agentskills-spec.md) registry for your ta
 
 `ts-skillsd` serves a small web UI where tailnet users can browse skills and authorized curators can upload and publish them. `ts-skills` installs a published skill into a project and pins its exact content in a lock file.
 
-- **Content-addressed.** A publication is `namespace/name` plus the SHA-256 digest of its file tree, and is immutable once published. The same files always produce the same digest, whether uploaded as a ZIP or a browser-selected directory.
+- **Content-addressed.** A publication is `namespace/name` plus the SHA-256 digest of its file tree, and is immutable once published. Repeated browser-directory uploads of the same files produce the same digest.
 - **No accounts.** The daemon serves only through [tsnet](https://tailscale.com/kb/1244/tsnet), so every upload and publish action is attributed to the Tailnet identity that made it and curation is scoped by an ACL application capability; there are no passwords, tokens, or API keys.
 - **Reproducible installs.** `ts-skills install` writes the skill under `<project>/.agents/skills/<name>/` and records its digest in `<project>/.agents/ts-skills.lock`. `ts-skills restore` recreates exactly what the lock says, even after the registry's current publication moves on.
 
@@ -21,7 +21,7 @@ TS_SKILLSD_DEV=1 go run ./cmd/ts-skillsd
 Open <http://127.0.0.1:8080/upload> and publish the bundled example:
 
 1. Enter `team` as the namespace.
-2. Choose **Directory** and select [`examples/example-skill`](examples/example-skill).
+2. Select [`examples/example-skill`](examples/example-skill) as the skill directory.
 3. Stage it, review the file list and digest, and publish. The first publication automatically becomes current.
 
 Install it into a scratch project:

@@ -1,16 +1,10 @@
 const form = document.getElementById('upload-form');
 const zone = document.getElementById('dropzone');
-const archiveInput = document.getElementById('archive');
+const directoryInput = document.getElementById('directory');
 const summary = document.getElementById('source-summary');
 const status = document.getElementById('upload-status');
 
 let selection = null;
-
-function formatSize(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-}
 
 function reject(message) {
   selection = null;
@@ -18,23 +12,17 @@ function reject(message) {
   status.textContent = message;
 }
 
-function selectZIP(file) {
-  if (!file.name.toLowerCase().endsWith('.zip')) {
-    reject('That is not a ZIP archive or a directory.');
-    return;
-  }
-  selection = {kind: 'zip', file: file};
-  status.textContent = '';
-  summary.textContent = 'ZIP archive: ' + file.name + ' (' + formatSize(file.size) + ')';
-}
-
 function selectDirectory(root, files) {
-  if (files.length === 0) {
+  if (!root || files.length === 0) {
     reject('That directory is empty.');
     return;
   }
+  if (files.some((file) => !file.path || file.path.split('/')[0] !== root)) {
+    reject('That directory could not be read.');
+    return;
+  }
   files.sort((a, b) => a.path.localeCompare(b.path));
-  selection = {kind: 'directory', files: files};
+  selection = {files: files};
   status.textContent = '';
   summary.textContent = 'Directory: ' + root + '/ (' + files.length + (files.length === 1 ? ' file)' : ' files)');
 }
@@ -57,11 +45,13 @@ function walkEntry(entry, prefix, out) {
   return readAll();
 }
 
-zone.addEventListener('click', () => archiveInput.click());
+zone.addEventListener('click', () => directoryInput.click());
 
-archiveInput.addEventListener('change', () => {
-  if (archiveInput.files.length === 1) selectZIP(archiveInput.files[0]);
-  archiveInput.value = '';
+directoryInput.addEventListener('change', () => {
+  const files = Array.from(directoryInput.files, (file) => ({path: file.webkitRelativePath, file: file}));
+  const root = files.length === 0 ? '' : files[0].path.split('/')[0];
+  selectDirectory(root, files);
+  directoryInput.value = '';
 });
 
 ['dragover', 'dragenter'].forEach((name) => zone.addEventListener(name, (event) => {
@@ -76,41 +66,32 @@ zone.addEventListener('drop', (event) => {
   event.preventDefault();
   const items = event.dataTransfer.items;
   if (items.length !== 1) {
-    reject('Drop one ZIP archive or one directory.');
+    reject('Drop one skill directory.');
     return;
   }
   const item = items[0];
   const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
-  if (entry && entry.isDirectory) {
-    const files = [];
-    walkEntry(entry, '', files)
-      .then(() => selectDirectory(entry.name, files))
-      .catch(() => reject('That directory could not be read.'));
+  if (!entry || !entry.isDirectory) {
+    reject('Drop a skill directory (not a ZIP).');
     return;
   }
-  const file = item.getAsFile();
-  if (!file) {
-    reject('Drop one ZIP archive or one directory.');
-    return;
-  }
-  selectZIP(file);
+  const files = [];
+  walkEntry(entry, '', files)
+    .then(() => selectDirectory(entry.name, files))
+    .catch(() => reject('That directory could not be read.'));
 });
 
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
   if (!selection) {
-    status.textContent = 'Choose a ZIP archive or drop a directory first.';
+    status.textContent = 'Choose or drop a skill directory first.';
     return;
   }
   const data = new FormData();
   data.append('namespace', form.elements.namespace.value);
-  if (selection.kind === 'zip') {
-    data.append('archive', selection.file, selection.file.name);
-  } else {
-    const manifest = selection.files.map((file, index) => ({index: index, path: file.path, size: file.file.size}));
-    data.append('manifest', JSON.stringify(manifest));
-    selection.files.forEach((file, index) => data.append('file-' + index, file.file, file.file.name));
-  }
+  const manifest = selection.files.map((file, index) => ({index: index, path: file.path, size: file.file.size}));
+  data.append('manifest', JSON.stringify(manifest));
+  selection.files.forEach((file, index) => data.append('file-' + index, file.file, file.file.name));
   status.textContent = 'Uploading…';
   const response = await fetch('/candidates', {
     method: 'POST',

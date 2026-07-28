@@ -39,7 +39,7 @@ type SkillSummary struct {
 }
 
 func NewCandidate(id CandidateID, skill SkillID, tree agentskill.TreeDigest, provenance Provenance) (Candidate, error) {
-	if id == (CandidateID{}) || skill.String() == "" || provenance.source.kind == 0 {
+	if id == (CandidateID{}) || skill.String() == "" || provenance.source.label == "" {
 		return Candidate{}, fmt.Errorf("candidate requires valid identity, skill, and provenance")
 	}
 	return Candidate{id: id, skill: skill, tree: tree, provenance: provenance}, nil

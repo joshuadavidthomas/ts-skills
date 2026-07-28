@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -679,29 +678,19 @@ func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
 		t.Fatalf("upload page did not provide CSRF material: token=%q cookies=%v", token, cookies)
 	}
 
-	var archive bytes.Buffer
-	zipWriter := zip.NewWriter(&archive)
-	entry, err := zipWriter.Create("SKILL.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.WriteString(entry, "---\nname: sample\ndescription: Dev mode test\n---\nInstructions.\n"); err != nil {
-		t.Fatal(err)
-	}
-	if err := zipWriter.Close(); err != nil {
-		t.Fatal(err)
-	}
-
 	var form bytes.Buffer
 	formWriter := multipart.NewWriter(&form)
 	if err := formWriter.WriteField("namespace", "team"); err != nil {
 		t.Fatal(err)
 	}
-	filePart, err := formWriter.CreateFormFile("archive", "sample.zip")
+	if err := formWriter.WriteField("manifest", `[{"index":0,"path":"sample/SKILL.md","size":62}]`); err != nil {
+		t.Fatal(err)
+	}
+	filePart, err := formWriter.CreateFormFile("file-0", "SKILL.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := filePart.Write(archive.Bytes()); err != nil {
+	if _, err := io.WriteString(filePart, "---\nname: sample\ndescription: Dev mode test\n---\nInstructions.\n"); err != nil {
 		t.Fatal(err)
 	}
 	if err := formWriter.Close(); err != nil {

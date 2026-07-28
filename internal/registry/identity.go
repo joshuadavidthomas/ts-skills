@@ -38,15 +38,7 @@ type PublicationID struct {
 	tree  agentskill.TreeDigest
 }
 
-type UploadKind uint8
-
-const (
-	UploadZIP UploadKind = iota + 1
-	UploadDirectory
-)
-
 type UploadSource struct {
-	kind  UploadKind
 	label string
 }
 
@@ -164,21 +156,20 @@ func NewActor(id, display string) (Actor, error) {
 func (a Actor) ID() string      { return a.id }
 func (a Actor) Display() string { return a.display }
 
-func NewUploadSource(kind UploadKind, label string) (UploadSource, error) {
-	if kind != UploadZIP && kind != UploadDirectory {
-		return UploadSource{}, fmt.Errorf("unknown upload kind %d", kind)
-	}
+func NewUploadSource(label string) (UploadSource, error) {
 	if err := validateBoundedText("upload source label", label); err != nil {
 		return UploadSource{}, err
 	}
-	return UploadSource{kind: kind, label: label}, nil
+	if label == "" {
+		return UploadSource{}, fmt.Errorf("upload source label must not be empty")
+	}
+	return UploadSource{label: label}, nil
 }
 
-func (s UploadSource) Kind() UploadKind { return s.kind }
-func (s UploadSource) Label() string    { return s.label }
+func (s UploadSource) Label() string { return s.label }
 
 func NewProvenance(source UploadSource, actor Actor, submittedAt time.Time) (Provenance, error) {
-	if source.kind == 0 || actor.id == "" || submittedAt.IsZero() {
+	if source.label == "" || actor.id == "" || submittedAt.IsZero() {
 		return Provenance{}, fmt.Errorf("provenance requires source, actor, and submission time")
 	}
 	return Provenance{source: source, submittedBy: actor, submittedAt: canonicalTime(submittedAt)}, nil

@@ -177,27 +177,16 @@ func multipartRequest(t *testing.T, target string, parts []formPart) *http.Reque
 	return request
 }
 
-func skillZIP(t *testing.T, instructions string) []byte {
-	t.Helper()
-	var body bytes.Buffer
-	writer := zip.NewWriter(&body)
-	files := map[string]string{
-		"SKILL.md":            "---\nname: sample\ndescription: Web test\n---\n" + instructions,
-		"assets/<script>.txt": "inert asset",
+func skillDirectoryParts(instructions string) []formPart {
+	skill := "---\nname: sample\ndescription: Web test\n---\n" + instructions
+	asset := "inert asset"
+	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/<script>.txt","size":%d}]`, len(skill), len(asset))
+	return []formPart{
+		{name: "namespace", body: []byte("team")},
+		{name: "manifest", body: []byte(manifest)},
+		{name: "file-0", filename: "SKILL.md", body: []byte(skill)},
+		{name: "file-1", filename: "not-the-path.txt", body: []byte(asset)},
 	}
-	for name, contents := range files {
-		entry, err := writer.Create(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := io.WriteString(entry, contents); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return body.Bytes()
 }
 
 func (f *webFixture) do(request *http.Request, csrf bool) *http.Response {
@@ -213,12 +202,9 @@ func (f *webFixture) do(request *http.Request, csrf bool) *http.Response {
 	return response
 }
 
-func (f *webFixture) uploadZIP(instructions string) string {
+func (f *webFixture) uploadDirectory(instructions string) string {
 	f.t.Helper()
-	request := multipartRequest(f.t, f.server.URL+"/candidates", []formPart{
-		{name: "namespace", body: []byte("team")},
-		{name: "archive", filename: "sample.zip", body: skillZIP(f.t, instructions)},
-	})
+	request := multipartRequest(f.t, f.server.URL+"/candidates", skillDirectoryParts(instructions))
 	response := f.do(request, true)
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther {
@@ -284,7 +270,7 @@ func TestStaticAssetsAreServedAheadOfCatalogCatchAll(t *testing.T) {
 
 func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	fixture := newWebFixture(t)
-	firstPath := fixture.uploadZIP("<script>globalThis.pwned = true</script>\n")
+	firstPath := fixture.uploadDirectory("<script>globalThis.pwned = true</script>\n")
 	firstReview := fixture.get(firstPath)
 	if strings.Contains(firstReview, "<script>globalThis.pwned") {
 		t.Fatal("imported SKILL.md rendered as active script")
@@ -309,7 +295,7 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 		t.Fatalf("published catalog missing first current: %s", catalog)
 	}
 
-	secondPath := fixture.uploadZIP("Second inert revision.\n")
+	secondPath := fixture.uploadDirectory("Second inert revision.\n")
 	secondReview := fixture.get(secondPath)
 	secondDigest := digestPattern.FindString(secondReview)
 	if secondDigest == "" || secondDigest == firstDigest {
@@ -337,14 +323,14 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 
 func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	fixture := newWebFixture(t)
-	publishedPath := fixture.uploadZIP("Published for read-only access.\n")
+	publishedPath := fixture.uploadDirectory("Published for read-only access.\n")
 	digest := digestPattern.FindString(fixture.get(publishedPath))
 	response := postForm(t, fixture, publishedPath+"/publish", nil)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("publish fixture candidate status = %d", response.StatusCode)
 	}
-	unpublishedPath := fixture.uploadZIP("Unpublished for permission check.\n")
+	unpublishedPath := fixture.uploadDirectory("Unpublished for permission check.\n")
 
 	fixture.resolver.identity.CanCurate = false
 	readPaths := []string{
@@ -357,10 +343,7 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 		fixture.get(path)
 	}
 
-	uploadRequest := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
-		{name: "namespace", body: []byte("team")},
-		{name: "archive", filename: "sample.zip", body: skillZIP(t, "Denied upload.\n")},
-	})
+	uploadRequest := multipartRequest(t, fixture.server.URL+"/candidates", skillDirectoryParts("Denied upload.\n"))
 	mutations := map[string]func() *http.Response{
 		"create candidate":  func() *http.Response { return fixture.do(uploadRequest, true) },
 		"publish candidate": func() *http.Response { return postForm(t, fixture, unpublishedPath+"/publish", nil) },
@@ -389,7 +372,7 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 
 func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T) {
 	fixture := newWebFixture(t)
-	candidatePath := fixture.uploadZIP("Download route.\n")
+	candidatePath := fixture.uploadDirectory("Download route.\n")
 	digest := digestPattern.FindString(fixture.get(candidatePath))
 	response := postForm(t, fixture, candidatePath+"/publish", nil)
 	_ = response.Body.Close()
@@ -437,33 +420,9 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	}
 }
 
-func TestEquivalentZIPAndDirectoryUploadsHaveSameReviewDigest(t *testing.T) {
-	fixture := newWebFixture(t)
-	zipPath := fixture.uploadZIP("Equivalent.\n")
-	zipDigest := digestPattern.FindString(fixture.get(zipPath))
-	skill := "---\nname: sample\ndescription: Web test\n---\nEquivalent.\n"
-	asset := "inert asset"
-	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/<script>.txt","size":%d}]`, len(skill), len(asset))
-	request := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
-		{name: "namespace", body: []byte("team")},
-		{name: "manifest", body: []byte(manifest)},
-		{name: "file-0", filename: "SKILL.md", body: []byte(skill)},
-		{name: "file-1", filename: "not-the-path.txt", body: []byte(asset)},
-	})
-	response := fixture.do(request, true)
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("directory upload status = %d", response.StatusCode)
-	}
-	directoryDigest := digestPattern.FindString(fixture.get(response.Header.Get("Location")))
-	if zipDigest != directoryDigest {
-		t.Fatalf("ZIP digest %s != directory digest %s", zipDigest, directoryDigest)
-	}
-}
-
 func TestPublishedCurationSurvivesStorageAndHandlerRestart(t *testing.T) {
 	fixture := newWebFixture(t)
-	candidatePath := fixture.uploadZIP("Persist across restart.\n")
+	candidatePath := fixture.uploadDirectory("Persist across restart.\n")
 	review := fixture.get(candidatePath)
 	digest := digestPattern.FindString(review)
 	response := postForm(t, fixture, candidatePath+"/publish", nil)
@@ -485,7 +444,7 @@ func TestPublishedCurationSurvivesStorageAndHandlerRestart(t *testing.T) {
 
 func TestSkillDetailPageShowsCurrentPublication(t *testing.T) {
 	fixture := newWebFixture(t)
-	candidatePath := fixture.uploadZIP("Detail page instructions.\n")
+	candidatePath := fixture.uploadDirectory("Detail page instructions.\n")
 	digest := digestPattern.FindString(fixture.get(candidatePath))
 	response := postForm(t, fixture, candidatePath+"/publish", nil)
 	_ = response.Body.Close()
@@ -532,17 +491,14 @@ func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {
 
 func TestUploadRequiresCSRFAndExactMultipartOrder(t *testing.T) {
 	fixture := newWebFixture(t)
-	validParts := []formPart{
-		{name: "namespace", body: []byte("team")},
-		{name: "archive", filename: "sample.zip", body: skillZIP(t, "Safe.\n")},
-	}
+	validParts := skillDirectoryParts("Safe.\n")
 	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", validParts), false)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("missing CSRF status = %d", response.StatusCode)
 	}
 
-	reordered := []formPart{validParts[1], validParts[0]}
+	reordered := append([]formPart{validParts[1], validParts[0]}, validParts[2:]...)
 	response = fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", reordered), true)
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
