@@ -66,6 +66,8 @@ csrf.key           persistent CSRF key (0600)
 tsnet/             embedded-node keys and state
 ```
 
+On startup the daemon migrates `registry.sqlite` forward to its current schema automatically; a database from a *newer* daemon is refused rather than modified.
+
 Treat `tsnet/tailscaled.state` like a private key: it *is* the machine identity. Never point two live daemons at the same state directory, and never copy it to a second machine. Losing it means enrolling again with a new key.
 
 ## Configure clients

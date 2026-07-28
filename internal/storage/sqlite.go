@@ -11,14 +11,16 @@ import (
 	"modernc.org/sqlite"
 )
 
-const schemaVersion = 2
-
-const schema = `
+// migrations[i] moves the schema from version i to version i+1. Migration
+// bodies are frozen history: fix schema mistakes by appending, never editing.
+var migrations = [...]string{
+	0: `
 CREATE TABLE candidates(
   id BLOB PRIMARY KEY CHECK(length(id) = 16),
   namespace TEXT NOT NULL,
   name TEXT NOT NULL,
   tree_digest BLOB NOT NULL CHECK(length(tree_digest) = 32),
+  source_kind INTEGER NOT NULL,
   source_label TEXT NOT NULL,
   submitted_actor_id TEXT NOT NULL,
   submitted_actor_display TEXT NOT NULL,
@@ -50,7 +52,11 @@ CREATE TABLE current_publications(
   FOREIGN KEY(namespace, name, tree_digest)
     REFERENCES publications(namespace, name, tree_digest)
 );
-`
+`,
+	1: `ALTER TABLE candidates DROP COLUMN source_kind;`,
+}
+
+const schemaVersion = len(migrations)
 
 func openDatabase(ctx context.Context, databasePath string) (_ *sql.DB, err error) {
 	values := make(url.Values)
@@ -87,36 +93,38 @@ func openDatabase(ctx context.Context, databasePath string) (_ *sql.DB, err erro
 	return db, nil
 }
 
-func initializeSchema(ctx context.Context, db *sql.DB) (_ error) {
+func initializeSchema(ctx context.Context, db *sql.DB) error {
 	var version int
 	if err := db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
 		return fmt.Errorf("read registry schema version: %w", err)
 	}
-	switch version {
-	case schemaVersion:
-		return verifyPragmas(ctx, db)
-	case 0:
-	case -1:
-		fallthrough
-	default:
+	if version < 0 || version > schemaVersion {
 		return fmt.Errorf("unsupported registry schema version %d", version)
 	}
+	for ; version < schemaVersion; version++ {
+		if err := applyMigration(ctx, db, version); err != nil {
+			return err
+		}
+	}
+	return verifyPragmas(ctx, db)
+}
 
+func applyMigration(ctx context.Context, db *sql.DB, from int) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin registry schema transaction: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, schema); err != nil {
-		return fmt.Errorf("create registry schema: %w", err)
+	if _, err := tx.ExecContext(ctx, migrations[from]); err != nil {
+		return fmt.Errorf("migrate registry schema from version %d to %d: %w", from, from+1, err)
 	}
-	if _, err := tx.ExecContext(ctx, `PRAGMA user_version = 2`); err != nil {
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`PRAGMA user_version = %d`, from+1)); err != nil {
 		return fmt.Errorf("set registry schema version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit registry schema: %w", err)
 	}
-	return verifyPragmas(ctx, db)
+	return nil
 }
 
 func verifyPragmas(ctx context.Context, db *sql.DB) error {

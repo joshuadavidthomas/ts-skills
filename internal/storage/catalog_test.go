@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -460,6 +461,68 @@ func TestOpenCatalogRequiresPrivateRealStateDirectory(t *testing.T) {
 			t.Fatal("OpenCatalog accepted a regular-file state path")
 		}
 	})
+}
+
+func TestOpenCatalogMigratesVersion1State(t *testing.T) {
+	state := t.TempDir()
+	databasePath := filepath.Join(state, "registry.sqlite")
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newFixture(t, "# Migrated\n", "asset")
+	candidate := fixture.candidate(t)
+	provenance := candidate.Provenance()
+	if _, err := db.Exec(migrations[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO candidates(
+			id, namespace, name, tree_digest, source_kind, source_label,
+			submitted_actor_id, submitted_actor_display, submitted_at_ns
+		) VALUES(?, ?, ?, ?, 2, ?, ?, ?, ?)`,
+		candidateIDBlob(candidate.ID()),
+		candidate.Skill().Namespace().String(),
+		candidate.Skill().Name().String(),
+		digestBlob(candidate.Tree()),
+		provenance.Source().Label(),
+		provenance.SubmittedBy().ID(),
+		provenance.SubmittedBy().Display(),
+		provenance.SubmittedAt().UnixNano(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog := openCatalog(t, state)
+	defer closeCatalog(t, catalog)
+	ctx := context.Background()
+	var version int
+	if err := catalog.db.QueryRowContext(ctx, `PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != schemaVersion {
+		t.Fatalf("schema version after migration = %d, want %d", version, schemaVersion)
+	}
+	migrated, err := catalog.Candidate(ctx, candidate.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated.Provenance().Source().Label() != provenance.Source().Label() {
+		t.Fatalf("migrated source label = %q", migrated.Provenance().Source().Label())
+	}
+	var tableSQL string
+	if err := catalog.db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name = 'candidates'`).Scan(&tableSQL); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(tableSQL, "source_kind") {
+		t.Fatal("source_kind survived migration")
+	}
 }
 
 func TestOpenCatalogRejectsUnknownSchema(t *testing.T) {
