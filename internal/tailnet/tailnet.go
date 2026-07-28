@@ -36,7 +36,7 @@ type ActorResolver struct {
 
 func NewActorResolver(client *local.Client) (*ActorResolver, error) {
 	if client == nil {
-		return nil, fmt.Errorf("Tailnet LocalAPI client must be provided")
+		return nil, fmt.Errorf("tailnet LocalAPI client must be provided")
 	}
 	return &ActorResolver{local: client}, nil
 }
@@ -166,7 +166,7 @@ func (s *Server) Listener() net.Listener {
 
 func (s *Server) LocalClient() (*local.Client, error) {
 	if s == nil || s.server == nil {
-		return nil, fmt.Errorf("Tailnet server is unavailable")
+		return nil, fmt.Errorf("tailnet server is unavailable")
 	}
 	client, err := s.server.LocalClient()
 	if err != nil {

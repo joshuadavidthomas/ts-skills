@@ -21,7 +21,7 @@ func ParseTreeDigest(src string) (TreeDigest, error) {
 	}
 	hexPart := src[len("sha256:"):]
 	for _, ch := range hexPart {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			return digest, newValidationError(ErrInvalidTreeDigest, "digest", "must use lowercase hexadecimal digits")
 		}
 	}

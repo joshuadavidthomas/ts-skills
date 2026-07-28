@@ -170,7 +170,7 @@ func normalizeConfig(config Config) (Config, error) {
 		return Config{}, fmt.Errorf("TS_SKILLSD_TAG must have the form tag:name using letters, numbers, and hyphens")
 	}
 	if strings.IndexFunc(config.AuthKey, unicode.IsControl) >= 0 {
-		return Config{}, fmt.Errorf("Tailnet auth key contains a control character")
+		return Config{}, fmt.Errorf("tailnet auth key contains a control character")
 	}
 	return config, nil
 }
@@ -641,6 +641,7 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	return errors.Join(syncErr, closeErr)
 }

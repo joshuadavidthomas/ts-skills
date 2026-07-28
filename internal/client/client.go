@@ -110,7 +110,7 @@ func (r *Remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (re
 	if err != nil {
 		return registry.PublicationID{}, fmt.Errorf("resolve current publication: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return registry.PublicationID{}, r.responseError(response)
 	}
@@ -180,7 +180,7 @@ func (r *Remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 		return install.FetchedSkill{}, fmt.Errorf("create download staging file: %w", err)
 	}
 	spoolName := spool.Name()
-	defer os.Remove(spoolName)
+	defer func() { _ = os.Remove(spoolName) }()
 	written, copyErr := io.Copy(spool, io.LimitReader(response.Body, r.maxZIPBytes+1))
 	closeErr := spool.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {

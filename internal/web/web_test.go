@@ -206,7 +206,7 @@ func (f *webFixture) uploadDirectory(instructions string) string {
 	f.t.Helper()
 	request := multipartRequest(f.t, f.server.URL+"/candidates", skillDirectoryParts(instructions))
 	response := f.do(request, true)
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusSeeOther {
 		body, _ := io.ReadAll(response.Body)
 		f.t.Fatalf("upload status = %d: %s", response.StatusCode, body)
@@ -221,7 +221,7 @@ func (f *webFixture) get(path string) string {
 		f.t.Fatal(err)
 	}
 	response := f.do(request, false)
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		f.t.Fatal(err)

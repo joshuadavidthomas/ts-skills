@@ -67,7 +67,7 @@ func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidat
 	if err != nil {
 		return Candidate{}, fmt.Errorf("capture candidate tree: %w", err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	directory, err := agentskill.Load(snapshot.FS(), request.Root)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)

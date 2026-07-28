@@ -74,7 +74,7 @@ func TestBrowserDirectoryStagesCompleteTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer submission.Close()
+	defer func() { _ = submission.Close() }()
 	if submission.Root() != "sample" || submission.Label() != "sample" {
 		t.Fatalf("directory root/label = %q/%q", submission.Root(), submission.Label())
 	}

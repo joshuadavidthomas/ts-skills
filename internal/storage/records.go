@@ -176,7 +176,7 @@ func (c *Catalog) ListPublishedSkills(ctx context.Context) ([]registry.SkillSumm
 	if err != nil {
 		return nil, fmt.Errorf("list published skills: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var summaries []registry.SkillSummary
 	for rows.Next() {

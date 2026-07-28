@@ -114,7 +114,7 @@ func applyMigration(ctx context.Context, db *sql.DB, from int) error {
 	if err != nil {
 		return fmt.Errorf("begin registry schema transaction: %w", err)
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, migrations[from]); err != nil {
 		return fmt.Errorf("migrate registry schema from version %d to %d: %w", from, from+1, err)
 	}

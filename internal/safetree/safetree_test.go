@@ -15,7 +15,7 @@ func TestBuilderRejectsPathsAndCollisionsBeforeWriting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer builder.Close()
+	defer func() { _ = builder.Close() }()
 	for _, name := range []string{"../escape", "/absolute", "a\\b", "a//b", "."} {
 		if err := builder.AddFile(context.Background(), name, 1, bytes.NewReader([]byte("x"))); !errors.Is(err, ErrInvalidPath) {
 			t.Errorf("AddFile(%q) error = %v, want ErrInvalidPath", name, err)
@@ -43,7 +43,7 @@ func TestBuilderUsesActualBytesForLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer builder.Close()
+	defer func() { _ = builder.Close() }()
 	if err := builder.AddFile(context.Background(), "large", 1, bytes.NewReader([]byte("four"))); !errors.Is(err, ErrLimitExceeded) {
 		t.Fatalf("actual size error = %v, want ErrLimitExceeded", err)
 	}
@@ -226,7 +226,7 @@ func TestStageFSPreservesRootAndRejectsLinks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() { _ = snapshot.Close() }()
 	if got, err := fs.ReadFile(snapshot.FS(), "skill/SKILL.md"); err != nil || string(got) != "data" {
 		t.Fatalf("preserved root file = %q, %v", got, err)
 	}

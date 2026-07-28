@@ -128,7 +128,7 @@ func ParseCandidateID(src string) (CandidateID, error) {
 		return id, fmt.Errorf("candidate identity must contain 32 lowercase hexadecimal characters")
 	}
 	for _, ch := range src {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			return id, fmt.Errorf("candidate identity must use lowercase hexadecimal characters")
 		}
 	}

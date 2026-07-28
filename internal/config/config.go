@@ -38,7 +38,7 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("open config %q: %w", path, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var raw document
 	decoder := toml.NewDecoder(file)
 	decoder.DisallowUnknownFields()

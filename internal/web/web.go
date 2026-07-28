@@ -213,7 +213,7 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	selected, err := resolveTreeFile(tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this skill.")
@@ -283,7 +283,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	defer submission.Close()
+	defer func() { _ = submission.Close() }()
 
 	source, err := registry.NewUploadSource(submission.Label())
 	if err != nil {
@@ -336,7 +336,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, err)
 		return
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 	selected, err := resolveTreeFile(tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this candidate.")
@@ -478,7 +478,7 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, err)
 		return
 	}
-	defer tree.Close()
+	defer func() { _ = tree.Close() }()
 
 	archive, err := h.rootlessZIP(r.Context(), tree)
 	if err != nil {
