@@ -299,53 +299,45 @@ type runtime struct {
 	close    func() error
 }
 
-type runtimeFactory func(context.Context, Config) (*runtime, error)
-
 func Run(ctx context.Context, config Config) error {
-	return run(ctx, config, buildRuntime)
-}
-
-func RunDev(ctx context.Context, config DevConfig) error {
-	normalized, err := normalizeDevConfig(config)
-	if err != nil {
-		return err
-	}
-	factory := func(ctx context.Context, _ Config) (*runtime, error) {
-		return buildDevRuntime(ctx, normalized)
-	}
-	return run(ctx, Config{StateDir: normalized.StateDir, Hostname: defaultHostname}, factory)
-}
-
-func run(ctx context.Context, config Config, factory runtimeFactory) error {
-	return runWithHTTPShutdownTimeout(ctx, config, factory, shutdownTimeout)
-}
-
-func runWithHTTPShutdownTimeout(ctx context.Context, config Config, factory runtimeFactory, timeout time.Duration) error {
-	return runWithHandlerGate(ctx, config, factory, timeout, newHandlerGate(nil))
-}
-
-func runWithHandlerGate(ctx context.Context, config Config, factory runtimeFactory, timeout time.Duration, handlers *handlerGate) (err error) {
 	if ctx == nil {
 		return fmt.Errorf("run daemon: context must be provided")
 	}
-	config, err = normalizeConfig(config)
+	config, err := normalizeConfig(config)
 	if err != nil {
 		return err
 	}
-	if factory == nil {
-		return fmt.Errorf("run daemon: runtime factory must be provided")
-	}
-
-	active, err := factory(ctx, config)
+	active, err := buildRuntime(ctx, config)
 	if err != nil {
 		return fmt.Errorf("build daemon runtime: %w", err)
 	}
-	if active == nil || active.listener == nil || active.handler == nil || active.close == nil {
-		if active != nil && active.close != nil {
-			return errors.Join(fmt.Errorf("build daemon runtime: factory returned an incomplete runtime"), active.close())
-		}
-		return fmt.Errorf("build daemon runtime: factory returned an incomplete runtime")
+	return serve(ctx, active)
+}
+
+func RunDev(ctx context.Context, config DevConfig) error {
+	if ctx == nil {
+		return fmt.Errorf("run daemon: context must be provided")
 	}
+	config, err := normalizeDevConfig(config)
+	if err != nil {
+		return err
+	}
+	active, err := buildDevRuntime(ctx, config)
+	if err != nil {
+		return fmt.Errorf("build daemon runtime: %w", err)
+	}
+	return serve(ctx, active)
+}
+
+func serve(ctx context.Context, active runtime) error {
+	return serveWithHTTPShutdownTimeout(ctx, active, shutdownTimeout)
+}
+
+func serveWithHTTPShutdownTimeout(ctx context.Context, active runtime, timeout time.Duration) error {
+	return serveWithHandlerGate(ctx, active, timeout, newHandlerGate(nil))
+}
+
+func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Duration, handlers *handlerGate) (err error) {
 	defer func() {
 		err = errors.Join(err, active.close())
 	}()
@@ -511,15 +503,11 @@ func openRegistryCore(ctx context.Context, stateDir string) (_ *storage.Catalog,
 	return records, catalog, csrfKey, nil
 }
 
-func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
-	config, err = normalizeConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
+// buildRuntime constructs the production runtime from normalized config.
+func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
-		return nil, err
+		return runtime{}, err
 	}
 	closeRecords := true
 	defer func() {
@@ -550,7 +538,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	}
 	tailServer, err := tailnet.ListenTLS(ctx, tailConfig)
 	if err != nil {
-		return nil, err
+		return runtime{}, err
 	}
 	closeTailnet := true
 	defer func() {
@@ -561,11 +549,11 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 
 	localClient, err := tailServer.LocalClient()
 	if err != nil {
-		return nil, err
+		return runtime{}, err
 	}
 	actors, err := tailnet.NewActorResolver(localClient)
 	if err != nil {
-		return nil, err
+		return runtime{}, err
 	}
 	handler, err := web.NewHandler(catalog, actors, web.Options{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
@@ -575,7 +563,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 		Logger:        logger,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)
+		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
 	}
 
 	cleanup := &runtimeCleanup{
@@ -584,22 +572,18 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 	}
 	closeTailnet = false
 	closeRecords = false
-	return &runtime{
+	return runtime{
 		listener: tailServer.Listener(),
 		handler:  handler,
 		close:    cleanup.close,
 	}, nil
 }
 
-func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err error) {
-	config, err = normalizeDevConfig(config)
-	if err != nil {
-		return nil, err
-	}
-
+// buildDevRuntime constructs the loopback runtime from normalized config.
+func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err error) {
 	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
-		return nil, err
+		return runtime{}, err
 	}
 	closeRecords := true
 	defer func() {
@@ -610,7 +594,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 
 	actor, err := registry.NewActor("dev", "dev@localhost")
 	if err != nil {
-		return nil, fmt.Errorf("construct dev actor: %w", err)
+		return runtime{}, fmt.Errorf("construct dev actor: %w", err)
 	}
 	handler, err := web.NewHandler(catalog, staticCuratorResolver{curator: registry.NewCurator(actor)}, web.Options{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
@@ -620,19 +604,19 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 		Logger:        slog.Default(),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct registry HTTP handler: %w", err)
+		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
 	}
 
 	listener, err := net.Listen("tcp", config.Listen)
 	if err != nil && config.EphemeralFallback && errors.Is(err, syscall.EADDRINUSE) {
 		host, _, splitErr := net.SplitHostPort(config.Listen)
 		if splitErr != nil {
-			return nil, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
+			return runtime{}, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
 		}
 		listener, err = net.Listen("tcp", net.JoinHostPort(host, "0"))
 	}
 	if err != nil {
-		return nil, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
+		return runtime{}, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)
 	}
 	if config.Started != nil {
 		config.Started(listener.Addr())
@@ -648,7 +632,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ *runtime, err err
 		closeStorage: records.Close,
 	}
 	closeRecords = false
-	return &runtime{
+	return runtime{
 		listener: listener,
 		handler:  handler,
 		close:    cleanup.close,

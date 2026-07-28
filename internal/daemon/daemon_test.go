@@ -66,7 +66,7 @@ func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
 	}
 }
 
-func TestRunBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
+func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -109,22 +109,16 @@ func TestRunBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 			return nil
 		},
 	}
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{
-			listener: listener,
-			handler:  handler,
-			close:    cleanup.close,
-		}, nil
+	active := runtime{
+		listener: listener,
+		handler:  handler,
+		close:    cleanup.close,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stateDir := t.TempDir()
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- runWithHTTPShutdownTimeout(ctx, Config{
-			StateDir: stateDir,
-			Hostname: "test-daemon",
-		}, factory, 20*time.Millisecond)
+		runResult <- serveWithHTTPShutdownTimeout(ctx, active, 20*time.Millisecond)
 	}()
 
 	responseResult := make(chan error, 1)
@@ -213,7 +207,7 @@ func TestRunBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 	}
 }
 
-func TestRunDrainsHandlerObservingRequestContext(t *testing.T) {
+func TestServeDrainsHandlerObservingRequestContext(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -251,22 +245,16 @@ func TestRunDrainsHandlerObservingRequestContext(t *testing.T) {
 			return nil
 		},
 	}
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{
-			listener: listener,
-			handler:  handler,
-			close:    cleanup.close,
-		}, nil
+	active := runtime{
+		listener: listener,
+		handler:  handler,
+		close:    cleanup.close,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stateDir := t.TempDir()
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- runWithHTTPShutdownTimeout(ctx, Config{
-			StateDir: stateDir,
-			Hostname: "test-daemon",
-		}, factory, 20*time.Millisecond)
+		runResult <- serveWithHTTPShutdownTimeout(ctx, active, 20*time.Millisecond)
 	}()
 
 	responseResult := make(chan error, 1)
@@ -333,7 +321,7 @@ func containsAll(events []string, wants ...string) bool {
 	return true
 }
 
-func TestRunRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
+func TestServeRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -355,28 +343,22 @@ func TestRunRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
 	gate.afterAdmission = func(admitted bool) { admissionResult <- admitted }
 	handlerCalled := make(chan struct{}, 1)
 	runtimeClosed := make(chan struct{})
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{
-			listener: baseListener,
-			handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				handlerCalled <- struct{}{}
-			}),
-			close: func() error {
-				close(runtimeClosed)
-				return nil
-			},
-		}, nil
+	active := runtime{
+		listener: baseListener,
+		handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			handlerCalled <- struct{}{}
+		}),
+		close: func() error {
+			close(runtimeClosed)
+			return nil
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stateDir := t.TempDir()
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- runWithHandlerGate(ctx, Config{
-			StateDir: stateDir,
-			Hostname: "test-daemon",
-		}, factory, 20*time.Millisecond, gate)
+		runResult <- serveWithHandlerGate(ctx, active, 20*time.Millisecond, gate)
 	}()
 
 	requestResult := make(chan error, 1)
@@ -467,7 +449,7 @@ func TestRuntimeCleanupRetriesFailedStorageClose(t *testing.T) {
 	}
 }
 
-func TestRunGracefullyStopsHTTPBeforeRuntimeCleanup(t *testing.T) {
+func TestServeGracefullyStopsHTTPBeforeRuntimeCleanup(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -495,23 +477,20 @@ func TestRunGracefullyStopsHTTPBeforeRuntimeCleanup(t *testing.T) {
 		record("handler-finished")
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{
-			listener: listener,
-			handler:  handler,
-			close: func() error {
-				record("runtime-closed")
-				close(runtimeClosed)
-				return nil
-			},
-		}, nil
+	active := runtime{
+		listener: listener,
+		handler:  handler,
+		close: func() error {
+			record("runtime-closed")
+			close(runtimeClosed)
+			return nil
+		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	stateDir := t.TempDir()
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- run(ctx, Config{StateDir: stateDir, Hostname: "test-daemon"}, factory)
+		runResult <- serve(ctx, active)
 	}()
 
 	responseResult := make(chan error, 1)
@@ -563,7 +542,7 @@ func TestRunGracefullyStopsHTTPBeforeRuntimeCleanup(t *testing.T) {
 	}
 }
 
-func TestRunClosesRuntimeAfterServeFailure(t *testing.T) {
+func TestServeClosesRuntimeAfterServeFailure(t *testing.T) {
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -575,37 +554,21 @@ func TestRunClosesRuntimeAfterServeFailure(t *testing.T) {
 	listener := &recordingListener{Listener: baseListener, onClose: func() {
 		events = append(events, "listener-closed")
 	}}
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{
-			listener: listener,
-			handler:  http.NotFoundHandler(),
-			close: func() error {
-				events = append(events, "runtime-closed")
-				return nil
-			},
-		}, nil
+	active := runtime{
+		listener: listener,
+		handler:  http.NotFoundHandler(),
+		close: func() error {
+			events = append(events, "runtime-closed")
+			return nil
+		},
 	}
 
-	err = run(context.Background(), Config{StateDir: t.TempDir(), Hostname: "test-daemon"}, factory)
+	err = serve(context.Background(), active)
 	if err == nil || !strings.Contains(err.Error(), "serve Tailnet HTTP") {
 		t.Fatalf("run error = %v, want serve failure", err)
 	}
 	if want := []string{"listener-closed", "runtime-closed"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("cleanup events = %v, want %v", events, want)
-	}
-}
-
-func TestRunClosesIncompleteRuntime(t *testing.T) {
-	closed := false
-	factory := func(context.Context, Config) (*runtime, error) {
-		return &runtime{close: func() error { closed = true; return nil }}, nil
-	}
-	err := run(context.Background(), Config{StateDir: t.TempDir(), Hostname: "test-daemon"}, factory)
-	if err == nil {
-		t.Fatal("run succeeded with an incomplete runtime")
-	}
-	if !closed {
-		t.Fatal("incomplete runtime was not closed")
 	}
 }
 
@@ -911,13 +874,20 @@ func TestPersistentCSRFKeyRejectsMalformedFile(t *testing.T) {
 	}
 }
 
-func TestRunReportsFactoryFailureWithoutCleanup(t *testing.T) {
-	factoryErr := errors.New("factory failed")
-	err := run(context.Background(), Config{StateDir: t.TempDir(), Hostname: "test-daemon"}, func(context.Context, Config) (*runtime, error) {
-		return nil, factoryErr
+func TestRunDevRejectsInvalidConfigBeforeRuntimeConstruction(t *testing.T) {
+	started := false
+	err := RunDev(context.Background(), DevConfig{
+		StateDir: t.TempDir(),
+		Listen:   "0.0.0.0:0",
+		Started: func(net.Addr) {
+			started = true
+		},
 	})
-	if !errors.Is(err, factoryErr) {
-		t.Fatalf("run error = %v, want factory failure", err)
+	if err == nil || !strings.Contains(err.Error(), "must use a loopback host") {
+		t.Fatalf("RunDev error = %v, want loopback validation failure", err)
+	}
+	if started {
+		t.Fatal("RunDev started a listener after rejecting its config")
 	}
 }
 

@@ -47,7 +47,7 @@ never reused or renumbered.)
 | 14 | [009](009-require-curator-authority.md) | Require a curator capability at every catalog mutation | M | — | DONE |
 | 15 | [013](013-put-archive-contract-in-protocol.md) | Rootless-ZIP contract into protocol; rejections through Fetch | M | — | DONE |
 | 16 | [014](014-own-tsnet-credentials-and-diagnostics.md) | Explicit tsnet credentials + diagnostics ownership | M | — (after 002, 006) | DONE |
-| 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | TODO |
+| 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | DONE |
 | 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | TODO |
 | 19 | [007](007-apply-portable-safetree-rules.md) | Apply Windows path restrictions on every platform | S | — (needs owner sign-off, see plan) | TODO |
 | 20 | [008](008-split-transaction-file.md) | Split internal/install/transaction.go by concern | M | 001, 004, 011, 015 | TODO |
@@ -79,6 +79,8 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 019 landed — `Run` and `RunDev` now validate their own mode, build a complete runtime, then hand it to `serve`. The factory seam, fabricated production config in dev mode, and serving-time incomplete-runtime check are gone. Builders take normalized configs and return runtime values; shared serving owns handler gating, shutdown, draining, and cleanup unchanged. Serving tests now build real complete runtimes directly, and a `RunDev` test proves invalid loopback configuration cannot start a listener. `go test -race ./internal/daemon/ -count=1`, `just build`, `rg "runtimeFactory" internal/daemon`, and `just check` passed. Deviation: none. Next: 020.
 
 - **2026-07-28**: 014 landed — production enrollment now resolves `TS_SKILLSD_AUTHKEY_FILE`, then `TS_AUTHKEY`, and only permits a credential-free start from an enrolled tsnet profile with a saved node key. On a first start it names unsupported tsnet credential inputs; after enrollment, daemon startup clears those inputs so tsnet cannot discover them. `ServerConfig` now carries diagnostics: daemon routes both backend and user status through its logger only when verbose, otherwise discards both. The adapter no longer changes process globals; `hostinfo.SetApp("ts-skillsd")` runs in the daemon binary. Deployment docs name the supported chain and rejected ambient inputs. Tests cover chain precedence, incomplete and enrolled state, ambient-input rules and cleanup, plus tsnet field/log mapping. `go test -race ./internal/daemon/ ./internal/tailnet/ -count=1`, `go build ./...` passed. Deviation: added `TSNET_FORCE_LOGIN` and `TS_CONTROL_URL` to the rejected inputs because each changes tsnet startup outside daemon configuration. Next: 019.
 
