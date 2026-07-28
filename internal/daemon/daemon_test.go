@@ -472,6 +472,7 @@ func TestConfigFromEnvReadsEnrollmentKeyOnce(t *testing.T) {
 	t.Setenv("TS_SKILLSD_HOSTNAME", "")
 	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", authKeyPath)
 	t.Setenv("TS_SKILLSD_TAG", "tag:skills-registry")
+	t.Setenv("TS_SKILLSD_VERBOSE", "true")
 
 	config, err := ConfigFromEnv()
 	if err != nil {
@@ -480,7 +481,7 @@ func TestConfigFromEnvReadsEnrollmentKeyOnce(t *testing.T) {
 	if config.StateDir != stateDir {
 		t.Fatalf("state directory = %q, want %q", config.StateDir, stateDir)
 	}
-	if config.Hostname != defaultHostname || config.AuthKey != "tskey-auth-test" || config.Tag != "tag:skills-registry" {
+	if config.Hostname != defaultHostname || config.AuthKey != "tskey-auth-test" || config.Tag != "tag:skills-registry" || !config.Verbose {
 		t.Fatalf("config = %#v", config)
 	}
 	if err := os.WriteFile(authKeyPath, []byte("changed"), 0o600); err != nil {
@@ -496,8 +497,28 @@ func TestConfigFromEnvRequiresStateDirectory(t *testing.T) {
 	t.Setenv("TS_SKILLSD_HOSTNAME", "")
 	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
 	t.Setenv("TS_SKILLSD_TAG", "")
+	t.Setenv("TS_SKILLSD_VERBOSE", "")
 	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TS_SKILLSD_STATE_DIR") {
 		t.Fatalf("ConfigFromEnv error = %v", err)
+	}
+}
+
+func TestConfigFromEnvParsesVerbose(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "0": false, "false": false, "1": true, "true": true} {
+		t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
+		t.Setenv("TS_SKILLSD_VERBOSE", value)
+		config, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("ConfigFromEnv with TS_SKILLSD_VERBOSE=%q: %v", value, err)
+		}
+		if config.Verbose != want {
+			t.Errorf("ConfigFromEnv with TS_SKILLSD_VERBOSE=%q: verbose = %v, want %v", value, config.Verbose, want)
+		}
+	}
+	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
+	t.Setenv("TS_SKILLSD_VERBOSE", "maybe")
+	if _, err := ConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TS_SKILLSD_VERBOSE") {
+		t.Errorf("ConfigFromEnv accepted a non-boolean TS_SKILLSD_VERBOSE: %v", err)
 	}
 }
 
@@ -579,14 +600,26 @@ func TestDevConfigFromEnvRefusesEnrollmentKey(t *testing.T) {
 	t.Setenv("TS_SKILLSD_DEV_LISTEN", "127.0.0.1:8080")
 	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
 	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", filepath.Join(t.TempDir(), "authkey"))
+	t.Setenv("TS_AUTHKEY", "")
 	if _, err := DevConfigFromEnv(); err == nil {
-		t.Fatal("dev config accepted an enrollment auth key")
+		t.Fatal("dev config accepted an enrollment auth key file")
+	}
+}
+
+func TestDevConfigFromEnvRefusesStandardEnrollmentKey(t *testing.T) {
+	t.Setenv("TS_SKILLSD_DEV_LISTEN", "127.0.0.1:8080")
+	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
+	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
+	t.Setenv("TS_AUTHKEY", "tskey-auth-test")
+	if _, err := DevConfigFromEnv(); err == nil || !strings.Contains(err.Error(), "TS_AUTHKEY") {
+		t.Fatalf("dev config accepted TS_AUTHKEY: %v", err)
 	}
 }
 
 func TestDevConfigFromEnvDefaultsToLoopbackListen(t *testing.T) {
 	t.Setenv("TS_SKILLSD_DEV_LISTEN", "")
 	t.Setenv("TS_SKILLSD_AUTHKEY_FILE", "")
+	t.Setenv("TS_AUTHKEY", "")
 	t.Setenv("TS_SKILLSD_STATE_DIR", t.TempDir())
 	config, err := DevConfigFromEnv()
 	if err != nil {

@@ -18,10 +18,14 @@ This project never modifies tailnet policy; ACLs, tags, and approval stay in you
 | --- | --- |
 | `TS_SKILLSD_STATE_DIR` | Required. Persistent state directory, private to one daemon process. |
 | `TS_SKILLSD_HOSTNAME` | Tailnet machine name. Default `ts-skillsd`. |
-| `TS_SKILLSD_AUTHKEY_FILE` | File containing a first-enrollment auth key. Only needed once. |
+| `TS_AUTHKEY` | Standard Tailscale first-enrollment auth key. Only needed once. |
+| `TS_SKILLSD_AUTHKEY_FILE` | File containing a first-enrollment auth key. Takes precedence over `TS_AUTHKEY`. |
 | `TS_SKILLSD_TAG` | Optional advertised tag, e.g. `tag:skills-registry`. |
+| `TS_SKILLSD_VERBOSE` | Enable embedded Tailscale backend logs for debugging. |
 
-For the first start, create a tagged, one-off, non-ephemeral auth key in the Tailscale admin console (pre-approved, if your tailnet uses device approval), and put it in a private file:
+For the first start, create a tagged, one-off, non-ephemeral auth key in the Tailscale admin console (pre-approved, if your tailnet uses device approval). tsnet reads the standard `TS_AUTHKEY` variable itself. For secret stores that deliver a file, set `TS_SKILLSD_AUTHKEY_FILE` instead; the file value takes precedence over `TS_AUTHKEY`.
+
+This example uses a private auth-key file:
 
 ```console
 install -d -m 0700 /var/lib/ts-skillsd
@@ -34,7 +38,7 @@ go run ./cmd/ts-skillsd
 
 Watch the log for enrollment, then check the Tailscale Machines page: confirm the machine name (a name collision adds a numeric suffix — use whatever full MagicDNS name was actually assigned), the tag, and approval state.
 
-After enrollment succeeds, stop the daemon, delete the auth-key file, unset `TS_SKILLSD_AUTHKEY_FILE`, and start it again. The node identity now lives in the state directory; later starts need no key.
+After enrollment succeeds, stop the daemon, delete the auth-key file, unset `TS_SKILLSD_AUTHKEY_FILE` or `TS_AUTHKEY`, and start it again. The node identity now lives in the state directory; later starts need no key.
 
 ### The state directory
 

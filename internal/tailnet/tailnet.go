@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skill-registry/internal/registry"
 	"tailscale.com/client/local"
+	"tailscale.com/hostinfo"
 	"tailscale.com/tsnet"
 )
 
@@ -76,6 +78,7 @@ type ServerConfig struct {
 	StateDir      string
 	AuthKey       string
 	AdvertiseTags []string
+	Verbose       bool
 }
 
 // Server owns one embedded Tailscale node and its Tailnet-only TLS listener.
@@ -103,7 +106,12 @@ func ListenTLS(ctx context.Context, config ServerConfig) (_ *Server, err error) 
 		Dir:           config.StateDir,
 		AuthKey:       config.AuthKey,
 		AdvertiseTags: append([]string(nil), config.AdvertiseTags...),
+		Logf:          func(string, ...any) {},
 	}
+	if config.Verbose {
+		ts.Logf = log.Printf
+	}
+	hostinfo.SetApp("ts-skillsd")
 	if err := ts.Start(); err != nil {
 		return nil, fmt.Errorf("start embedded Tailscale node: %w", err)
 	}

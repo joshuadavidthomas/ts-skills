@@ -47,7 +47,7 @@ Both modes run the identical storage, catalog, and web handler stack. They diffe
 | Listener | `tsnet` TLS on the Tailnet, port 443 | plain HTTP on loopback |
 | Actor | `WhoIs` on the accepted connection | constant `dev@localhost` |
 
-Dev mode never enrolls a Tailnet node, refuses to start if `TS_SKILLSD_AUTHKEY_FILE` is set, and rejects non-loopback listen addresses. It is a development convenience, not a deployment option — nothing about it weakens the deployed path, which still derives every actor from the Tailnet connection.
+Dev mode never enrolls a Tailnet node, refuses to start if `TS_SKILLSD_AUTHKEY_FILE` or `TS_AUTHKEY` is set, and rejects non-loopback listen addresses. It is a development convenience, not a deployment option — nothing about it weakens the deployed path, which still derives every actor from the Tailnet connection.
 
 Testing against a real tailnet is a deployment concern; see the [deployment guide](deployment.md), including its two-machine smoke test.
 

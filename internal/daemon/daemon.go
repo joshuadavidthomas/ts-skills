@@ -38,6 +38,7 @@ type Config struct {
 	Hostname string
 	AuthKey  string
 	Tag      string
+	Verbose  bool
 }
 
 // DevConfig serves the registry over plain HTTP on a loopback address with a
@@ -68,6 +69,9 @@ func DevConfigFromEnv() (DevConfig, error) {
 	}
 	if os.Getenv("TS_SKILLSD_AUTHKEY_FILE") != "" {
 		return DevConfig{}, fmt.Errorf("dev mode does not enroll a Tailnet node; unset TS_SKILLSD_AUTHKEY_FILE")
+	}
+	if os.Getenv("TS_AUTHKEY") != "" {
+		return DevConfig{}, fmt.Errorf("dev mode does not enroll a Tailnet node; unset TS_AUTHKEY")
 	}
 	stateDir := os.Getenv("TS_SKILLSD_STATE_DIR")
 	if stateDir == "" {
@@ -121,6 +125,13 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if config.Hostname == "" {
 		config.Hostname = defaultHostname
+	}
+	if value := os.Getenv("TS_SKILLSD_VERBOSE"); value != "" {
+		verbose, err := strconv.ParseBool(value)
+		if err != nil {
+			return Config{}, fmt.Errorf("TS_SKILLSD_VERBOSE must be a boolean value such as 1 or true")
+		}
+		config.Verbose = verbose
 	}
 	if authKeyFile := os.Getenv("TS_SKILLSD_AUTHKEY_FILE"); authKeyFile != "" {
 		contents, err := os.ReadFile(authKeyFile)
@@ -405,6 +416,7 @@ func buildRuntime(ctx context.Context, config Config) (_ *runtime, err error) {
 		Hostname: config.Hostname,
 		StateDir: filepath.Join(config.StateDir, "tsnet"),
 		AuthKey:  config.AuthKey,
+		Verbose:  config.Verbose,
 	}
 	if config.Tag != "" {
 		tailConfig.AdvertiseTags = []string{config.Tag}
