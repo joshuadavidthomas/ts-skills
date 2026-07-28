@@ -24,6 +24,7 @@ type memoryCatalogRecords struct {
 	candidateTrees map[registry.CandidateID]fstest.MapFS
 	publications   map[registry.PublicationID]registry.Publication
 	current        map[registry.SkillID]registry.CurrentPublication
+	beforeRecord   func()
 }
 
 func newMemoryCatalogRecords() *memoryCatalogRecords {
@@ -38,6 +39,9 @@ func newMemoryCatalogRecords() *memoryCatalogRecords {
 func (m *memoryCatalogRecords) RecordCandidate(ctx context.Context, candidate registry.Candidate, directory agentskill.Directory) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if m.beforeRecord != nil {
+		m.beforeRecord()
 	}
 	tree, err := copyTree(directory.FS())
 	if err != nil {
@@ -251,10 +255,11 @@ func cloneMapFS(source fstest.MapFS) fstest.MapFS {
 	return cloned
 }
 
-func newCatalogFixture(t *testing.T) (*registry.Catalog, *memoryCatalogRecords, registry.Namespace, registry.Actor, registry.Provenance) {
+func newCatalogFixture(t *testing.T) (*registry.Catalog, *memoryCatalogRecords, string, registry.Namespace, registry.Actor, registry.Provenance) {
 	t.Helper()
 	records := newMemoryCatalogRecords()
-	catalog, err := registry.NewCatalog(records, t.TempDir(), safetree.PrototypeLimits())
+	staging := t.TempDir()
+	catalog, err := registry.NewCatalog(records, staging, safetree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +279,7 @@ func newCatalogFixture(t *testing.T) (*registry.Catalog, *memoryCatalogRecords, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return catalog, records, namespace, actor, provenance
+	return catalog, records, staging, namespace, actor, provenance
 }
 
 func skillSource(instructions, asset string) fstest.MapFS {
@@ -287,9 +292,18 @@ func skillSource(instructions, asset string) fstest.MapFS {
 
 func capture(t *testing.T, catalog *registry.Catalog, namespace registry.Namespace, provenance registry.Provenance, source fs.FS) registry.Candidate {
 	t.Helper()
+	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), source, "sample", safetree.PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	candidate, err := catalog.Capture(context.Background(), registry.CaptureRequest{
 		Namespace:  namespace,
-		Source:     source,
+		Staged:     snapshot,
 		Root:       "sample",
 		Provenance: provenance,
 	})
@@ -299,8 +313,46 @@ func capture(t *testing.T, catalog *registry.Catalog, namespace registry.Namespa
 	return candidate
 }
 
+func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
+	catalog, records, catalogStaging, namespace, _, provenance := newCatalogFixture(t)
+	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), skillSource("# Instructions\n", "asset"), "sample", safetree.PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	inspection, err := agentskill.Inspect(context.Background(), snapshot.FS(), "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records.beforeRecord = func() {
+		entries, err := os.ReadDir(catalogStaging)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("Capture staged a second tree: %v", entries)
+		}
+	}
+	candidate, err := catalog.Capture(context.Background(), registry.CaptureRequest{
+		Namespace: namespace, Staged: snapshot, Root: "sample", Provenance: provenance,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Tree() != inspection.Digest() {
+		t.Fatalf("candidate digest = %s, want staged digest %s", candidate.Tree(), inspection.Digest())
+	}
+	if _, err := fs.ReadFile(snapshot.FS(), "sample/SKILL.md"); err != nil {
+		t.Fatalf("Capture closed its borrowed snapshot: %v", err)
+	}
+}
+
 func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
-	catalog, _, namespace, actor, provenance := newCatalogFixture(t)
+	catalog, _, _, namespace, actor, provenance := newCatalogFixture(t)
 	ctx := context.Background()
 	original := skillSource("# First\n", "first")
 	firstCandidate := capture(t, catalog, namespace, provenance, original)
@@ -446,7 +498,7 @@ func (r catalogRemote) Fetch(ctx context.Context, requirement install.Requiremen
 }
 
 func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
-	catalog, _, namespace, actor, provenance := newCatalogFixture(t)
+	catalog, _, _, namespace, actor, provenance := newCatalogFixture(t)
 	source := skillSource("# Install me\n", "captured asset")
 	candidate := capture(t, catalog, namespace, provenance, source)
 

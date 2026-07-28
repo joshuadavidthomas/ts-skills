@@ -40,7 +40,7 @@ never reused or renumbered.)
 | 7 | [006](006-cli-exit-and-diagnostics-shape.md) | Exit once at main; print diagnostics once | S | — | DONE |
 | 8 | [017](017-close-identity-representation-holes.md) | Close Snapshot nil-FS + CandidateID representation holes | S | — | DONE |
 | 9 | [018](018-simplify-storage-lifecycle-and-results.md) | Close-phase state; shrink publish result shapes | M | — | DONE |
-| 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | TODO |
+| 10 | [012](012-carry-validated-trees-through-capture.md) | Carry validated trees through capture; storage agreement check | M | 001 | DONE |
 | 11 | [010](010-move-catalog-transition-rules-into-registry.md) | Move catalog transition rules from storage into registry | L | — (sequence after 012, 017, 018) | TODO |
 | 12 | [011](011-validate-the-recovery-model.md) | Validate recovery journal as one model; crash-realistic tests | L | — (before 008) | TODO |
 | 13 | [015](015-decouple-fetch-from-writer-lock.md) | Fetch unlocked; recovery visible in failure contracts | M | — (after 011; before 008) | TODO |
@@ -79,6 +79,20 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 012 landed — `upload.StageBrowserDirectory` now owns the
+  untouched multipart reader after web reads `namespace`, including the
+  manifest-position check. `Submission.Snapshot` lends the validated staging
+  tree while Submission retains close ownership; web passes it directly to
+  `registry.Capture`, which inspects it without a second `StageFS` copy.
+  Registry tests prove Capture preserves borrowed-snapshot ownership and
+  derives the candidate digest from that staged tree; the web upload test
+  matches stored and submitted digests. Storage now reloads the
+  copied `SKILL.md` before tree installation and rejects a candidate whose
+  skill name differs, leaving neither candidate metadata nor a digest tree.
+  Upload's multipart-order test moved out of web. `StageFS` remains only for
+  its own test coverage and registry test setup; no production capture path
+  stages twice. `just check` passed. Deviations: none. Next: 010.
 
 - **2026-07-28**: 018 landed — `storage.Catalog`'s four close booleans are
   now one `closePhase` (`catalogOpen → catalogDatabaseOpen → catalogLockHeld

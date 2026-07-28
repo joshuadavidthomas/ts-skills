@@ -20,6 +20,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
@@ -248,6 +249,31 @@ func postForm(t *testing.T, fixture *webFixture, path string, values url.Values)
 }
 
 var digestPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
+
+func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
+	fixture := newWebFixture(t)
+	instructions := "# Submitted once\n"
+	location := fixture.uploadDirectory(instructions)
+	id, err := registry.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := fixture.storage.Candidate(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skill := "---\nname: sample\ndescription: Web test\n---\n" + instructions
+	expected, err := agentskill.SumTree(context.Background(), fstest.MapFS{
+		"sample/SKILL.md":            {Data: []byte(skill)},
+		"sample/assets/<script>.txt": {Data: []byte("inert asset")},
+	}, "sample")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate.Tree() != expected {
+		t.Fatalf("candidate digest = %s, want submitted digest %s", candidate.Tree(), expected)
+	}
+}
 
 func TestStaticAssetsAreServedAheadOfCatalogCatchAll(t *testing.T) {
 	fixture := newWebFixture(t)
@@ -582,21 +608,13 @@ func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {
 	}
 }
 
-func TestUploadRequiresCSRFAndExactMultipartOrder(t *testing.T) {
+func TestUploadRequiresCSRFAndRejectsExtraParts(t *testing.T) {
 	fixture := newWebFixture(t)
 	validParts := skillDirectoryParts("Safe.\n")
 	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", validParts), false)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("missing CSRF status = %d", response.StatusCode)
-	}
-
-	reordered := append([]formPart{validParts[1], validParts[0]}, validParts[2:]...)
-	response = fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", reordered), true)
-	body, _ := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "Upload is invalid") {
-		t.Fatalf("reordered status/body = %d/%s", response.StatusCode, body)
 	}
 
 	extra := append(append([]formPart{}, validParts...), formPart{name: "extra", body: []byte("x")})

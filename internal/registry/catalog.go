@@ -19,7 +19,7 @@ type Tree interface {
 
 type CaptureRequest struct {
 	Namespace  Namespace
-	Source     fs.FS
+	Staged     *safetree.Snapshot
 	Root       string
 	Provenance Provenance
 }
@@ -60,15 +60,10 @@ func NewCatalog(records CatalogRecords, stagingParent string, limits safetree.Li
 }
 
 func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidate, error) {
-	if request.Namespace.canonical == "" || request.Source == nil || request.Provenance.source.label == "" {
-		return Candidate{}, fmt.Errorf("capture requires namespace, source, and provenance")
+	if request.Namespace.canonical == "" || request.Staged == nil || request.Provenance.source.label == "" {
+		return Candidate{}, fmt.Errorf("capture requires namespace, staged tree, and provenance")
 	}
-	snapshot, err := safetree.StageFS(ctx, c.stagingParent, request.Source, request.Root, c.limits)
-	if err != nil {
-		return Candidate{}, fmt.Errorf("capture candidate tree: %w", err)
-	}
-	defer func() { _ = snapshot.Close() }()
-	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), request.Root)
+	inspection, err := agentskill.Inspect(ctx, request.Staged.FS(), request.Root)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}

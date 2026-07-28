@@ -24,12 +24,7 @@ type directoryPart struct {
 
 func stageDirectory(t *testing.T, parent string, limits safetree.Limits, parts ...directoryPart) (*Submission, error) {
 	t.Helper()
-	reader := directoryReader(t, parts...)
-	first, err := reader.NextPart()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return StageBrowserDirectory(context.Background(), parent, first, reader, limits)
+	return StageBrowserDirectory(context.Background(), parent, directoryReader(t, parts...), limits)
 }
 
 func directoryReader(t *testing.T, parts ...directoryPart) *multipart.Reader {
@@ -78,7 +73,7 @@ func TestBrowserDirectoryStagesCompleteTree(t *testing.T) {
 	if submission.Root() != "sample" || submission.Label() != "sample" {
 		t.Fatalf("directory root/label = %q/%q", submission.Root(), submission.Label())
 	}
-	if got, err := fs.ReadFile(submission.FS(), "sample/assets/data.txt"); err != nil || string(got) != "asset" {
+	if got, err := fs.ReadFile(submission.Snapshot().FS(), "sample/assets/data.txt"); err != nil || string(got) != "asset" {
 		t.Fatalf("directory asset = %q, %v", got, err)
 	}
 }
@@ -184,13 +179,9 @@ func TestBrowserDirectoryCancellationSurvivesStaging(t *testing.T) {
 		directoryPart{name: "manifest", body: `[{"index":0,"path":"sample/SKILL.md","size":74}]`},
 		directoryPart{name: "file-0", filename: "SKILL.md", body: string(testSkill)},
 	)
-	first, err := reader.NextPart()
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = StageBrowserDirectory(ctx, t.TempDir(), first, reader, safetree.PrototypeLimits())
+	_, err := StageBrowserDirectory(ctx, t.TempDir(), reader, safetree.PrototypeLimits())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled directory error = %v, want context.Canceled", err)
 	}
@@ -208,7 +199,7 @@ func TestSubmissionOwnsAndRemovesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fs.ReadFile(submission.FS(), "sample/SKILL.md"); err != nil {
+	if _, err := fs.ReadFile(submission.Snapshot().FS(), "sample/SKILL.md"); err != nil {
 		t.Fatal(err)
 	}
 	if err := submission.Close(); err != nil {
@@ -244,7 +235,7 @@ func TestSubmissionCloseRetainsSnapshotAfterFailure(t *testing.T) {
 	if submission.snapshot == nil {
 		t.Fatal("failed Close released submission snapshot ownership")
 	}
-	if _, err := fs.ReadFile(submission.FS(), "sample/SKILL.md"); err != nil {
+	if _, err := fs.ReadFile(submission.Snapshot().FS(), "sample/SKILL.md"); err != nil {
 		t.Fatalf("submission after failed Close: %v", err)
 	}
 	submission.closeSnapshot = nil

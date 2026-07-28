@@ -570,6 +570,32 @@ func TestRecordCandidateRejectsDigestMismatchAndConflict(t *testing.T) {
 	if _, err := catalog.Candidate(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("mismatched candidate lookup = %v", err)
 	}
+	otherName, err := agentskill.ParseName("other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSkill, err := registry.NewSkillID(fixture.namespace, otherName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherID, err := registry.NewCandidateID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatchedName, err := registry.NewCandidate(otherID, otherSkill, fixture.digest, fixture.provenance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.RecordCandidate(context.Background(), mismatchedName, fixture.directory); err == nil || !strings.Contains(err.Error(), "candidate names other but SKILL.md names sample") {
+		t.Fatalf("mismatched candidate name error = %v", err)
+	}
+	if _, err := catalog.Candidate(context.Background(), mismatchedName.ID()); !errors.Is(err, registry.ErrNotFound) {
+		t.Fatalf("mismatched-name candidate lookup = %v", err)
+	}
+	_, final := catalog.treePaths(mismatchedName.Tree())
+	if _, err := os.Stat(final); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("mismatched-name tree exists: %v", err)
+	}
 	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}

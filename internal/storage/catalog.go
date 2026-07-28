@@ -219,7 +219,7 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 
 	unlock := c.lockDigest(candidate.Tree())
 	defer unlock()
-	if err := c.materializeTree(ctx, candidate.Tree(), directory.FS()); err != nil {
+	if err := c.materializeTree(ctx, candidate.Tree(), candidate.Skill().Name(), directory.FS()); err != nil {
 		return fmt.Errorf("materialize candidate tree: %w", err)
 	}
 

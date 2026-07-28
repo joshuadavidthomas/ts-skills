@@ -84,7 +84,7 @@ func createDirectory(name string, mode fs.FileMode) (bool, error) {
 	return false, nil
 }
 
-func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeDigest, source fs.FS) (err error) {
+func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
 	staging, err := os.MkdirTemp(c.tmpDir, ".tree-")
 	if err != nil {
 		return fmt.Errorf("create tree staging directory: %w", err)
@@ -110,6 +110,13 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	}
 	if actual != expected {
 		return fmt.Errorf("%w: candidate says %s, copied tree hashes to %s", registry.ErrTreeMismatch, expected, actual)
+	}
+	directory, err := agentskill.Load(os.DirFS(staging), ".")
+	if err != nil {
+		return fmt.Errorf("load copied Agent Skill: %w", err)
+	}
+	if actualName := directory.Document().Name; actualName != expectedName {
+		return fmt.Errorf("candidate names %s but SKILL.md names %s", expectedName, actualName)
 	}
 	if err := c.step("verify staged tree digest"); err != nil {
 		return err

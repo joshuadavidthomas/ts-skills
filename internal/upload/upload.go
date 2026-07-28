@@ -17,6 +17,8 @@ import (
 
 var ErrMalformedUpload = errors.New("malformed skill upload")
 
+// Submission owns one validated, staged upload tree. Snapshot lends that tree
+// to a caller; the caller must not close it. Close remains Submission's job.
 type Submission struct {
 	snapshot      *safetree.Snapshot
 	root          string
@@ -24,11 +26,13 @@ type Submission struct {
 	closeSnapshot func(*safetree.Snapshot) error
 }
 
-func (s *Submission) FS() fs.FS {
-	if s == nil || s.snapshot == nil {
+// Snapshot lends the validated staged tree. The Submission retains ownership;
+// callers must not close the returned snapshot.
+func (s *Submission) Snapshot() *safetree.Snapshot {
+	if s == nil {
 		return nil
 	}
-	return s.snapshot.FS()
+	return s.snapshot
 }
 
 func (s *Submission) Root() string {
@@ -66,12 +70,16 @@ type manifestEntry struct {
 	Size  int64  `json:"size"`
 }
 
-func StageBrowserDirectory(ctx context.Context, parent string, manifest *multipart.Part, body *multipart.Reader, limits safetree.Limits) (_ *Submission, err error) {
-	if manifest == nil || body == nil {
+func StageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits safetree.Limits) (_ *Submission, err error) {
+	if body == nil {
 		return nil, malformed("multipart directory parts are missing", nil)
 	}
 	if err := safetree.ValidateLimits(limits); err != nil {
 		return nil, fmt.Errorf("directory staging limits: %w", err)
+	}
+	manifest, err := body.NextPart()
+	if err != nil {
+		return nil, malformed("a directory manifest must be the first part", err)
 	}
 	if manifest.FormName() != "manifest" || manifest.FileName() != "" {
 		return nil, malformed("manifest must be the first directory part", nil)

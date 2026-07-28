@@ -281,16 +281,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
 		return
 	}
-	part, nextErr := body.NextPart()
-	if nextErr != nil {
-		h.handleError(w, r, malformedRequest("a directory manifest must follow namespace", nextErr))
-		return
-	}
-	if part.FormName() != "manifest" {
-		h.handleError(w, r, malformedRequest("skill upload must contain a directory manifest", nil))
-		return
-	}
-	submission, err := upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, part, body, h.options.Limits)
+	submission, err := upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, body, h.options.Limits)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -317,7 +308,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	candidate, err := h.catalog.Capture(r.Context(), registry.CaptureRequest{
-		Namespace: namespace, Source: submission.FS(), Root: submission.Root(), Provenance: provenance,
+		Namespace: namespace, Staged: submission.Snapshot(), Root: submission.Root(), Provenance: provenance,
 	})
 	if err != nil {
 		h.handleError(w, r, err)
