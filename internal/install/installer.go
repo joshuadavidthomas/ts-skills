@@ -170,19 +170,15 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirem
 			err = errors.Join(err, fmt.Errorf("close verified fetch snapshot: %w", closeErr))
 		}
 	}()
-	directory, err := agentskill.Load(snapshot.FS(), ".")
+	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
 		return nil, fmt.Errorf("validate fetched Agent Skill: %w", err)
 	}
-	if directory.Document().Name != requirement.Skill().Name() {
-		return nil, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, directory.Document().Name.String())
+	if err := inspection.RequireName(requirement.Skill().Name()); err != nil {
+		return nil, fmt.Errorf("%w: SKILL.md names %s", ErrIdentityMismatch, inspection.Document().Name.String())
 	}
-	actual, err := agentskill.SumTree(ctx, snapshot.FS(), ".")
-	if err != nil {
-		return nil, fmt.Errorf("hash fetched tree: %w", err)
-	}
-	if actual != publication.Tree() {
-		return nil, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), actual.String())
+	if inspection.Digest() != publication.Tree() {
+		return nil, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
 	}
 
 	staged, err := copySnapshotToProject(ctx, w.project, snapshot.FS())

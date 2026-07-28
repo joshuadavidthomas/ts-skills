@@ -68,15 +68,11 @@ func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidat
 		return Candidate{}, fmt.Errorf("capture candidate tree: %w", err)
 	}
 	defer func() { _ = snapshot.Close() }()
-	directory, err := agentskill.Load(snapshot.FS(), request.Root)
+	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), request.Root)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}
-	digest, err := agentskill.SumTree(ctx, snapshot.FS(), request.Root)
-	if err != nil {
-		return Candidate{}, fmt.Errorf("hash captured Agent Skill: %w", err)
-	}
-	skill, err := NewSkillID(request.Namespace, directory.Document().Name)
+	skill, err := NewSkillID(request.Namespace, inspection.Document().Name)
 	if err != nil {
 		return Candidate{}, err
 	}
@@ -84,11 +80,11 @@ func (c *Catalog) Capture(ctx context.Context, request CaptureRequest) (Candidat
 	if err != nil {
 		return Candidate{}, err
 	}
-	candidate, err := NewCandidate(id, skill, digest, request.Provenance)
+	candidate, err := NewCandidate(id, skill, inspection.Digest(), request.Provenance)
 	if err != nil {
 		return Candidate{}, err
 	}
-	if err := c.records.RecordCandidate(ctx, candidate, directory); err != nil {
+	if err := c.records.RecordCandidate(ctx, candidate, inspection.Directory()); err != nil {
 		return Candidate{}, fmt.Errorf("record candidate: %w", err)
 	}
 	return candidate, nil

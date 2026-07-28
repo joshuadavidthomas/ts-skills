@@ -32,7 +32,7 @@ never reused or renumbered.)
 | # | Plan | Title | Effort | Depends on | Status |
 |---|------|-------|--------|------------|--------|
 | 1 | [001](001-thread-context-through-tree-walks.md) | Thread context through tree walks and serving | L | — | DONE |
-| 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | TODO |
+| 2 | [016](016-single-agentskill-inspection.md) | One agentskill inspection operation | M | 001 | DONE |
 | 3 | [002](002-bound-daemon-shutdown.md) | Bound daemon shutdown | M | 001 | TODO |
 | 4 | [003](003-preserve-error-classes.md) | Preserve error classes at boundaries | M | — | TODO |
 | 5 | [004](004-join-cleanup-errors.md) | Join cleanup errors on failure paths | M | — | TODO |
@@ -79,6 +79,15 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 016 landed — `agentskill.Inspect` composes `Load` +
+  ctx-aware `SumTree` into one `Inspection` value exposing `Directory`,
+  `Document`, `Digest`, `FS`, and a `RequireName` helper that wraps
+  `ErrInvalidTree`. Registry capture, client download-accept, and install
+  `stageAndVerify` each collapsed their Load/SumTree/name-check sequence
+  into one `Inspect` call; error mapping at each seam unchanged. New
+  package tests cover binding, unsafe entries, RequireName mismatch, and
+  ctx cancellation. Next: 002.
 
 - **2026-07-28**: 001 landed — `SumTree` takes ctx and hashes through a
   cancellation-aware stream (fixed vectors unchanged); storage verify,

@@ -273,6 +273,63 @@ func TestSumTreeRespectsCancellation(t *testing.T) {
 	}
 }
 
+func TestInspectBindsDocumentAndDigest(t *testing.T) {
+	files := fstest.MapFS{
+		"right/SKILL.md":       &fstest.MapFile{Data: []byte("---\nname: right\ndescription: test\n---\n")},
+		"right/scripts/run.sh": &fstest.MapFile{Data: []byte("#!/bin/sh\n")},
+	}
+	want, err := SumTree(context.Background(), files, "right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := Inspect(context.Background(), files, "right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspection.Digest() != want {
+		t.Fatalf("Inspect digest = %s, want %s", inspection.Digest().String(), want.String())
+	}
+	if got := inspection.Document().Name.String(); got != "right" {
+		t.Fatalf("Inspect document name = %q, want %q", got, "right")
+	}
+	if _, err := inspection.FS().Open("scripts/run.sh"); err != nil {
+		t.Fatalf("Inspect FS open tree file: %v", err)
+	}
+	if err := inspection.RequireName(inspection.Document().Name); err != nil {
+		t.Fatalf("RequireName(tree's own name) = %v", err)
+	}
+	other, err := ParseName("other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inspection.RequireName(other); !errors.Is(err, ErrInvalidTree) {
+		t.Fatalf("RequireName(other) error = %v, want ErrInvalidTree", err)
+	}
+}
+
+func TestInspectRejectsLoadAndTreeFailures(t *testing.T) {
+	document := &fstest.MapFile{Data: []byte("---\nname: root\ndescription: test\n---\n")}
+	if _, err := Inspect(context.Background(), fstest.MapFS{"root/other.md": document}, "root"); err == nil {
+		t.Fatal("Inspect without SKILL.md error = nil")
+	}
+	unsafe := fstest.MapFS{
+		"root/SKILL.md":   document,
+		"root/evil\\.txt": &fstest.MapFile{Data: []byte("x")},
+	}
+	if _, err := Inspect(context.Background(), unsafe, "root"); !errors.Is(err, ErrInvalidTree) {
+		t.Fatalf("Inspect with unsafe entry error = %v, want ErrInvalidTree", err)
+	}
+}
+
+func TestInspectRespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	files := fstest.MapFS{"root/SKILL.md": &fstest.MapFile{Data: []byte("---\nname: root\ndescription: test\n---\n")}}
+	if _, err := Inspect(ctx, files, "root"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Inspect with cancelled context error = %v, want context.Canceled", err)
+	}
+}
+
 func TestSumTreeIgnoresModesAndMapOrder(t *testing.T) {
 	first := fstest.MapFS{
 		"root/a": &fstest.MapFile{Data: []byte("a"), Mode: 0o600},

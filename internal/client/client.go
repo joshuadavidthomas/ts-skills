@@ -203,19 +203,15 @@ func (r *Remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 			err = errors.Join(err, snapshot.Close())
 		}
 	}()
-	directory, err := agentskill.Load(snapshot.FS(), ".")
+	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
 		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", protocol.ErrProtocol, err)
 	}
-	if directory.Document().Name != publication.Skill().Name() {
+	if err := inspection.RequireName(publication.Skill().Name()); err != nil {
 		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", install.ErrIdentityMismatch)
 	}
-	actual, err := agentskill.SumTree(ctx, snapshot.FS(), ".")
-	if err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("hash downloaded tree: %w", err)
-	}
-	if actual != publication.Tree() {
-		return install.FetchedSkill{}, fmt.Errorf("%w: expected %s, got %s", install.ErrDigestMismatch, publication.Tree().String(), actual.String())
+	if inspection.Digest() != publication.Tree() {
+		return install.FetchedSkill{}, fmt.Errorf("%w: expected %s, got %s", install.ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
 	}
 	fetched, err := install.NewFetchedSkill(publication, &fetchedTree{snapshot: snapshot})
 	if err != nil {
