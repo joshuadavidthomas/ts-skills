@@ -5,7 +5,7 @@ go 1.26.5
 require (
 	github.com/gofrs/flock v0.13.0
 	github.com/gorilla/csrf v1.7.3
-	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.54.0
