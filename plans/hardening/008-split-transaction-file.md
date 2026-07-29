@@ -22,7 +22,7 @@
 
 ## Why this matters
 
-`internal/install/transaction.go` is 1019 lines combining four concerns:
+`internal/install/transaction.go` is 1,210 lines combining four concerns:
 transaction application, durability primitives (sync/fsync choreography),
 journal encode/decode, and crash recovery. The package is cohesive — this is
 about navigability, not decomposition — but a reader looking for "how does
@@ -35,7 +35,7 @@ state" with nine separate values at every call site
 
 ## Current state
 
-Single file `internal/install/transaction.go` (1019 lines) containing, in
+Single file `internal/install/transaction.go` (1,210 lines) containing, in
 order of concern:
 
 - transaction apply orchestration (the exported CRUD used by
@@ -53,8 +53,8 @@ order of concern:
 
   (recoveryError's masking design is correct — preserve it unchanged.)
 
-Helpers `preflightTransactionFilesystem` and `restoreOldState` take 9-10
-correlated arguments (paths + state for one operation).
+`preflightTransactionFilesystem` takes ten correlated arguments (paths +
+state for one operation).
 
 Conventions: package `install` stays; build-tagged sibling files
 (`filesystem_*.go`, `path_*.go`) show the file-splitting style already in
@@ -139,11 +139,12 @@ zero assertion changes.
 
 Stop if:
 
-- The drift check shows changes beyond plans 001/004 in transaction.go —
-  reconcile those lands first.
-- Code moves turn out to cross package-internal seams (a helper you need to
-  move is used by `writer.go` or `project.go`); that coupling discovery is
-  a handback, not a redesign.
+- The drift check shows changes beyond plans 001, 004, 011, and 015 in
+  transaction.go — reconcile those lands first.
+- The split requires an exported API change, moving code out of package
+  `install`, changing behavior or persisted data, or transferring
+  `Project` or `projectWriter` responsibilities. Same-package calls from
+  `writer.go` and `project.go` are expected.
 - You feel pulled to fix anything you spot along the way. Record it in the
   index's Deferred section via the handback; do not fold it in.
 - A step's verification fails twice after a reasonable fix attempt.

@@ -50,7 +50,7 @@ never reused or renumbered.)
 | 17 | [019](019-split-daemon-runtime-construction.md) | Split daemon runtime construction from serving | M | 002 | DONE |
 | 18 | [020](020-type-the-registry-origin.md) | One refined registry-origin value | S | — | DONE |
 | 19 | [007](007-apply-portable-safetree-rules.md) | Apply Windows path restrictions on every platform | S | — (needs owner sign-off, see plan) | DONE |
-| 20 | [008](008-split-transaction-file.md) | Split internal/install/transaction.go by concern | M | 001, 004, 011, 015 | TODO |
+| 20 | [008](008-split-transaction-file.md) | Split internal/install/transaction.go by concern | M | 001, 004, 011, 015 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) |
 SUPERSEDED (one-line pointer to what replaced it)
@@ -79,6 +79,18 @@ SUPERSEDED (one-line pointer to what replaced it)
 
 Newest first. Date, what happened, PR/commit link, deviations, next
 executable plan.
+
+- **2026-07-28**: 008 landed — transaction application now lives in
+  `transaction.go`; journal encoding and validation live in `journal.go`;
+  replay and recovery checks live in `recovery.go`; and sync, rename, and
+  removal primitives live in `durability.go`. `transactionPaths` carries
+  each operation's directory, staging tree, backup tree, and destination
+  through application and recovery. The package stays cohesive: writer and
+  project code continue to call shared durability and recovery helpers.
+  `go build ./...`, `go test -race ./internal/install/ -count=1`, `just
+  test`, and `just check` passed. Deviation: the former STOP condition
+  treated ordinary same-package calls as a seam; it now stops only on a real
+  package or behavior boundary. No hardening plans remain.
 
 - **2026-07-28**: 007 landed — safetree now rejects Windows-reserved components, trailing dots or spaces, and case-colliding paths on every host. Linux registries will reject uploads they previously accepted when those trees cannot install on Windows. The platform dispatch files are gone; canonical keys remain validation-only, so tree digests stay unchanged. New Builder tests prove reserved names and case aliases fail on Linux. `go build ./...`, `go test -race ./internal/safetree/ -count=1`, focused portability tests, and `just check` passed. Deviation: web upload fixtures now use a Windows-portable asset name; their old `<script>` filename is invalid by this policy. Next: 008.
 
