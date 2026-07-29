@@ -64,7 +64,7 @@ Owner decisions recorded 2026-07-28:
 
 | # | Plan | Title | Effort | Risk | Depends on | Status |
 |---|------|-------|--------|------|------------|--------|
-| 1 | [001](001-live-tailnet-baseline.md) | Record a live-tailnet behavioral baseline | M | LOW | — | TODO |
+| 1 | [001](001-live-tailnet-baseline.md) | Record a live-tailnet behavioral baseline | M | LOW | — | DONE (dev-only baseline; tailnet auth key unavailable) |
 | 2 | [002](002-stage-and-rename-installer.md) | Replace the journaled installer with stage-and-rename | L | HIGH | 001 | TODO |
 | 3 | [003](003-flatten-identity-and-move-vocabulary.md) | Flatten value ceremony; move shared identity into agentskill | L | MED | 001 | TODO |
 | 4 | [004](004-merge-server-package.md) | Merge the server side into internal/server | L | MED | 002, 003 | TODO |
@@ -154,6 +154,7 @@ by this effort rather than tracked separately:
 
 Newest first. Date, what happened, commit, deviations, next executable plan.
 
+- **2026-07-29**: Plan 001 captured the dev-mode golden path at `006e2bf8`; transcript: `baseline/transcript.md`. No tailnet auth key was available, so section 3 remains required before plan 006 can claim tailnet parity. Next: 002.
 - **2026-07-28**: Effort filed — plans 001–006 written from the tsidp
   comparison (see note pinned to `2037ced9…`); no code changes yet.
   Next: 001.
