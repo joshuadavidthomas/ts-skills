@@ -142,8 +142,19 @@ type catalogPageData struct {
 
 type skillView struct {
 	Skill       string
+	Path        string
 	Digest      string
 	ShortDigest string
+}
+
+func skillPagePath(skill agentskill.SkillID) string {
+	return "/skills/" + url.PathEscape(skill.Namespace().String()) + "/" + url.PathEscape(skill.Name().String())
+}
+
+func publicationTreePath(publication agentskill.PublicationID) string {
+	skill := publication.Skill()
+	return "/api/" + apiVersion + "/skills/" + url.PathEscape(skill.Namespace().String()) +
+		"/" + url.PathEscape(skill.Name().String()) + "/publications/" + publication.Tree().String() + "/tree.zip"
 }
 
 func shortDigest(digest string) string {
@@ -167,7 +178,7 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	views := make([]skillView, 0, len(summaries))
 	for _, summary := range summaries {
 		digest := summary.Current.Tree().String()
-		views = append(views, skillView{Skill: summary.Skill.String(), Digest: digest, ShortDigest: shortDigest(digest)})
+		views = append(views, skillView{Skill: summary.Skill.String(), Path: skillPagePath(summary.Skill), Digest: digest, ShortDigest: shortDigest(digest)})
 	}
 	h.render(w, http.StatusOK, "catalog", catalogPageData{Skills: views})
 }
@@ -216,13 +227,12 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 	}
 	resolved := publication.ID
 	data := skillPageData{
-		Skill:       resolved.Skill().String(),
-		Digest:      resolved.Tree().String(),
-		PublishedBy: publication.PublishedBy.Display,
-		PublishedAt: publication.PublishedAt.Format(time.RFC3339),
-		DownloadPath: "/api/" + apiVersion + "/skills/" + resolved.Skill().Namespace().String() +
-			"/" + resolved.Skill().Name().String() + "/publications/" + resolved.Tree().String() + "/tree.zip",
-		FileTree: selected.Tree, SelectedPath: selected.Path,
+		Skill:        resolved.Skill().String(),
+		Digest:       resolved.Tree().String(),
+		PublishedBy:  publication.PublishedBy.Display,
+		PublishedAt:  publication.PublishedAt.Format(time.RFC3339),
+		DownloadPath: publicationTreePath(resolved),
+		FileTree:     selected.Tree, SelectedPath: selected.Path,
 		SelectedContent: selected.Content, SelectedBinary: selected.Binary,
 	}
 	h.render(w, http.StatusOK, "skill", data)
@@ -294,6 +304,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 type reviewPageData struct {
 	CandidateID     string
 	Skill           string
+	SkillPath       string
 	Digest          string
 	Source          string
 	SubmittedBy     string
@@ -349,7 +360,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	provenance := candidate.Provenance
 	data := reviewPageData{
-		CandidateID: id.String(), Skill: candidate.Skill.String(), Digest: candidate.Tree.String(),
+		CandidateID: id.String(), Skill: candidate.Skill.String(), SkillPath: skillPagePath(candidate.Skill), Digest: candidate.Tree.String(),
 		Source: provenance.Source, SubmittedBy: provenance.SubmittedBy.Display,
 		SubmittedAt: provenance.SubmittedAt.Format(time.RFC3339), FileTree: selected.Tree,
 		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary,

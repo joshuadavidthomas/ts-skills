@@ -338,7 +338,7 @@ func serveWithHTTPShutdownTimeout(ctx context.Context, active runtime, timeout t
 
 func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Duration, handlers *handlerGate) (err error) {
 	defer func() {
-		err = errors.Join(err, active.close())
+		err = errors.Join(err, closeRuntime(active))
 	}()
 
 	// serverCtx owns every admitted request's context; cancelling it after
@@ -629,6 +629,16 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 		handler:  handler,
 		close:    cleanup.close,
 	}, nil
+}
+
+// closeRuntime gives a failed cleanup one immediate retry. runtimeCleanup and
+// catalog can then resume after closing resources that already succeeded.
+func closeRuntime(active runtime) error {
+	first := active.close()
+	if first == nil {
+		return nil
+	}
+	return errors.Join(first, active.close())
 }
 
 type runtimeCleanup struct {

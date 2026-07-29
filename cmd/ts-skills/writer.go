@@ -110,7 +110,10 @@ func (w *projectWriter) sweepLitter() error {
 		parent   string
 		prefixes []string
 	}{
-		{w.project.SkillsDir(), []string{installStagingPrefix, installTrashPrefix}},
+		{w.project.SkillsDir(), []string{installStagingPrefix}},
+		// A trash directory may contain the only recoverable old skill after
+		// a replacement rollback fails. Successful replacements remove their
+		// trash directly; leave any remaining directory for manual recovery.
 		{filepath.Dir(w.project.LockPath()), []string{lockTemporaryPrefix}},
 	} {
 		entries, err := os.ReadDir(location.parent)
@@ -145,6 +148,9 @@ func (w *projectWriter) sweepLitter() error {
 }
 
 func (w *projectWriter) readLock() (Lock, []byte, bool, error) {
+	if err := rejectLink(w.project.LockPath(), true); err != nil {
+		return Lock{}, nil, false, fmt.Errorf("inspect project lock: %w", err)
+	}
 	contents, err := os.ReadFile(w.project.LockPath())
 	if errors.Is(err, fs.ErrNotExist) {
 		lock, lockErr := NewLock(nil)

@@ -310,6 +310,62 @@ func TestReplaceRollsBackWhenLockRenameFails(t *testing.T) {
 	}
 }
 
+func TestReplacePreservesOldTreeWhenRollbackCannotRestoreIt(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	restoreErr := errors.New("restore old skill")
+	writer.syncDirectory = func(path string) error {
+		if path == project.SkillsDir() {
+			return errors.New("sync skills directory")
+		}
+		return syncDirectory(path)
+	}
+	writer.rename = func(old, new string) error {
+		if new == destination && old != verified.path {
+			return restoreErr
+		}
+		return os.Rename(old, new)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); !errors.Is(err, restoreErr) {
+		t.Fatalf("replace error = %v, want rollback failure", err)
+	}
+	if _, err := os.Stat(destination); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("destination after failed rollback = %v, want absent", err)
+	}
+
+	entries, err := os.ReadDir(project.SkillsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trash string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), installTrashPrefix) {
+			trash = filepath.Join(project.SkillsDir(), entry.Name())
+			break
+		}
+	}
+	if trash == "" {
+		t.Fatal("old tree was not retained after rollback failure")
+	}
+	contents, err := os.ReadFile(filepath.Join(trash, "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("retained old tree = %q, %v", contents, err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	writer, err = project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(trash); err != nil {
+		t.Fatalf("recovery tree was swept: %v", err)
+	}
+}
+
 func TestReplaceLeavesDestinationAndLockAlignedAfterLockRename(t *testing.T) {
 	project, writer, verified, newLock := stagedUpgrade(t)
 	writer.syncDirectory = func(path string) error {
@@ -335,7 +391,39 @@ func TestReplaceLeavesDestinationAndLockAlignedAfterLockRename(t *testing.T) {
 	}
 }
 
-func TestWriterSweepsReservedLitterOnly(t *testing.T) {
+func TestRevalidationPreservesOperationalErrors(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "installed")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	_, lockBytes, hadLock, err := writer.readLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := writer.destinationState(context.Background(), requirement.Skill())
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := makeRestorePlan(context.Background(), writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := writer.assertUnchanged(ctx, requirement.Skill(), lockBytes, hadLock, before); !errors.Is(err, ErrProjectChanged) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("install revalidation error = %v, want project change and cancellation", err)
+	}
+	if err := plan.matches(ctx, writer); !errors.Is(err, ErrProjectChanged) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("restore revalidation error = %v, want project change and cancellation", err)
+	}
+}
+
+func TestWriterSweepsStagingAndKeepsRecoveryTrash(t *testing.T) {
 	project, _ := OpenProject(t.TempDir())
 	writer, err := project.acquireWriter(context.Background())
 	if err != nil {
@@ -357,10 +445,11 @@ func TestWriterSweepsReservedLitterOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = writer.close() })
-	for _, path := range []string{stage, trash} {
-		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("litter remains %q: %v", path, err)
-		}
+	if _, err := os.Stat(stage); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("staging litter remains: %v", err)
+	}
+	if _, err := os.Stat(trash); err != nil {
+		t.Fatalf("recovery trash was removed: %v", err)
 	}
 	if _, err := os.Stat(real); err != nil {
 		t.Fatalf("real skill removed: %v", err)

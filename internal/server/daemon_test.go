@@ -415,6 +415,24 @@ func TestServeRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
 	}
 }
 
+func TestCloseRuntimeRetriesFailedCleanup(t *testing.T) {
+	attempts := 0
+	closeErr := errors.New("close failed")
+	active := runtime{close: func() error {
+		attempts++
+		if attempts == 1 {
+			return closeErr
+		}
+		return nil
+	}}
+	if err := closeRuntime(active); !errors.Is(err, closeErr) {
+		t.Fatalf("close runtime error = %v, want close failure", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("cleanup attempts = %d, want 2", attempts)
+	}
+}
+
 func TestRuntimeCleanupRetriesFailedStorageClose(t *testing.T) {
 	var events []string
 	storageAttempts := 0

@@ -14,7 +14,7 @@
       <tbody>
         {{range .Skills}}
         <tr class="border-b border-gray-200 last:border-b-0 hover:bg-gray-100">
-          <td class="whitespace-nowrap px-4 py-3 font-medium"><a class="rounded-sm text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" href="/skills/{{.Skill}}">{{.Skill}}</a></td>
+          <td class="whitespace-nowrap px-4 py-3 font-medium"><a class="rounded-sm text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2" href="{{.Path}}">{{.Skill}}</a></td>
           <td class="px-4 py-3 font-mono text-sm text-gray-500"><span title="{{.Digest}}">{{.ShortDigest}}</span></td>
         </tr>
         {{end}}

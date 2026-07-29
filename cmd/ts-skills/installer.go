@@ -173,16 +173,26 @@ func makeRestorePlan(ctx context.Context, writer *projectWriter) (restorePlan, e
 
 func (p restorePlan) matches(ctx context.Context, writer *projectWriter) error {
 	lock, contents, hadLock, err := writer.readLock()
-	if err != nil || hadLock != p.hadLock || !bytes.Equal(contents, p.bytes) {
+	if err != nil {
+		return projectChanged("reread project lock", err)
+	}
+	if hadLock != p.hadLock || !bytes.Equal(contents, p.bytes) {
 		return ErrProjectChanged
 	}
 	for _, locked := range lock.Skills() {
 		state, stateErr := writer.destinationState(ctx, locked.Publication.Skill())
-		if stateErr != nil || !sameDestination(state, p.states[locked.Publication.Skill()]) {
+		if stateErr != nil {
+			return projectChanged("revalidate installed skill "+locked.Publication.Skill().String(), stateErr)
+		}
+		if !sameDestination(state, p.states[locked.Publication.Skill()]) {
 			return ErrProjectChanged
 		}
 	}
 	return nil
+}
+
+func projectChanged(operation string, err error) error {
+	return errors.Join(ErrProjectChanged, fmt.Errorf("%s: %w", operation, err))
 }
 
 func readLockSnapshot(project Project) ([]byte, bool, error) {
@@ -222,11 +232,17 @@ func assertManagedDestination(lock Lock, skill agentskill.SkillID, state destina
 
 func (w *projectWriter) assertUnchanged(ctx context.Context, skill agentskill.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
 	_, currentBytes, currentHadLock, err := w.readLock()
-	if err != nil || currentHadLock != hadLock || !bytes.Equal(currentBytes, oldBytes) {
+	if err != nil {
+		return projectChanged("reread project lock", err)
+	}
+	if currentHadLock != hadLock || !bytes.Equal(currentBytes, oldBytes) {
 		return ErrProjectChanged
 	}
 	after, err := w.destinationState(ctx, skill)
-	if err != nil || !sameDestination(before, after) {
+	if err != nil {
+		return projectChanged("revalidate installed skill "+skill.String(), err)
+	}
+	if !sameDestination(before, after) {
 		return ErrProjectChanged
 	}
 	return nil

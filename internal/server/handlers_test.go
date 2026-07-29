@@ -546,6 +546,37 @@ func TestSkillDetailPageShowsCurrentPublication(t *testing.T) {
 	}
 }
 
+func TestSkillLinksEscapeNamespaceSegments(t *testing.T) {
+	fixture := newWebFixture(t)
+	parts := skillDirectoryParts("Escaped namespace links.\n")
+	parts[0].body = []byte("team?x")
+	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", parts), true)
+	candidatePath := response.Header.Get("Location")
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", response.StatusCode)
+	}
+	response = postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+
+	const skillPath = "/skills/team%3Fx/sample"
+	catalog := fixture.get("/")
+	if !strings.Contains(catalog, `href="`+skillPath+`"`) {
+		t.Fatalf("catalog link = %s", catalog)
+	}
+	review := fixture.get(candidatePath)
+	if !strings.Contains(review, `href="`+skillPath+`"`) {
+		t.Fatalf("review link = %s", review)
+	}
+	detail := fixture.get(skillPath)
+	if !strings.Contains(detail, "/api/"+apiVersion+"/skills/team%3Fx/sample/publications/") {
+		t.Fatalf("download link = %s", detail)
+	}
+}
+
 func TestReviewAndSkillPagesSelectExactTreeFiles(t *testing.T) {
 	fixture := newWebFixture(t)
 	candidatePath := fixture.uploadDirectory("Default file content.\n")
