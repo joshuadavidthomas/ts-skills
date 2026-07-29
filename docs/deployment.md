@@ -14,7 +14,7 @@ The deployed daemon listens only through tsnet: it joins your tailnet as its own
        "dst": ["tag:skills-registry"],
        "ip":  ["443"],
        "app": {
-         "tailscale.com/cap/ts-skills": [{"curate": true}]
+         "joshuadavidthomas.com/cap/ts-skills": [{"curate": true}]
        }
      }
    ]

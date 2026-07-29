@@ -24,4 +24,8 @@ and this project attempts to adhere to [Semantic Versioning](https://semver.org/
 
 - Install and restore now converge after an interrupted replacement: rerun the command to clear staged litter and restore the selected tree. The `ErrRecovered` diagnostic is gone.
 
+### Fixed
+
+- Tailnet curation now uses the project-owned `joshuadavidthomas.com/cap/ts-skills` capability name, accepted by Tailscale ACL policy.
+
 [unreleased]: https://github.com/joshuadavidthomas/ts-skills/commits/main

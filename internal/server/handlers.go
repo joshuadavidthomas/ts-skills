@@ -426,7 +426,7 @@ func (h *handler) resolveCurator(w http.ResponseWriter, r *http.Request) (curato
 	resolved, err := h.curator(r)
 	switch {
 	case errors.Is(err, errCurationDenied):
-		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
+		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant joshuadavidthomas.com/cap/ts-skills with curate:true, then try again.")
 	case err != nil:
 		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
 	default:

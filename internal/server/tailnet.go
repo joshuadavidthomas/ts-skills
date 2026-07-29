@@ -16,7 +16,7 @@ import (
 
 const (
 	startupTimeout       = 2 * time.Minute
-	skillsCapabilityName = tailcfg.PeerCapability("tailscale.com/cap/ts-skills")
+	skillsCapabilityName = tailcfg.PeerCapability("joshuadavidthomas.com/cap/ts-skills")
 )
 
 type capabilityRule struct {

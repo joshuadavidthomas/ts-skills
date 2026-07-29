@@ -57,7 +57,7 @@ Directory-only upload is a deliberate v1 narrowing from the original ZIP-and-dir
 
 ## Access model
 
-Tailnet policy decides who may reach the prototype. Reachability grants read access to the catalog, candidate reviews, and published trees. Uploading, publishing, and changing the current publication require the `tailscale.com/cap/ts-skills` application capability with `{"curate": true}`, granted through Tailscale ACL grants.
+Tailnet policy decides who may reach the prototype. Reachability grants read access to the catalog, candidate reviews, and published trees. Uploading, publishing, and changing the current publication require the `joshuadavidthomas.com/cap/ts-skills` application capability with `{"curate": true}`, granted through Tailscale ACL grants.
 
 The prototype has no namespace ownership policy or role hierarchy beyond this curation permission. The daemon derives identity and application capabilities only from WhoIs and records the Tailnet identity responsible for uploads and publications; it never trusts caller-supplied identity headers.
 

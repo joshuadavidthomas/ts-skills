@@ -98,7 +98,7 @@ subject matched that full MagicDNS name and whose issuer was Let's Encrypt.
 The catalog request returned `200`.
 
 The same Tailnet identity received `403` from `POST /candidates`, so it has
-no `tailscale.com/cap/ts-skills` curation capability. A second enrollment
+no `joshuadavidthomas.com/cap/ts-skills` curation capability. A second enrollment
 attempt with `TS_SKILLSD_TAG=tag:skills-registry` failed before serving:
 
 ```text

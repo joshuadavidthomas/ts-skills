@@ -388,7 +388,7 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 				t.Fatalf("status = %d, want 403: %s", response.StatusCode, body)
 			}
 			if !strings.Contains(string(body), "You do not have permission to curate skills") ||
-				!strings.Contains(string(body), "tailscale.com/cap/ts-skills") {
+				!strings.Contains(string(body), "joshuadavidthomas.com/cap/ts-skills") {
 				t.Fatalf("permission error is missing guidance: %s", body)
 			}
 		})
