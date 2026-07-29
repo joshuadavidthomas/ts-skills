@@ -61,17 +61,17 @@ func clientTree(t *testing.T, body string) (agentskill.TreeDigest, []byte) {
 	return digest, archive.Bytes()
 }
 
-func remoteForServer(t *testing.T, server *httptest.Server) *Remote {
+func remoteForServer(t *testing.T, server *httptest.Server) *remote {
 	return remoteForServerWithLimits(t, server, safetree.PrototypeLimits())
 }
 
-func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits safetree.Limits) *Remote {
+func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits safetree.Limits) *remote {
 	t.Helper()
-	origin, err := ParseOrigin(server.URL)
+	origin, err := parseOrigin(server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	remote, err := NewRemote(origin, &http.Client{Timeout: 5 * time.Second}, t.TempDir(), limits)
+	remote, err := newRemote(origin, &http.Client{Timeout: 5 * time.Second}, t.TempDir(), limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,11 +88,11 @@ func TestParseOrigin(t *testing.T) {
 	}
 	for name, text := range valid {
 		t.Run(name, func(t *testing.T) {
-			origin, err := ParseOrigin(text)
+			origin, err := parseOrigin(text)
 			if err != nil {
 				t.Fatalf("ParseOrigin(%q): %v", text, err)
 			}
-			if got := origin.URL().String(); got != strings.TrimSuffix(text, "/") {
+			if got := origin.asURL().String(); got != strings.TrimSuffix(text, "/") {
 				t.Fatalf("origin.URL().String() = %q, want %q", got, strings.TrimSuffix(text, "/"))
 			}
 		})
@@ -113,7 +113,7 @@ func TestParseOrigin(t *testing.T) {
 	}
 	for _, text := range invalid {
 		t.Run("reject "+text, func(t *testing.T) {
-			if _, err := ParseOrigin(text); err == nil {
+			if _, err := parseOrigin(text); err == nil {
 				t.Fatalf("ParseOrigin(%q) succeeded", text)
 			}
 		})
@@ -121,13 +121,13 @@ func TestParseOrigin(t *testing.T) {
 }
 
 func TestOriginURLReturnsFreshCopy(t *testing.T) {
-	origin, err := ParseOrigin("https://registry.example.ts.net")
+	origin, err := parseOrigin("https://registry.example.ts.net")
 	if err != nil {
 		t.Fatal(err)
 	}
-	url := origin.URL()
+	url := origin.asURL()
 	url.Path = "/changed"
-	if got := origin.URL().String(); got != "https://registry.example.ts.net" {
+	if got := origin.asURL().String(); got != "https://registry.example.ts.net" {
 		t.Fatalf("origin.URL().String() after URL mutation = %q", got)
 	}
 }
@@ -156,20 +156,20 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	}))
 	defer server.Close()
 	remote := remoteForServerWithLimits(t, server, limits)
-	requirement, err := Exact(clientSkill(t), digest)
+	requirement, err := exact(clientSkill(t), digest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fetched, err := remote.Fetch(context.Background(), requirement)
+	fetched, err := remote.fetch(context.Background(), requirement)
 	if err != nil {
 		t.Fatalf("fetch tree archive: %v", err)
 	}
-	if err := fetched.Tree.Close(); err != nil {
+	if err := fetched.tree.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	oversized = true
-	if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
+	if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
 		t.Fatalf("oversize tree archive error = %v, want %v", err, safetree.ErrLimitExceeded)
 	}
 }
@@ -184,7 +184,7 @@ func TestDecodeZIPPreservesCancellation(t *testing.T) {
 	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	remote := &Remote{stagingParent: t.TempDir(), limits: safetree.PrototypeLimits()}
+	remote := &remote{stagingParent: t.TempDir(), limits: safetree.PrototypeLimits()}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, err := remote.decodeZIP(ctx, archivePath)
@@ -220,11 +220,11 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 			defer server.Close()
 			remote := remoteForServer(t, server)
 			digest, _ := clientTree(t, "error mapping")
-			requirement, err := Exact(clientSkill(t), digest)
+			requirement, err := exact(clientSkill(t), digest)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, test.want) {
+			if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, test.want) {
 				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
 			}
 		})
@@ -283,11 +283,11 @@ func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
 				_, _ = w.Write(test.archive)
 			}))
 			defer server.Close()
-			requirement, err := Exact(clientSkill(t), digest)
+			requirement, err := exact(clientSkill(t), digest)
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = remoteForServerWithLimits(t, server, test.limits).Fetch(context.Background(), requirement)
+			_, err = remoteForServerWithLimits(t, server, test.limits).fetch(context.Background(), requirement)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
 			}
@@ -315,33 +315,30 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 		_, _ = w.Write(treeZIP)
 	}))
 	defer server.Close()
-	installer, err := NewInstaller(remoteForServer(t, server))
-	if err != nil {
+	installer := &installer{remote: remoteForServer(t, server)}
+	project, _ := openProject(t.TempDir())
+	requirement, _ := current(skill)
+	if _, err := installer.install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
-	project, _ := OpenProject(t.TempDir())
-	requirement, _ := Current(skill)
-	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
-		t.Fatal(err)
-	}
-	beforeTree, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	beforeTree, err := os.ReadFile(filepath.Join(project.skillsDir(), "sample", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read installed baseline tree: %v", err)
 	}
-	beforeLock, err := os.ReadFile(project.LockPath())
+	beforeLock, err := os.ReadFile(project.lockPath())
 	if err != nil {
 		t.Fatalf("read installed baseline lock: %v", err)
 	}
 
 	currentDigest = secondDigest
-	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrDigestMismatch) {
+	if _, err := installer.install(context.Background(), project, requirement); !errors.Is(err, errDigestMismatch) {
 		t.Fatalf("mismatched install error = %v", err)
 	}
-	afterTree, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	afterTree, err := os.ReadFile(filepath.Join(project.skillsDir(), "sample", "SKILL.md"))
 	if err != nil {
 		t.Fatalf("read tree after rejected install: %v", err)
 	}
-	afterLock, err := os.ReadFile(project.LockPath())
+	afterLock, err := os.ReadFile(project.lockPath())
 	if err != nil {
 		t.Fatalf("read lock after rejected install: %v", err)
 	}
@@ -376,23 +373,20 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	}))
 	defer server.Close()
 
-	installer, err := NewInstaller(remoteForServer(t, server))
+	installer := &installer{remote: remoteForServer(t, server)}
+	project, err := openProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := OpenProject(t.TempDir())
+	requirement, err := current(skill)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requirement, err := Current(skill)
-	if err != nil {
+	if _, err := installer.install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
-		t.Fatal(err)
-	}
-	documentPath := filepath.Join(project.SkillsDir(), "sample", "SKILL.md")
-	assetPath := filepath.Join(project.SkillsDir(), "sample", "assets", "data.txt")
+	documentPath := filepath.Join(project.skillsDir(), "sample", "SKILL.md")
+	assetPath := filepath.Join(project.skillsDir(), "sample", "assets", "data.txt")
 	documentBefore, err := os.ReadFile(documentPath)
 	if err != nil {
 		t.Fatal(err)
@@ -401,7 +395,7 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	lockBefore, err := os.ReadFile(project.LockPath())
+	lockBefore, err := os.ReadFile(project.lockPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +403,7 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	currentDigest = secondDigest
 	treeZIP = secondZIP
 	truncateTree = true
-	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, io.ErrUnexpectedEOF) {
+	if _, err := installer.install(context.Background(), project, requirement); !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Fatalf("truncated update error = %v, want io.ErrUnexpectedEOF", err)
 	}
 	documentAfter, err := os.ReadFile(documentPath)
@@ -420,7 +414,7 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	lockAfter, err := os.ReadFile(project.LockPath())
+	lockAfter, err := os.ReadFile(project.lockPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +432,7 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 	skill := clientSkill(t)
 	digest, validZIP := clientTree(t, "valid")
-	requirement, _ := Exact(skill, digest)
+	requirement, _ := exact(skill, digest)
 	var unsafe bytes.Buffer
 	unsafeWriter := zip.NewWriter(&unsafe)
 	entry, _ := unsafeWriter.CreateHeader(&zip.FileHeader{Name: "../SKILL.md", Method: zip.Store})
@@ -489,7 +483,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(test.handler)
 			defer server.Close()
-			_, err := remoteForServer(t, server).Fetch(context.Background(), requirement)
+			_, err := remoteForServer(t, server).fetch(context.Background(), requirement)
 			if err == nil {
 				t.Fatal("invalid response was accepted")
 			}
@@ -523,7 +517,7 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 			change: func(header http.Header) {
 				header.Set(headerPublicationNamespace, "other")
 			},
-			expectedErr: ErrIdentityMismatch,
+			expectedErr: errIdentityMismatch,
 		},
 		{
 			name: "missing name",
@@ -537,7 +531,7 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 			change: func(header http.Header) {
 				header.Set(headerPublicationName, "other")
 			},
-			expectedErr: ErrIdentityMismatch,
+			expectedErr: errIdentityMismatch,
 		},
 		{
 			name: "missing digest",
@@ -551,7 +545,7 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 			change: func(header http.Header) {
 				header.Set(headerPublicationDigest, otherDigest.String())
 			},
-			expectedErr: ErrIdentityMismatch,
+			expectedErr: errIdentityMismatch,
 		},
 	}
 
@@ -575,17 +569,17 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 				}))
 				defer server.Close()
 
-				var requirement Requirement
+				var requirement requirement
 				var err error
 				if mode == "exact" {
-					requirement, err = Exact(skill, digest)
+					requirement, err = exact(skill, digest)
 				} else {
-					requirement, err = Current(skill)
+					requirement, err = current(skill)
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
-				fetched, err := remoteForServer(t, server).Fetch(context.Background(), requirement)
+				fetched, err := remoteForServer(t, server).fetch(context.Background(), requirement)
 				if test.expectedErr != nil {
 					if !errors.Is(err, test.expectedErr) {
 						t.Fatalf("fetch error = %v, want %v", err, test.expectedErr)
@@ -595,13 +589,13 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if fetched.Publication.Skill() != skill || fetched.Publication.Tree() != digest {
-					t.Fatalf("fetched publication = %s@%s", fetched.Publication.Skill().String(), fetched.Publication.Tree().String())
+				if fetched.publication.Skill() != skill || fetched.publication.Tree() != digest {
+					t.Fatalf("fetched publication = %s@%s", fetched.publication.Skill().String(), fetched.publication.Tree().String())
 				}
-				if contents, err := fs.ReadFile(fetched.Tree, "assets/data.txt"); err != nil || string(contents) != "asset" {
+				if contents, err := fs.ReadFile(fetched.tree, "assets/data.txt"); err != nil || string(contents) != "asset" {
 					t.Fatalf("rootless fetched asset = %q, %v", contents, err)
 				}
-				if err := fetched.Tree.Close(); err != nil {
+				if err := fetched.tree.Close(); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -616,9 +610,9 @@ func TestRemoteRejectsCurrentResponseForAnotherSkill(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "other", Name: "sample", Digest: digest.String()})
 	}))
 	defer server.Close()
-	requirement, _ := Current(clientSkill(t))
-	_, err := remoteForServer(t, server).Fetch(context.Background(), requirement)
-	if !errors.Is(err, ErrIdentityMismatch) {
+	requirement, _ := current(clientSkill(t))
+	_, err := remoteForServer(t, server).fetch(context.Background(), requirement)
+	if !errors.Is(err, errIdentityMismatch) {
 		t.Fatalf("identity mismatch error = %v", err)
 	}
 }

@@ -10,52 +10,52 @@ import (
 	"path/filepath"
 )
 
-type Project struct{ root string }
+type project struct{ root string }
 
-func OpenProject(source string) (Project, error) {
+func openProject(source string) (project, error) {
 	if source == "" {
-		return Project{}, fmt.Errorf("project path must be explicit")
+		return project{}, fmt.Errorf("project path must be explicit")
 	}
 	absolute, err := filepath.Abs(source)
 	if err != nil {
-		return Project{}, fmt.Errorf("resolve project path: %w", err)
+		return project{}, fmt.Errorf("resolve project path: %w", err)
 	}
 	canonical, err := filepath.EvalSymlinks(absolute)
 	if err != nil {
-		return Project{}, fmt.Errorf("resolve project path symlinks: %w", err)
+		return project{}, fmt.Errorf("resolve project path symlinks: %w", err)
 	}
 	if err := rejectPathComponents(canonical, false); err != nil {
-		return Project{}, fmt.Errorf("inspect project path: %w", err)
+		return project{}, fmt.Errorf("inspect project path: %w", err)
 	}
 	info, err := os.Lstat(canonical)
 	if err != nil || pathInfoIsLink(info) || !info.IsDir() {
-		return Project{}, fmt.Errorf("project path is not a real directory")
+		return project{}, fmt.Errorf("project path is not a real directory")
 	}
-	return Project{root: filepath.Clean(canonical)}, nil
+	return project{root: filepath.Clean(canonical)}, nil
 }
 
-func (p Project) validate() error {
+func (p project) validate() error {
 	if p.root == "" {
-		return fmt.Errorf("project must be opened with OpenProject")
+		return fmt.Errorf("project path must be opened explicitly")
 	}
 	return nil
 }
 
-func (p Project) SkillsDir() string              { return filepath.Join(p.root, ".agents", "skills") }
-func (p Project) LockPath() string               { return filepath.Join(p.root, ".agents", "ts-skills.lock") }
-func (p Project) StateDir() string               { return filepath.Join(p.root, ".agents", ".ts-skills") }
-func (p Project) destination(name string) string { return filepath.Join(p.SkillsDir(), name) }
+func (p project) skillsDir() string              { return filepath.Join(p.root, ".agents", "skills") }
+func (p project) lockPath() string               { return filepath.Join(p.root, ".agents", "ts-skills.lock") }
+func (p project) stateDir() string               { return filepath.Join(p.root, ".agents", ".ts-skills") }
+func (p project) destination(name string) string { return filepath.Join(p.skillsDir(), name) }
 
-func prepareManagedDirectories(project Project) error {
+func prepareManagedDirectories(project project) error {
 	if err := ensureRealDirectory(project.root, false); err != nil {
 		return err
 	}
-	for _, directory := range []string{filepath.Join(project.root, ".agents"), project.SkillsDir(), project.StateDir()} {
+	for _, directory := range []string{filepath.Join(project.root, ".agents"), project.skillsDir(), project.stateDir()} {
 		if err := ensureRealDirectory(directory, true); err != nil {
 			return err
 		}
 	}
-	return rejectLink(project.LockPath(), true)
+	return rejectLink(project.lockPath(), true)
 }
 
 func ensureRealDirectory(name string, create bool) error {

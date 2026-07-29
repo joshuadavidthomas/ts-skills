@@ -56,7 +56,7 @@ func (v *verifiedTree) transfer() (string, error) {
 }
 
 type projectWriter struct {
-	project       Project
+	project       project
 	lock          *flock.Flock
 	staging       map[string]struct{}
 	syncDirectory func(string) error
@@ -64,7 +64,7 @@ type projectWriter struct {
 	closed        bool
 }
 
-func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
+func (p project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("acquire project writer: context is nil")
 	}
@@ -74,7 +74,7 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if err := prepareManagedDirectories(p); err != nil {
 		return nil, fmt.Errorf("prepare project paths: %w", err)
 	}
-	lockPath := filepath.Join(p.StateDir(), "write.lock")
+	lockPath := filepath.Join(p.stateDir(), "write.lock")
 	if err := rejectLink(lockPath, true); err != nil {
 		return nil, err
 	}
@@ -84,7 +84,7 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 		return nil, errors.Join(fmt.Errorf("acquire project writer lock: %w", err), fileLock.Close())
 	}
 	if !locked {
-		return nil, errors.Join(ErrBusy, fileLock.Close())
+		return nil, errors.Join(errBusy, fileLock.Close())
 	}
 	writer := &projectWriter{project: p, lock: fileLock, staging: make(map[string]struct{}), syncDirectory: syncDirectory, rename: os.Rename}
 	if err := writer.sweepLitter(ctx); err != nil {
@@ -119,8 +119,8 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 		parent   string
 		prefixes []string
 	}{
-		{w.project.SkillsDir(), []string{installStagingPrefix, installTrashGarbagePrefix}},
-		{filepath.Dir(w.project.LockPath()), []string{lockTemporaryPrefix}},
+		{w.project.skillsDir(), []string{installStagingPrefix, installTrashGarbagePrefix}},
+		{filepath.Dir(w.project.lockPath()), []string{lockTemporaryPrefix}},
 	} {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(sweepErr, err)
@@ -147,7 +147,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 				sweepErr = errors.Join(sweepErr, statErr)
 				continue
 			}
-			if pathInfoIsLink(info) || (!info.IsDir() && location.parent == w.project.SkillsDir()) || (info.IsDir() && location.parent != w.project.SkillsDir()) {
+			if pathInfoIsLink(info) || (!info.IsDir() && location.parent == w.project.skillsDir()) || (info.IsDir() && location.parent != w.project.skillsDir()) {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("install litter %q has an unsafe shape", path))
 				continue
 			}
@@ -156,7 +156,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 			}
 		}
 	}
-	entries, err := os.ReadDir(w.project.SkillsDir())
+	entries, err := os.ReadDir(w.project.skillsDir())
 	if err != nil {
 		return errors.Join(sweepErr, fmt.Errorf("read install litter: %w", err))
 	}
@@ -167,7 +167,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 		if !strings.HasPrefix(entry.Name(), installTrashPendingPrefix) && !strings.HasPrefix(entry.Name(), installTrashRecoveryPrefix) {
 			continue
 		}
-		path := filepath.Join(w.project.SkillsDir(), entry.Name())
+		path := filepath.Join(w.project.skillsDir(), entry.Name())
 		recovered, err := w.recoverLockedTrash(ctx, path)
 		if err != nil {
 			sweepErr = errors.Join(sweepErr, err)
@@ -182,11 +182,11 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 			continue
 		}
 		if stale != nil {
-			if err := w.syncDirectory(filepath.Dir(w.project.LockPath())); err != nil {
+			if err := w.syncDirectory(filepath.Dir(w.project.lockPath())); err != nil {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("sync project lock directory: %w", err))
 				continue
 			}
-			if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+			if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("sync skill directory: %w", err))
 				continue
 			}
@@ -195,7 +195,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 					sweepErr = errors.Join(sweepErr, fmt.Errorf("remove uncommitted install destination: %w", err))
 					continue
 				}
-				if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+				if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 					sweepErr = errors.Join(sweepErr, fmt.Errorf("sync removed install destination: %w", err))
 					continue
 				}
@@ -234,12 +234,12 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if err != nil {
 		return false, err
 	}
-	locked, found := lock.Lookup(skill)
+	locked, found := lock.lookup(skill)
 	if !found {
 		return false, nil
 	}
 	state, err := w.destinationState(ctx, skill)
-	if err != nil || (state.exists && state.digest == locked.Publication.Tree()) {
+	if err != nil || (state.exists && state.digest == locked.publication.Tree()) {
 		return false, err
 	}
 	if state.exists && state.digest != inFlight {
@@ -252,7 +252,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 		}
 		return false, nil
 	}
-	if digest != locked.Publication.Tree() {
+	if digest != locked.publication.Tree() {
 		return false, nil
 	}
 	if err := ctx.Err(); err != nil {
@@ -272,7 +272,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if err := w.rename(filepath.Join(path, trashTreeName), w.project.destination(skill.Name().String())); err != nil {
 		return false, err
 	}
-	if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+	if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 		return false, err
 	}
 	return true, w.discardTrash(path)
@@ -306,13 +306,16 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 	if err != nil {
 		return nil, err
 	}
-	if locked, found := lock.Lookup(skill); found {
-		if state.exists && state.digest == locked.Publication.Tree() {
+	if !record.HadDestination && !state.exists {
+		return &staleTrash{skill: skill}, nil
+	}
+	if locked, found := lock.lookup(skill); found {
+		if state.exists && state.digest == locked.publication.Tree() {
 			return &staleTrash{skill: skill}, nil
 		}
 		return nil, nil
 	}
-	if record.HadDestination || !state.exists {
+	if record.HadDestination {
 		return nil, nil
 	}
 	tree, err := agentskill.ParseTreeDigest(record.Tree)
@@ -343,7 +346,7 @@ func readTrashRecord(path string) (trashRecord, agentskill.SkillID, error) {
 }
 
 func (w *projectWriter) createTrash(publication agentskill.PublicationID, hadDestination bool) (string, error) {
-	path, err := temporaryPath(w.project.SkillsDir(), installTrashPendingPrefix)
+	path, err := temporaryPath(w.project.skillsDir(), installTrashPendingPrefix)
 	if err != nil {
 		return "", err
 	}
@@ -360,7 +363,7 @@ func (w *projectWriter) createTrash(publication agentskill.PublicationID, hadDes
 	if err := w.syncDirectory(path); err != nil {
 		return "", errors.Join(err, os.RemoveAll(path))
 	}
-	if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+	if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -375,25 +378,25 @@ func (w *projectWriter) transitionTrash(path, from, to string) (string, error) {
 	if err := w.rename(path, next); err != nil {
 		return "", err
 	}
-	if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+	if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 		return "", err
 	}
 	return next, nil
 }
 
-func (w *projectWriter) readLock() (Lock, []byte, bool, error) {
-	if err := rejectLink(w.project.LockPath(), true); err != nil {
-		return Lock{}, nil, false, fmt.Errorf("inspect project lock: %w", err)
+func (w *projectWriter) readLock() (lock, []byte, bool, error) {
+	if err := rejectLink(w.project.lockPath(), true); err != nil {
+		return lock{}, nil, false, fmt.Errorf("inspect project lock: %w", err)
 	}
-	contents, err := os.ReadFile(w.project.LockPath())
+	contents, err := os.ReadFile(w.project.lockPath())
 	if errors.Is(err, fs.ErrNotExist) {
-		lock, lockErr := NewLock(nil)
+		lock, lockErr := newLock(nil)
 		return lock, nil, false, lockErr
 	}
 	if err != nil {
-		return Lock{}, nil, false, fmt.Errorf("read project lock: %w", err)
+		return lock{}, nil, false, fmt.Errorf("read project lock: %w", err)
 	}
-	lock, err := DecodeLock(bytes.NewReader(contents))
+	lock, err := decodeLock(bytes.NewReader(contents))
 	return lock, contents, true, err
 }
 

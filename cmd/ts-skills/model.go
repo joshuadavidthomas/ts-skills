@@ -6,36 +6,36 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
-type Requirement struct {
+type requirement struct {
 	skill  agentskill.SkillID
 	digest agentskill.TreeDigest
 	exact  bool
 }
 
-func Current(skill agentskill.SkillID) (Requirement, error) {
+func current(skill agentskill.SkillID) (requirement, error) {
 	if skill.String() == "" {
-		return Requirement{}, fmt.Errorf("current requirement needs a valid skill")
+		return requirement{}, fmt.Errorf("current requirement needs a valid skill")
 	}
-	return Requirement{skill: skill}, nil
+	return requirement{skill: skill}, nil
 }
 
-func Exact(skill agentskill.SkillID, digest agentskill.TreeDigest) (Requirement, error) {
+func exact(skill agentskill.SkillID, digest agentskill.TreeDigest) (requirement, error) {
 	if skill.String() == "" {
-		return Requirement{}, fmt.Errorf("exact requirement needs a valid skill")
+		return requirement{}, fmt.Errorf("exact requirement needs a valid skill")
 	}
-	return Requirement{skill: skill, digest: digest, exact: true}, nil
+	return requirement{skill: skill, digest: digest, exact: true}, nil
 }
 
-func (r Requirement) Skill() agentskill.SkillID { return r.skill }
-func (r Requirement) ExactDigest() (agentskill.TreeDigest, bool) {
+func (r requirement) skillID() agentskill.SkillID { return r.skill }
+func (r requirement) exactDigest() (agentskill.TreeDigest, bool) {
 	return r.digest, r.exact
 }
 
-type LockedSkill struct {
-	Publication agentskill.PublicationID
+type lockedSkill struct {
+	publication agentskill.PublicationID
 }
 
-type FetchedSkill struct {
-	Publication agentskill.PublicationID
-	Tree        *fetchedTree
+type fetchedSkill struct {
+	publication agentskill.PublicationID
+	tree        *fetchedTree
 }

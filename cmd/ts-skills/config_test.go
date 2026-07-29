@@ -27,12 +27,12 @@ func TestLoadAcceptsOnlyOneStrictRegistryOrigin(t *testing.T) {
 			if err := os.WriteFile(path, []byte(test.body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			loaded, err := Load(path)
+			loaded, err := load(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if loaded.Registry.URL().String() != test.wantURL {
-				t.Fatalf("registry = %v, want %s", loaded.Registry.URL(), test.wantURL)
+			if loaded.registry.asURL().String() != test.wantURL {
+				t.Fatalf("registry = %v, want %s", loaded.registry.asURL(), test.wantURL)
 			}
 		})
 	}
@@ -43,11 +43,11 @@ func TestLoadProducesOriginAcceptedByRemote(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`registry = "http://127.0.0.1:8080"`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := Load(path)
+	loaded, err := load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewRemote(loaded.Registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
+	if _, err := newRemote(loaded.registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
 		t.Fatalf("NewRemote(config registry): %v", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestLoadRejectsMissingAndUnknownFields(t *testing.T) {
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := Load(path); err == nil {
+			if _, err := load(path); err == nil {
 				t.Fatalf("accepted config %q", body)
 			}
 		})
@@ -77,7 +77,7 @@ func TestLoadRejectsMissingAndUnknownFields(t *testing.T) {
 }
 
 func TestDefaultPathUsesTSkillsConfigFile(t *testing.T) {
-	path, err := DefaultPath()
+	path, err := defaultPath()
 	if err != nil {
 		t.Fatal(err)
 	}

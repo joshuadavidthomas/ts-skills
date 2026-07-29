@@ -25,10 +25,10 @@ func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	constructErr := errors.New("injected registry client construction failure")
-	newClientRemote = func(Origin, *http.Client, string, safetree.Limits) (*Remote, error) {
+	newClientRemote = func(origin, *http.Client, string, safetree.Limits) (*remote, error) {
 		return nil, constructErr
 	}
-	t.Cleanup(func() { newClientRemote = NewRemote })
+	t.Cleanup(func() { newClientRemote = newRemote })
 	cleanupErr := errors.New("injected staging removal failure")
 	removeClientStaging = func(string) error { return cleanupErr }
 	t.Cleanup(func() { removeClientStaging = os.RemoveAll })

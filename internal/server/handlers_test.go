@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"io/fs"
 	"log/slog"
 	"mime/multipart"
 	"net/http"
@@ -467,6 +468,58 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	wantNames := []string{"SKILL.md", "assets/inert.txt"}
 	if fmt.Sprint(names) != fmt.Sprint(wantNames) {
 		t.Fatalf("tree ZIP entries = %v, want %v", names, wantNames)
+	}
+}
+
+type cancelAfterReadTree struct {
+	files  fstest.MapFS
+	cancel context.CancelFunc
+}
+
+func (t cancelAfterReadTree) Open(name string) (fs.File, error) {
+	file, err := t.files.Open(name)
+	if err != nil || name == "." {
+		return file, err
+	}
+	return &cancelAfterReadTreeFile{File: file, cancel: t.cancel}, nil
+}
+
+func (t cancelAfterReadTree) ReadDir(name string) ([]fs.DirEntry, error) {
+	return t.files.ReadDir(name)
+}
+
+type cancelAfterReadTreeFile struct {
+	fs.File
+	cancelled bool
+	cancel    context.CancelFunc
+}
+
+func (t *cancelAfterReadTreeFile) Read(buffer []byte) (int, error) {
+	read, err := t.File.Read(buffer)
+	if read > 0 && !t.cancelled {
+		t.cancelled = true
+		t.cancel()
+	}
+	return read, err
+}
+
+func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	staging := t.TempDir()
+	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: agentskill.TreeArchiveMaxBytes}
+	tree := cancelAfterReadTree{
+		files:  fstest.MapFS{"large": {Data: bytes.Repeat([]byte("x"), 128<<10)}},
+		cancel: cancel,
+	}
+	if _, err := h.rootlessZIP(ctx, tree); !errors.Is(err, context.Canceled) {
+		t.Fatalf("rootlessZIP() error = %v, want context cancellation", err)
+	}
+	entries, err := os.ReadDir(staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("partial archive remains after cancellation: %v", entries)
 	}
 }
 

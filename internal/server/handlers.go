@@ -588,7 +588,7 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 		if err != nil {
 			return nil, errors.Join(fmt.Errorf("open published tree file: %w", err), writer.Close())
 		}
-		_, copyErr := io.Copy(output, input)
+		_, copyErr := io.Copy(output, &requestContextReader{ctx: ctx, source: input})
 		closeInputErr := input.Close()
 		if err := errors.Join(copyErr, closeInputErr); err != nil {
 			return nil, errors.Join(fmt.Errorf("write tree archive entry: %w", err), writer.Close())

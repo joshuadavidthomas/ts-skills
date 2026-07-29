@@ -62,15 +62,15 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if err != nil {
 		return fmt.Errorf("parse skill %q: %w", flags.Arg(0), err)
 	}
-	var requirement Requirement
+	var requirement requirement
 	if *digestText == "" {
-		requirement, err = Current(skill)
+		requirement, err = current(skill)
 	} else {
 		digest, parseErr := agentskill.ParseTreeDigest(*digestText)
 		if parseErr != nil {
 			return fmt.Errorf("parse --digest: %w", parseErr)
 		}
-		requirement, err = Exact(skill, digest)
+		requirement, err = exact(skill, digest)
 	}
 	if err != nil {
 		return err
@@ -80,11 +80,11 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 		return err
 	}
 	defer func() { err = errors.Join(err, cleanup()) }()
-	locked, err := installer.Install(ctx, project, requirement)
+	locked, err := installer.install(ctx, project, requirement)
 	if err != nil {
 		return commandError("install", err)
 	}
-	publication := locked.Publication
+	publication := locked.publication
 	_, err = fmt.Fprintf(stdout, "Installed %s at %s.\n", publication.Skill().String(), publication.Tree().String())
 	return err
 }
@@ -112,7 +112,7 @@ func runRestore(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 		return err
 	}
 	defer func() { err = errors.Join(err, cleanup()) }()
-	if err := installer.Restore(ctx, project); err != nil {
+	if err := installer.restore(ctx, project); err != nil {
 		return commandError("restore", err)
 	}
 	_, err = fmt.Fprintln(stdout, "Restored locked skills.")
@@ -138,7 +138,7 @@ type reportedError struct{ err error }
 func (e reportedError) Error() string { return e.err.Error() }
 func (e reportedError) Unwrap() error { return e.err }
 
-// AlreadyReported reports whether err's diagnostics were already shown to
+// alreadyReported reports whether err's diagnostics were already shown to
 // the user, so the caller should exit nonzero without printing it again.
 func alreadyReported(err error) bool {
 	var reported reportedError
@@ -147,53 +147,50 @@ func alreadyReported(err error) bool {
 
 // Package-private test seams for construction and staging cleanup failures.
 var (
-	newClientRemote     = NewRemote
+	newClientRemote     = newRemote
 	removeClientStaging = os.RemoveAll
 )
 
-func commandInstaller(configPath, projectPath string) (*Installer, Project, func() error, error) {
+func commandInstaller(configPath, projectPath string) (*installer, project, func() error, error) {
 	noop := func() error { return nil }
 	if configPath == "" {
 		var err error
-		configPath, err = DefaultPath()
+		configPath, err = defaultPath()
 		if err != nil {
-			return nil, Project{}, noop, err
+			return nil, project{}, noop, err
 		}
 	}
-	settings, err := Load(configPath)
+	settings, err := load(configPath)
 	if err != nil {
-		return nil, Project{}, noop, err
+		return nil, project{}, noop, err
 	}
-	project, err := OpenProject(projectPath)
+	openedProject, err := openProject(projectPath)
 	if err != nil {
-		return nil, Project{}, noop, err
+		return nil, project{}, noop, err
 	}
 	staging, err := os.MkdirTemp("", "ts-skills-client-")
 	if err != nil {
-		return nil, Project{}, noop, fmt.Errorf("create client staging directory: %w", err)
+		return nil, project{}, noop, fmt.Errorf("create client staging directory: %w", err)
 	}
 	cleanup := func() error { return removeClientStaging(staging) }
-	remote, err := newClientRemote(settings.Registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
+	remote, err := newClientRemote(settings.registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
 	if err != nil {
-		return nil, Project{}, noop, errors.Join(err, cleanup())
+		return nil, project{}, noop, errors.Join(err, cleanup())
 	}
-	installer, err := NewInstaller(remote)
-	if err != nil {
-		return nil, Project{}, noop, errors.Join(err, cleanup())
-	}
-	return installer, project, cleanup, nil
+	installer := &installer{remote: remote}
+	return installer, openedProject, cleanup, nil
 }
 
 func commandError(operation string, err error) error {
 	var message string
 	switch {
-	case errors.Is(err, ErrBusy):
+	case errors.Is(err, errBusy):
 		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
-	case errors.Is(err, ErrLocalChanges):
+	case errors.Is(err, errLocalChanges):
 		message = fmt.Sprintf("cannot %s because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again", operation)
-	case errors.Is(err, ErrProjectChanged):
+	case errors.Is(err, errProjectChanged):
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
-	case errors.Is(err, ErrIdentityMismatch), errors.Is(err, ErrDigestMismatch):
+	case errors.Is(err, errIdentityMismatch), errors.Is(err, errDigestMismatch):
 		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
 	case errors.Is(err, errNotFound):
 		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
