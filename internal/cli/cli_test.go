@@ -17,7 +17,6 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/client"
-	"github.com/joshuadavidthomas/ts-skills/internal/install"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
@@ -182,19 +181,6 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 				t.Fatalf("commandError = %v, want errors.Is %v", got, test.err)
 			}
 		})
-	}
-}
-
-func TestCommandErrorReportsPriorRecovery(t *testing.T) {
-	err := commandError("install", errors.Join(install.ErrIdentityMismatch, install.ErrRecovered))
-	if !strings.Contains(err.Error(), "a previously interrupted project update was recovered") {
-		t.Fatalf("commandError = %q, want recovery notice", err)
-	}
-	if strings.Contains(err.Error(), "project files were not changed") {
-		t.Fatalf("commandError = %q, reports an unchanged project after recovery", err)
-	}
-	if !errors.Is(err, install.ErrIdentityMismatch) || !errors.Is(err, install.ErrRecovered) {
-		t.Fatalf("commandError = %v, lost error classes", err)
 	}
 }
 

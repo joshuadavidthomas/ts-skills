@@ -96,7 +96,7 @@ Repeated directory uploads that contain the same normalized paths and bytes prod
 4. It stages, validates, and verifies each tree.
 5. It restores missing or stale managed content without overwriting unrelated content.
 
-Installation fails closed on local edits, uses one writer lock per canonical project, and recovers interrupted replacement through a durable same-filesystem journal.
+Installation uses one writer lock per canonical project. It stages a replacement beside its destination; rerunning install or restore clears crash litter and replaces any selected destination that disagrees with its lock.
 
 ## Product requirements
 
@@ -529,7 +529,7 @@ The executor plan resolves the prototype choices that this specification first l
 - SQLite facts plus immutable digest-addressed tree directories;
 - escaped `SKILL.md`, complete file list, provenance, and digest review;
 - Tailnet TLS through `tsnet` with connection-derived actors;
-- one physical project writer, durable journal recovery, and fail-closed local edits.
+- one physical project writer and convergent stage-and-rename installs.
 
 Deployment-specific Tailnet ACL, tag, auth-key, MagicDNS, and HTTPS changes remain under human control.
 

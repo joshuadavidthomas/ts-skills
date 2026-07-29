@@ -270,12 +270,14 @@ func TestRepeatedExactNetworkInstallLeavesDestinationAndLockUnchanged(t *testing
 	if !beforeDestination.ModTime().Equal(afterDestination.ModTime()) || !bytes.Equal(beforeLock, afterLock) {
 		t.Fatal("no-change install rewrote the destination or lock")
 	}
-	entries, err := os.ReadDir(filepath.Join(project.StateDir(), "operations"))
+	entries, err := os.ReadDir(project.SkillsDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 0 {
-		t.Fatalf("no-change install left operations: %v", entries)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".ts-skills-") {
+			t.Fatalf("no-change install left litter: %v", entries)
+		}
 	}
 	if !strings.Contains(string(afterLock), digestText) {
 		t.Fatalf("lock does not contain %s", digestText)

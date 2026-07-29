@@ -185,4 +185,4 @@ Use machine A for curation and machine B for installation.
 
 **"Registry is busy."** Another daemon holds the state-directory lock. One state directory, one daemon.
 
-**Install reports local changes.** The installed tree no longer matches its locked digest. Move your edited copy aside first; there is no force flag.
+**Preserve edited skills before install or restore.** Both commands replace the selected skill destination when it differs from the requested or locked digest.

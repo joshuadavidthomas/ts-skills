@@ -196,12 +196,6 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
 	case errors.Is(err, install.ErrProjectChanged):
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
-	case errors.Is(err, install.ErrUnmanagedDestination):
-		message = fmt.Sprintf("cannot %s because the skill destination exists outside this project lock; move it aside and try again", operation)
-	case errors.Is(err, install.ErrLocalChanges):
-		message = fmt.Sprintf("cannot %s because an installed skill has local changes; preserve or remove those changes before trying again", operation)
-	case errors.Is(err, install.ErrRecoveryRequired):
-		message = fmt.Sprintf("cannot %s because a prior project update needs manual recovery", operation)
 	case errors.Is(err, install.ErrIdentityMismatch), errors.Is(err, install.ErrDigestMismatch):
 		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
 	case errors.Is(err, registry.ErrNotFound):
@@ -216,9 +210,6 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
 	default:
 		message = fmt.Sprintf("%s failed", operation)
-	}
-	if errors.Is(err, install.ErrRecovered) {
-		message += "; a previously interrupted project update was recovered"
 	}
 	return fmt.Errorf("%s: %w", message, err)
 }

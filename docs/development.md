@@ -10,14 +10,14 @@ go test -race ./...
 go vet ./...
 ```
 
-The suite covers upload normalization, digest identity, SQLite restart, install and restore over HTTP, lock handling, interrupted transactions, Tailnet actor mapping, and daemon shutdown — all through in-process servers.
+The suite covers upload normalization, digest identity, SQLite restart, install and restore over HTTP, lock handling, stage-and-rename convergence, Tailnet actor mapping, and daemon shutdown — all through in-process servers.
 
 Useful focused runs while debugging:
 
 ```console
 go test ./internal/cli -run TestRunInstallsCurrentAndRestoresLockedTree
 go test ./internal/web -run 'TestReadOnlyAPICurrentAndExactDownloadsSurviveStorageRestart|TestRestoreUsesLockedPublicationAfterCurrentChanges'
-go test ./internal/install -run 'TestTransactionFailurePointsRecoverToLockDestinationAgreement|TestRestore'
+go test ./internal/install -run 'TestInstallIsIdempotentAndKeepsCanonicalLock|TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths'
 go test ./internal/daemon -run TestDevRuntimeServesLoopbackHTTPAsDevActor
 ```
 
