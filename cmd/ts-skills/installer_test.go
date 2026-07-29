@@ -264,11 +264,13 @@ func TestReplaceRollsBackWhenDestinationSyncFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failed := false
+	skillsSyncs := 0
 	writer.syncDirectory = func(path string) error {
-		if path == project.SkillsDir() && !failed {
-			failed = true
-			return errors.New("sync skills directory")
+		if path == project.SkillsDir() {
+			skillsSyncs++
+			if skillsSyncs == 3 {
+				return errors.New("sync skills directory")
+			}
 		}
 		return syncDirectory(path)
 	}
@@ -282,6 +284,75 @@ func TestReplaceRollsBackWhenDestinationSyncFails(t *testing.T) {
 	after, err := os.ReadFile(project.LockPath())
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("lock after rollback = %q, %v", after, err)
+	}
+}
+
+func TestReplaceRetainsRecoveryTrashWhenRestoreSyncFails(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	skillsSyncs := 0
+	writer.syncDirectory = func(path string) error {
+		if path == project.SkillsDir() {
+			skillsSyncs++
+			if skillsSyncs == 3 || skillsSyncs == 5 {
+				return errors.New("sync skills directory")
+			}
+		}
+		return syncDirectory(path)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after the rollback sync failed")
+	}
+	entries, err := os.ReadDir(project.SkillsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), installTrashRecoveryPrefix) {
+			return
+		}
+	}
+	t.Fatal("recovery trash was discarded after the rollback sync failed")
+}
+
+func TestReplaceRestoresOldTreeWhenMoveSyncFails(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	writer.syncDirectory = func(path string) error {
+		if strings.HasPrefix(filepath.Base(path), installTrashPendingPrefix) {
+			return errors.New("sync install trash")
+		}
+		return syncDirectory(path)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after moving the old tree could not sync")
+	}
+	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("destination after rollback = %q, %v", contents, err)
+	}
+}
+
+func TestReplaceDoesNotRemoveDestinationAfterStagedRenameFailure(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	renameErr := errors.New("replace staged skill")
+	writer.rename = func(old, new string) error {
+		if old == verified.path && new == destination {
+			if err := os.Mkdir(destination, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("outside writer"), 0o644); err != nil {
+				return err
+			}
+			return renameErr
+		}
+		return os.Rename(old, new)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after staged rename failure")
+	}
+	contents, err := os.ReadFile(filepath.Join(destination, "SKILL.md"))
+	if err != nil || string(contents) != "outside writer" {
+		t.Fatalf("destination after failed staged rename = %q, %v", contents, err)
 	}
 }
 
@@ -314,9 +385,13 @@ func TestReplacePreservesOldTreeWhenRollbackCannotRestoreIt(t *testing.T) {
 	project, writer, verified, newLock := stagedUpgrade(t)
 	destination := filepath.Join(project.SkillsDir(), "sample")
 	restoreErr := errors.New("restore old skill")
+	skillsSyncs := 0
 	writer.syncDirectory = func(path string) error {
 		if path == project.SkillsDir() {
-			return errors.New("sync skills directory")
+			skillsSyncs++
+			if skillsSyncs == 3 {
+				return errors.New("sync skills directory")
+			}
 		}
 		return syncDirectory(path)
 	}
@@ -347,7 +422,7 @@ func TestReplacePreservesOldTreeWhenRollbackCannotRestoreIt(t *testing.T) {
 	if trash == "" {
 		t.Fatal("old tree was not retained after rollback failure")
 	}
-	contents, err := os.ReadFile(filepath.Join(trash, "SKILL.md"))
+	contents, err := os.ReadFile(filepath.Join(trash, trashTreeName, "SKILL.md"))
 	if err != nil || !bytes.Contains(contents, []byte("old")) {
 		t.Fatalf("retained old tree = %q, %v", contents, err)
 	}
@@ -361,8 +436,158 @@ func TestReplacePreservesOldTreeWhenRollbackCannotRestoreIt(t *testing.T) {
 	if err := writer.close(); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(trash); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("recovery trash remains: %v", err)
+	}
+	contents, err = os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("recovered destination = %q, %v", contents, err)
+	}
+}
+
+func TestWriterRecoveryPreservesChangedDestination(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "old")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	inFlightDigest, _ := clientTree(t, "new")
+	trash := filepath.Join(project.SkillsDir(), installTrashRecoveryPrefix+"crash")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(trashRecord{
+		Skill:          requirement.Skill().String(),
+		Tree:           inFlightDigest.String(),
+		HadDestination: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	if err := os.Rename(destination, filepath.Join(trash, trashTreeName)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "SKILL.md"), []byte("post-crash edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(filepath.Join(destination, "SKILL.md"))
+	if err != nil || string(contents) != "post-crash edit" {
+		t.Fatalf("destination after recovery = %q, %v", contents, err)
+	}
 	if _, err := os.Stat(trash); err != nil {
-		t.Fatalf("recovery tree was swept: %v", err)
+		t.Fatalf("recovery trash was removed: %v", err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrLocalChanges) {
+		t.Fatalf("Install() error = %v, want ErrLocalChanges", err)
+	}
+}
+
+func TestWriterSweepPreservesChangedUncommittedDestination(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "installed")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	contents, found, err := readLockSnapshot(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("installed skill lock is missing")
+	}
+	lock, err := DecodeLock(bytes.NewReader(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, found := lock.Lookup(requirement.Skill())
+	if !found {
+		t.Fatal("installed skill is missing from the lock")
+	}
+	if err := os.Remove(project.LockPath()); err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(project.SkillsDir(), installTrashPendingPrefix+"crash")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(trashRecord{Skill: requirement.Skill().String(), Tree: locked.Publication.Tree().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	if err := os.WriteFile(filepath.Join(destination, "local.txt"), []byte("post-crash edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	if _, err := os.Stat(filepath.Join(destination, "local.txt")); err != nil {
+		t.Fatalf("post-crash destination edit was removed: %v", err)
+	}
+	if _, err := os.Stat(trash); err != nil {
+		t.Fatalf("recovery trash was removed: %v", err)
+	}
+}
+
+func TestWriterSweepLitterHonorsCancellationWhileHashingRecoveryTrash(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "installed")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	lock, _, _, err := writer.readLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, found := lock.Lookup(requirement.Skill())
+	if !found {
+		t.Fatal("installed skill is missing from the lock")
+	}
+	trash := filepath.Join(project.SkillsDir(), installTrashRecoveryPrefix+"crash")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(trashRecord{
+		Skill:          requirement.Skill().String(),
+		Tree:           locked.Publication.Tree().String(),
+		HadDestination: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(project.SkillsDir(), "sample"), filepath.Join(trash, trashTreeName)); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := writer.sweepLitter(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("sweepLitter() error = %v, want context cancellation", err)
 	}
 }
 
@@ -423,7 +648,7 @@ func TestRevalidationPreservesOperationalErrors(t *testing.T) {
 	}
 }
 
-func TestWriterSweepsStagingAndKeepsRecoveryTrash(t *testing.T) {
+func TestWriterSweepsStagingAndKeepsUnknownTrash(t *testing.T) {
 	project, _ := OpenProject(t.TempDir())
 	writer, err := project.acquireWriter(context.Background())
 	if err != nil {
@@ -449,9 +674,93 @@ func TestWriterSweepsStagingAndKeepsRecoveryTrash(t *testing.T) {
 		t.Fatalf("staging litter remains: %v", err)
 	}
 	if _, err := os.Stat(trash); err != nil {
-		t.Fatalf("recovery trash was removed: %v", err)
+		t.Fatalf("unknown trash was removed: %v", err)
 	}
 	if _, err := os.Stat(real); err != nil {
 		t.Fatalf("real skill removed: %v", err)
+	}
+}
+
+func TestWriterSweepsUncommittedNewDestination(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "installed")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := DecodeLock(bytes.NewReader(contents))
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked, found := lock.Lookup(requirement.Skill())
+	if !found {
+		t.Fatal("installed skill is missing from the lock")
+	}
+	if err := os.Remove(project.LockPath()); err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(project.SkillsDir(), installTrashPendingPrefix+"dead")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(trashRecord{Skill: requirement.Skill().String(), Tree: locked.Publication.Tree().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	for _, path := range []string{filepath.Join(project.SkillsDir(), "sample"), trash} {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("uncommitted install litter remains %q: %v", path, err)
+		}
+	}
+}
+
+func TestWriterSweepsKnownStaleTrash(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "installed")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	pending := filepath.Join(project.SkillsDir(), installTrashPendingPrefix+"dead")
+	if err := os.Mkdir(pending, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(trashRecord{Skill: requirement.Skill().String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pending, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovery := filepath.Join(project.SkillsDir(), installTrashRecoveryPrefix+"dead")
+	if err := os.Mkdir(recovery, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(recovery, trashRecordName), record, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	garbage := filepath.Join(project.SkillsDir(), installTrashGarbagePrefix+"dead")
+	if err := os.Mkdir(garbage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	for _, path := range []string{pending, recovery, garbage} {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("stale trash remains %q: %v", path, err)
+		}
 	}
 }

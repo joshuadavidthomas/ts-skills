@@ -384,57 +384,81 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 	if err != nil {
 		return err
 	}
+	trash, err := w.createTrash(verified.publication, exists)
+	if err != nil {
+		return fmt.Errorf("create install trash: %w", err)
+	}
+	if exists {
+		if err := w.rename(destination, filepath.Join(trash, trashTreeName)); err != nil {
+			return errors.Join(fmt.Errorf("move old skill aside: %w", err), os.RemoveAll(trash))
+		}
+		if err := w.syncDirectory(trash); err != nil {
+			return w.rollbackReplacement(destination, trash, err, exists, false)
+		}
+		if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+			return w.rollbackReplacement(destination, trash, err, exists, false)
+		}
+	}
 	staged, err := verified.transfer()
 	if err != nil {
 		return err
 	}
-	trash := ""
-	if exists {
-		trash, err = temporaryPath(w.project.SkillsDir(), installTrashPrefix)
-		if err != nil {
-			return err
-		}
-		if err := w.rename(destination, trash); err != nil {
-			return fmt.Errorf("move old skill aside: %w", err)
-		}
-	}
 	if err := w.rename(staged, destination); err != nil {
-		rollbackErr := error(nil)
-		if trash != "" {
-			rollbackErr = w.rename(trash, destination)
-		}
-		return errors.Join(fmt.Errorf("replace skill destination: %w", err), rollbackErr)
+		return errors.Join(w.rollbackReplacement(destination, trash, fmt.Errorf("replace skill destination: %w", err), exists, false), os.RemoveAll(staged))
 	}
 	if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
-		return w.rollbackReplacement(destination, trash, err)
+		return w.rollbackReplacement(destination, trash, err, exists, true)
 	}
 	if writeLock {
 		committed, err := w.writeLock(lock)
 		if err != nil && !committed {
-			return w.rollbackReplacement(destination, trash, err)
+			return w.rollbackReplacement(destination, trash, err, exists, true)
 		}
 		if err != nil {
-			if trash != "" {
-				_ = os.RemoveAll(trash)
-			}
-			return err
+			return errors.Join(err, w.sweepLitter(ctx))
 		}
 	}
-	if trash != "" {
-		_ = os.RemoveAll(trash)
-	}
-	return nil
+	return errors.Join(w.discardTrash(trash), w.sweepLitter(ctx))
 }
 
-func (w *projectWriter) rollbackReplacement(destination, trash string, cause error) error {
-	rollbackErr := os.RemoveAll(destination)
-	if rollbackErr == nil && trash != "" {
-		rollbackErr = w.rename(trash, destination)
+func (w *projectWriter) rollbackReplacement(destination, trash string, cause error, hadDestination, removeDestination bool) error {
+	if trash != "" {
+		var err error
+		trash, err = w.transitionTrash(trash, installTrashPendingPrefix, installTrashRecoveryPrefix)
+		if err != nil {
+			return errors.Join(cause, err)
+		}
+	}
+	var rollbackErr error
+	if removeDestination {
+		rollbackErr = os.RemoveAll(destination)
+	}
+	if rollbackErr == nil && hadDestination {
+		rollbackErr = w.rename(filepath.Join(trash, trashTreeName), destination)
 	}
 	if rollbackErr == nil {
 		rollbackErr = w.syncDirectory(w.project.SkillsDir())
+		if rollbackErr == nil {
+			rollbackErr = w.discardTrash(trash)
+		}
 	}
 	return errors.Join(cause, rollbackErr)
+}
+
+func (w *projectWriter) discardTrash(trash string) error {
+	if trash == "" {
+		return nil
+	}
+	prefix := installTrashPendingPrefix
+	if strings.HasPrefix(filepath.Base(trash), installTrashRecoveryPrefix) {
+		prefix = installTrashRecoveryPrefix
+	}
+	garbage, err := w.transitionTrash(trash, prefix, installTrashGarbagePrefix)
+	if err != nil {
+		return err
+	}
+	_ = os.RemoveAll(garbage)
+	return nil
 }
 
 // writeLock reports whether the new lock name replaced the old one. Once the
