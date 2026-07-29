@@ -69,7 +69,7 @@ Owner decisions recorded 2026-07-28:
 | 3 | [003](003-flatten-identity-and-move-vocabulary.md) | Flatten value ceremony; move shared identity into agentskill | L | MED | 001 | DONE |
 | 4 | [004](004-merge-server-package.md) | Merge the server side into internal/server | L | MED | 002, 003 | DONE |
 | 5 | [005](005-merge-client-into-cmd.md) | Merge the client side into cmd/ts-skills; dissolve protocol | L | MED | 003, 004 | DONE |
-| 6 | [006](006-sweep-docs-and-final-comparison.md) | Export sweep, docs, metrics, final baseline comparison | M | LOW | 002–005 | TODO |
+| 6 | [006](006-sweep-docs-and-final-comparison.md) | Export sweep, docs, metrics, final baseline comparison | M | LOW | 002–005 | BLOCKED (live-tailnet enrollment credential or saved state unavailable) |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) |
 SUPERSEDED (one-line pointer to what replaced it)
@@ -154,6 +154,17 @@ by this effort rather than tracked separately:
 
 Newest first. Date, what happened, commit, deviations, next executable plan.
 
+- **2026-07-29**: Plan 006 removed five dead exported helpers, updated the package and development docs, and recorded the after-run in `baseline/transcript-after.md`. `go vet`, race tests, and `go mod tidy` passed. `deadcode` found only `rejectWindowsPathComponents`, which the Windows-only path calls; `GOOS=windows GOARCH=amd64 go build ./cmd/ts-skills` verified that edge. The post-consolidation metrics are:
+
+  | Metric | Before (`2037ced9`) | After |
+  | --- | ---: | ---: |
+  | internal packages | 12 | 4 |
+  | production lines (non-test `.go`) | ~7,700 | 6,471 |
+  | test lines | ~8,400 | 5,750 |
+  | project-defined interfaces | 6 | 0 |
+  | `internal/install` production lines | ~2,600 | 0 (package deleted) |
+
+  The dev-mode golden path matched plan 001 exactly: publication digest `sha256:24a68d634c7c7b5460bb429e462ea577eba0e5867272f5528a15a6b36947496b`, archive hash `36b85731be73e6819fa01f56375eea27b44b7836c793d17bd9de712de2af0696`, lock hash `6a054deb252285fd13028035f4f77bbc73337977fd5e354e1d28c1d84c690446`, installed tree, and missing-skill error all matched. The baseline transcript's two upload byte counts were wrong; the pinned source did not change and all content hashes match. There is no enrollment key or saved tsnet state in this environment, so the required live-tailnet TLS and capability comparison remains unrun. Plan 006 and the effort are blocked rather than complete. The owner may use these after numbers to update `~/notes/inbox/ts-skills over-decomposition — the tsidp comparison.md`. Next: run the two-machine Tailnet smoke test with a credential or saved daemon state.
 - **2026-07-29**: Plan 005 moved the CLI, HTTP client, config parser, and installer into `cmd/ts-skills`; deleted the old client-side packages and the ignored network-install test; and dissolved `internal/protocol`. Archive invariants now live in `agentskill`; each binary owns its private HTTP wire vocabulary. The installer holds the concrete HTTP client and the project interfaces are gone. `just check` passed. Next: 006.
 - **2026-07-29**: Plan 004 merged daemon, Tailnet, catalog, SQLite, upload, and HTTP code into `internal/server`. The server now has one concrete catalog and no project-defined interfaces; `cmd/ts-skillsd` imports only its four public entry types and functions. The dev-mode golden path matched the baseline: publication digest `sha256:24a68d634c7c7b5460bb429e462ea577eba0e5867272f5528a15a6b36947496b`, archive hash `36b85731be73e6819fa01f56375eea27b44b7836c793d17bd9de712de2af0696`, lock hash `6a054deb252285fd13028035f4f77bbc73337977fd5e354e1d28c1d84c690446`, restored tree, and missing-skill error all matched. `go build ./...` and `just test` passed. Next: 005.
 - **2026-07-29**: Plan 003 moved validated namespace, skill, publication, and candidate identities into `agentskill`; catalog and installer records are now plain exported-field structs. The dev-mode golden path kept the baseline publication digest and lock hash. Next: 004.

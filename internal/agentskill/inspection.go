@@ -40,9 +40,6 @@ func (i Inspection) Document() Document { return i.directory.Document() }
 // Digest returns the tree digest computed during Inspect.
 func (i Inspection) Digest() TreeDigest { return i.digest }
 
-// FS returns the tree rooted at the inspected directory.
-func (i Inspection) FS() fs.FS { return i.directory.FS() }
-
 // RequireName fails when the tree's SKILL.md names a skill other than
 // expected.
 func (i Inspection) RequireName(expected Name) error {

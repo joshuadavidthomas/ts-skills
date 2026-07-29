@@ -92,8 +92,8 @@ func TestParseOrigin(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ParseOrigin(%q): %v", text, err)
 			}
-			if got := origin.String(); got != strings.TrimSuffix(text, "/") {
-				t.Fatalf("origin.String() = %q, want %q", got, strings.TrimSuffix(text, "/"))
+			if got := origin.URL().String(); got != strings.TrimSuffix(text, "/") {
+				t.Fatalf("origin.URL().String() = %q, want %q", got, strings.TrimSuffix(text, "/"))
 			}
 		})
 	}
@@ -127,8 +127,8 @@ func TestOriginURLReturnsFreshCopy(t *testing.T) {
 	}
 	url := origin.URL()
 	url.Path = "/changed"
-	if got := origin.String(); got != "https://registry.example.ts.net" {
-		t.Fatalf("origin.String() after URL mutation = %q", got)
+	if got := origin.URL().String(); got != "https://registry.example.ts.net" {
+		t.Fatalf("origin.URL().String() after URL mutation = %q", got)
 	}
 }
 

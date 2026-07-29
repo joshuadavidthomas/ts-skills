@@ -15,10 +15,10 @@ The suite covers upload normalization, digest identity, SQLite restart, install 
 Useful focused runs while debugging:
 
 ```console
-go test ./internal/cli -run TestRunInstallsCurrentAndRestoresLockedTree
-go test ./internal/web -run 'TestReadOnlyAPICurrentAndExactDownloadsSurviveStorageRestart|TestRestoreUsesLockedPublicationAfterCurrentChanges'
-go test ./internal/install -run 'TestInstallIsIdempotentAndKeepsCanonicalLock|TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths'
-go test ./internal/daemon -run TestDevRuntimeServesLoopbackHTTPAsDevActor
+go test ./cmd/ts-skills -run TestRunInstallsCurrentAndRestoresLockedTree
+go test ./cmd/ts-skills -run 'TestInstallIsIdempotentAndKeepsCanonicalLock|TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths'
+go test ./cmd/ts-skills -run TestInstallThroughDevDaemon
+go test ./internal/server -run 'TestCurationRoutesEscapeReviewPublishAndChangeCurrent|TestDevRuntimeServesLoopbackHTTPAsDevActor'
 ```
 
 Cross-platform builds:
@@ -53,13 +53,13 @@ Testing against a real tailnet is a deployment concern; see the [deployment guid
 
 ## Web UI
 
-Page templates live in `internal/web/templates`. The daemon embeds them and the static files in `internal/web/static` at build time. The compiled CSS is committed; rebuild it after changing a template or `internal/web/tailwind.css`:
+Page templates live in `internal/server/templates`. The daemon embeds them and the static files in `internal/server/static` at build time. The compiled CSS is committed; rebuild it after changing a template or `internal/server/tailwind.css`:
 
 ```console
 npm install && npm run build:css
 ```
 
-The UI self-hosts Inter from `internal/web/static/fonts` under the SIL Open Font License included beside the font.
+The UI self-hosts Inter from `internal/server/static/fonts` under the SIL Open Font License included beside the font.
 
 ## The bundled example skill
 

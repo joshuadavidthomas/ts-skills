@@ -34,7 +34,6 @@ func OpenProject(source string) (Project, error) {
 	return Project{root: filepath.Clean(canonical)}, nil
 }
 
-func (p Project) Root() string                   { return p.root }
 func (p Project) SkillsDir() string              { return filepath.Join(p.root, ".agents", "skills") }
 func (p Project) LockPath() string               { return filepath.Join(p.root, ".agents", "ts-skills.lock") }
 func (p Project) StateDir() string               { return filepath.Join(p.root, ".agents", ".ts-skills") }

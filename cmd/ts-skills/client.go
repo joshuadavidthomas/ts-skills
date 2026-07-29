@@ -59,8 +59,6 @@ func (o Origin) URL() *url.URL {
 	return &clone
 }
 
-func (o Origin) String() string { return o.url.String() }
-
 type Remote struct {
 	baseURL       *url.URL
 	client        *http.Client

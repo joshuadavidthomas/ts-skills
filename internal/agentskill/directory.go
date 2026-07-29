@@ -3,9 +3,7 @@ package agentskill
 import (
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 )
 
 type Directory struct {
@@ -59,23 +57,6 @@ func Load(fsys fs.FS, dir string) (Directory, error) {
 	return Directory{document: cloneDocument(document), files: rooted}, nil
 }
 
-func LoadDir(src string) (Directory, error) {
-	absolute, err := filepath.Abs(src)
-	if err != nil {
-		return Directory{}, fmt.Errorf("resolve Agent Skill directory: %w", err)
-	}
-	info, err := os.Stat(absolute)
-	if err != nil {
-		return Directory{}, fmt.Errorf("stat Agent Skill directory %q: %w", absolute, err)
-	}
-	if !info.IsDir() {
-		return Directory{}, newValidationError(ErrInvalidTree, "directory", "must be a directory")
-	}
-	return Load(os.DirFS(filepath.Dir(absolute)), filepath.Base(absolute))
-}
-
 func (d Directory) Document() Document { return cloneDocument(d.document) }
-
-func (d Directory) Open(name string) (fs.File, error) { return d.files.Open(name) }
 
 func (d Directory) FS() fs.FS { return d.files }

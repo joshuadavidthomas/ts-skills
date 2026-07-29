@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"path/filepath"
+	"os"
 	"testing"
 	"testing/fstest"
 )
@@ -251,7 +251,7 @@ func TestSumTreeFixedVectors(t *testing.T) {
 }
 
 func TestBundledExampleSkillIsValid(t *testing.T) {
-	directory, err := LoadDir(filepath.Join("..", "..", "examples", "example-skill"))
+	directory, err := Load(os.DirFS("../.."), "examples/example-skill")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,8 +292,8 @@ func TestInspectBindsDocumentAndDigest(t *testing.T) {
 	if got := inspection.Document().Name.String(); got != "right" {
 		t.Fatalf("Inspect document name = %q, want %q", got, "right")
 	}
-	if _, err := inspection.FS().Open("scripts/run.sh"); err != nil {
-		t.Fatalf("Inspect FS open tree file: %v", err)
+	if _, err := inspection.Directory().FS().Open("scripts/run.sh"); err != nil {
+		t.Fatalf("Inspect directory FS open tree file: %v", err)
 	}
 	if err := inspection.RequireName(inspection.Document().Name); err != nil {
 		t.Fatalf("RequireName(tree's own name) = %v", err)

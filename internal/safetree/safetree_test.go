@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"testing"
-	"testing/fstest"
 )
 
 func TestBuilderRejectsPathsAndCollisionsBeforeWriting(t *testing.T) {
@@ -282,22 +281,5 @@ func TestCanonicalPathFoldsCaseAliases(t *testing.T) {
 	}
 	if parent := canonicalPath("Assets/Icon.svg")[:len("assets")]; parent != canonicalPath("ASSETS") {
 		t.Errorf("canonical prefix = %q, want %q", parent, canonicalPath("ASSETS"))
-	}
-}
-
-func TestStageFSPreservesRootAndRejectsLinks(t *testing.T) {
-	source := fstest.MapFS{"skill/SKILL.md": &fstest.MapFile{Data: []byte("data")}}
-	snapshot, err := StageFS(context.Background(), t.TempDir(), source, "skill", PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = snapshot.Close() }()
-	if got, err := fs.ReadFile(snapshot.FS(), "skill/SKILL.md"); err != nil || string(got) != "data" {
-		t.Fatalf("preserved root file = %q, %v", got, err)
-	}
-
-	linked := fstest.MapFS{"skill/link": &fstest.MapFile{Mode: os.ModeSymlink}}
-	if _, err := StageFS(context.Background(), t.TempDir(), linked, "skill", PrototypeLimits()); !errors.Is(err, ErrInvalidPath) {
-		t.Fatalf("symlink error = %v, want ErrInvalidPath", err)
 	}
 }

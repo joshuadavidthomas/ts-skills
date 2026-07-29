@@ -386,102 +386,37 @@ func (n Name) String() string
 
 func Parse(src []byte) (Document, error)
 func Load(fsys fs.FS, dir string) (Directory, error)
-func LoadDir(path string) (Directory, error)
 
 func ParseTreeDigest(src string) (TreeDigest, error)
 func (d TreeDigest) String() string
 func SumTree(fsys fs.FS, dir string) (TreeDigest, error)
 
 func (d Directory) Document() Document
-func (d Directory) Open(name string) (fs.File, error)
+func (d Directory) FS() fs.FS
 ```
 
 `Directory` is a validated parser view over an `fs.FS`; it is not an immutable candidate snapshot. Capture first copies an upload into owned staging storage, then loads and hashes that staged tree.
 
 `Document()` returns an independent value. Callers cannot mutate maps or pointer-backed values held inside `Directory`.
 
-### Registry model
+### Registry and installation model
 
-```go
-package registry
+`internal/agentskill` owns validated namespaces, skill IDs, publication IDs, candidate IDs, and tree digests. `internal/server` keeps catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
 
-type Namespace string
-type CandidateID string
+The CLI validates every downloaded tree against its requested publication before replacing the managed destination and writing the lock. No project-defined remote or catalog interfaces remain.
 
-type SkillID struct {
-    Namespace Namespace
-    Name      agentskill.Name
-}
-
-type PublicationID struct {
-    Skill SkillID
-    Tree  agentskill.TreeDigest
-}
-
-type Candidate struct {
-    ID    CandidateID
-    Skill SkillID
-    Tree  agentskill.TreeDigest
-}
-
-type Publication struct {
-    ID        PublicationID
-    Candidate CandidateID
-}
-
-type CurrentPublication struct {
-    Publication PublicationID
-}
-```
-
-Constructors enforce that publication and current values refer to the same skill and digest as their source values. Upload provenance and Tailnet actor records join these values in the first functional registry slice rather than through speculative interfaces.
-
-### Installation model
-
-```go
-package install
-
-type Requirement struct {
-    Skill  registry.SkillID
-    Digest *agentskill.TreeDigest // nil requests the current publication
-}
-
-type LockedSkill struct {
-    Publication registry.PublicationID
-}
-
-type FetchedTree interface {
-    fs.FS
-    io.Closer
-}
-
-type FetchedSkill struct {
-    Publication registry.PublicationID
-    Tree        FetchedTree
-}
-
-type Remote interface {
-    Fetch(context.Context, Requirement) (FetchedSkill, error)
-}
-```
-
-A successful `Fetch` returns the requested skill. An exact requirement also returns the requested digest. `Tree` is an already decoded, staged filesystem whose digest equals `Publication.Tree`; the remote adapter hides the wire and archive encoding. The CLI checks these postconditions rather than trusting the adapter and closes the fetched tree after installation.
-
-The scaffold defines `LockedSkill`, not a lock aggregate. The lock codec slice will add a collection that rejects duplicate skill identities.
-
-## Provisional repository layout
+## Landed repository layout
 
 ```text
 .
 ├── cmd/
-│   ├── ts-skills/
-│   │   └── main.go
-│   └── ts-skillsd/
-│       └── main.go
+│   ├── ts-skills/    # CLI, config, HTTP client, and installer
+│   └── ts-skillsd/   # thin daemon entry point
 ├── internal/
-│   ├── agentskill/   # Agent Skills parsing and normalized tree hashing
-│   ├── registry/     # candidates, publications, and current selection
-│   └── install/      # requirements, locked selections, and remote fetching
+│   ├── agentskill/   # Agent Skill parsing, hashing, and identity
+│   ├── safetree/     # portable bounded tree staging
+│   ├── server/       # daemon, tsnet, catalog, SQLite, upload, HTTP, and UI
+│   └── version/      # release build version
 ├── docs/
 │   ├── research/
 │   └── SPEC.md
@@ -489,33 +424,7 @@ The scaffold defines `LockedSkill`, not a lock aggregate. The lock codec slice w
 └── go.sum
 ```
 
-The implemented layout adds web, daemon, storage, upload, protocol, client, config, CLI, and Tailnet packages at the boundaries defined by the executor plan. Both `main` packages remain small composition points.
-
-## First scaffolding boundary
-
-The first slice establishes:
-
-- the Go module and executable locations;
-- Agent Skill name, document, and directory values;
-- normalized tree hashing and fixed vectors;
-- skill, candidate, publication, and current-publication values;
-- requirement, locked-skill, and fetched-skill values;
-- the single `Remote` interface;
-- constructors and tests for the settled invariants.
-
-It does not establish:
-
-- registry persistence;
-- upload handling;
-- HTTP routes or wire structs;
-- web framework or templates;
-- publication ZIP download or extraction;
-- lock or config codecs;
-- installation transactions;
-- `tsnet` startup;
-- final package boundaries.
-
-The next functional slice should exercise one in-process path: staged directory → candidate → publication → current resolution → explicit project installation → locked selection. Publication ZIP download, web, persistence, and Tailnet adapters then wrap behavior already proven in that path.
+The two command packages own their private application code. Shared packages exist only where both binaries need the same vocabulary or invariants.
 
 ## Resolved implementation choices
 

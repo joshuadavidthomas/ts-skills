@@ -281,57 +281,6 @@ func (s *Snapshot) Close() error {
 	return nil
 }
 
-func StageFS(ctx context.Context, parent string, source fs.FS, root string, limits Limits) (_ *Snapshot, err error) {
-	if source == nil {
-		return nil, fmt.Errorf("stage tree: source filesystem is nil")
-	}
-	if root == "." || !fs.ValidPath(root) || !utf8.ValidString(root) || strings.Contains(root, "\\") {
-		return nil, fmt.Errorf("%w: root %q must be a non-dot valid path", ErrInvalidPath, root)
-	}
-	builder, err := NewBuilder(parent, limits)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, builder.Close())
-		}
-	}()
-	err = fs.WalkDir(source, root, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%w: %q is not a regular file", ErrInvalidPath, name)
-		}
-		file, err := source.Open(name)
-		if err != nil {
-			return err
-		}
-		addErr := builder.AddFile(ctx, name, info.Size(), file)
-		closeErr := file.Close()
-		return errors.Join(addErr, closeErr)
-	})
-	if err != nil {
-		return nil, fmt.Errorf("stage filesystem tree %q: %w", root, err)
-	}
-	snapshot, err := builder.Finish()
-	if err != nil {
-		return nil, err
-	}
-	return snapshot, nil
-}
-
 func validatePath(name string, limits Limits) error {
 	if name == "." || !fs.ValidPath(name) || !utf8.ValidString(name) || strings.Contains(name, "\\") {
 		return fmt.Errorf("%w: %q", ErrInvalidPath, name)

@@ -42,12 +42,40 @@ func skillSource(instructions, asset string) fstest.MapFS {
 	}
 }
 
-func capture(t *testing.T, catalog *catalog, namespace agentskill.Namespace, curator curator, source string, submittedAt time.Time, tree fs.FS) candidate {
+func stageTree(t *testing.T, source fs.FS) *safetree.Snapshot {
 	t.Helper()
-	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), tree, "sample", safetree.PrototypeLimits())
+	builder, err := safetree.NewBuilder(t.TempDir(), safetree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := fs.WalkDir(source, "sample", func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() {
+			return walkErr
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		file, err := source.Open(name)
+		if err != nil {
+			return err
+		}
+		return errors.Join(builder.AddFile(context.Background(), name, info.Size(), file), file.Close())
+	}); err != nil {
+		_ = builder.Close()
+		t.Fatal(err)
+	}
+	snapshot, err := builder.Finish()
+	if err != nil {
+		_ = builder.Close()
+		t.Fatal(err)
+	}
+	return snapshot
+}
+
+func capture(t *testing.T, catalog *catalog, namespace agentskill.Namespace, curator curator, source string, submittedAt time.Time, tree fs.FS) candidate {
+	t.Helper()
+	snapshot := stageTree(t, tree)
 	defer func() {
 		if err := snapshot.Close(); err != nil {
 			t.Error(err)
@@ -67,10 +95,7 @@ func TestCatalogCaptureReturnsNoCandidateWhenStorageRejects(t *testing.T) {
 	if err := catalog.close(); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), skillSource("# Instructions\n", "asset"), "sample", safetree.PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := stageTree(t, skillSource("# Instructions\n", "asset"))
 	defer func() {
 		if err := snapshot.Close(); err != nil {
 			t.Error(err)
@@ -105,10 +130,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 	source := "sample"
 	curator := testCurator(actor)
 	catalog := store
-	snapshot, err := safetree.StageFS(context.Background(), t.TempDir(), skillSource("# Instructions\n", "asset"), "sample", safetree.PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := stageTree(t, skillSource("# Instructions\n", "asset"))
 	defer func() {
 		if err := snapshot.Close(); err != nil {
 			t.Error(err)

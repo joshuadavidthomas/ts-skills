@@ -31,8 +31,8 @@ func TestLoadAcceptsOnlyOneStrictRegistryOrigin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if loaded.Registry.String() != test.wantURL {
-				t.Fatalf("registry = %v, want %s", loaded.Registry, test.wantURL)
+			if loaded.Registry.URL().String() != test.wantURL {
+				t.Fatalf("registry = %v, want %s", loaded.Registry.URL(), test.wantURL)
 			}
 		})
 	}
