@@ -56,7 +56,6 @@ type catalog struct {
 	syncDirectory             func(string) error
 	beforeRecordCandidate     func()
 	afterMissingCurrentLookup func()
-	listSkillsErr             error
 }
 
 type digestMutex struct {

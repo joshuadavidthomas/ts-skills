@@ -89,14 +89,3 @@ func (c *catalog) setCurrent(ctx context.Context, id agentskill.PublicationID, c
 	}
 	return c.persistCurrent(ctx, selection)
 }
-
-func (c *catalog) listSkills(ctx context.Context) ([]skillSummary, error) {
-	if c.listSkillsErr != nil {
-		return nil, c.listSkillsErr
-	}
-	return c.listPublishedSkills(ctx)
-}
-
-func (c *catalog) resolveCurrent(ctx context.Context, skill agentskill.SkillID) (publication, error) {
-	return c.currentPublication(ctx, skill)
-}

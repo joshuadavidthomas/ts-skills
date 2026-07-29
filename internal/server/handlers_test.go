@@ -46,9 +46,14 @@ type webFixture struct {
 	staging  string
 	resolver *fixedCuratorResolver
 	key      csrfKey
+	logger   *slog.Logger
 }
 
 func newWebFixture(t *testing.T) *webFixture {
+	return newWebFixtureWithLogger(t, nil)
+}
+
+func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
 	t.Helper()
 	state := t.TempDir()
 	records, err := openCatalog(context.Background(), state)
@@ -65,12 +70,14 @@ func newWebFixture(t *testing.T) *webFixture {
 	}
 	resolver := &fixedCuratorResolver{curator: curator{Actor: actor}}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
+		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
+	server := httptest.NewUnstartedServer(nil)
+	server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
+	server.Start()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Get(server.URL + "/upload")
 	if err != nil {
@@ -91,7 +98,7 @@ func newWebFixture(t *testing.T) *webFixture {
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key,
+		state: state, staging: staging, resolver: resolver, key: key, logger: logger,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -114,13 +121,15 @@ func (f *webFixture) restart() {
 	}
 	catalog := records
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: safetree.PrototypeLimits(), CSRFKey: f.key, SecureCookies: false,
+		StagingParent: f.staging, Limits: safetree.PrototypeLimits(), CSRFKey: f.key, SecureCookies: false, Logger: f.logger,
 	})
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.storage = records
-	f.server = httptest.NewServer(handler)
+	f.server = httptest.NewUnstartedServer(nil)
+	f.server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
+	f.server.Start()
 	response, err := f.client.Get(f.server.URL + "/upload")
 	if err != nil {
 		f.t.Fatal(err)
@@ -267,6 +276,35 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	}
 	if candidate.Tree != expected {
 		t.Fatalf("candidate digest = %s, want submitted digest %s", candidate.Tree, expected)
+	}
+}
+
+func TestUploadRedirectsWhenPostCommitCleanupFails(t *testing.T) {
+	captured := &recordSlogHandler{}
+	fixture := newWebFixtureWithLogger(t, slog.New(captured))
+	var once sync.Once
+	fixture.storage.afterFilesystemStep = func(string) error {
+		var err error
+		once.Do(func() { err = os.Chmod(fixture.staging, 0o500) })
+		return err
+	}
+	defer func() {
+		fixture.storage.afterFilesystemStep = nil
+		if err := os.Chmod(fixture.staging, 0o700); err != nil {
+			t.Errorf("restore staging permissions: %v", err)
+		}
+	}()
+
+	location := fixture.uploadDirectory("Cleanup error must not hide the candidate.\n")
+	id, err := agentskill.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.storage.candidate(context.Background(), id); err != nil {
+		t.Fatalf("candidate was not committed before cleanup failed: %v", err)
+	}
+	if !captured.contains("web upload cleanup failed") {
+		t.Fatal("post-commit cleanup failure was not logged")
 	}
 }
 
@@ -882,6 +920,24 @@ func TestHandleErrorLogsUnexpectedFailure(t *testing.T) {
 	}
 }
 
+func TestWriteAPIDomainErrorLogsUnexpectedFailure(t *testing.T) {
+	captured := &recordSlogHandler{}
+	h := &handler{options: handlerOptions{Logger: slog.New(captured)}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/"+apiVersion+"/skills/team/sample/current", nil)
+
+	h.writeAPIDomainError(recorder, request, errors.New("catalog storage unavailable"))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
+	}
+	for _, want := range []string{"API request failed", "catalog storage unavailable", "GET", request.URL.Path} {
+		if !captured.contains(want) {
+			t.Errorf("log has no record carrying %q", want)
+		}
+	}
+}
+
 func TestNewHandlerDefaultsLogger(t *testing.T) {
 	captured := &recordSlogHandler{}
 	restore := slog.Default()
@@ -897,12 +953,14 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = catalog.close() })
-	catalog.listSkillsErr = errors.New("catalog storage unavailable")
 	resolver := &fixedCuratorResolver{}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
 		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -912,7 +970,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusInternalServerError)
 	}
-	if !captured.contains("catalog storage unavailable") {
+	if !captured.contains("registry storage is closed") {
 		t.Error("nil option logger did not fall through to slog.Default()")
 	}
 }

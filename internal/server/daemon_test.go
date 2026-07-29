@@ -66,6 +66,8 @@ func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
 }
 
 func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+
 	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +119,7 @@ func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	runResult := make(chan error, 1)
 	go func() {
-		runResult <- serveWithHTTPShutdownTimeout(ctx, active, 20*time.Millisecond)
+		runResult <- serveWithHTTPShutdownTimeout(ctx, active, timeout)
 	}()
 
 	responseResult := make(chan error, 1)
@@ -159,14 +161,14 @@ func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("run error = %v, want HTTP shutdown deadline", err)
 		}
-		if !strings.Contains(err.Error(), "handler drain exceeded 20ms") {
+		if !strings.Contains(err.Error(), "handler drain exceeded 100ms") {
 			t.Fatalf("run error = %v, want the drain bound reported", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("daemon hung on a handler that ignores shutdown")
 	}
-	if elapsed := time.Since(shutdownStarted); elapsed > 2*time.Second {
-		t.Fatalf("shutdown took %s, want a generous multiple of the 20ms bound", elapsed)
+	if elapsed := time.Since(shutdownStarted); elapsed > timeout+75*time.Millisecond {
+		t.Fatalf("shutdown took %s, want one %s bound", elapsed, timeout)
 	}
 
 	// Cleanup ran while the stuck handler was still blocked.

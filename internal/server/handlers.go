@@ -28,8 +28,6 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-const maxRequestBytes int64 = 32 << 20
-
 //go:embed templates
 var templatesFS embed.FS
 
@@ -126,9 +124,6 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 		csrf.ErrorHandler(csrfFailure),
 	)(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/candidates" {
-			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBytes)
-		}
 		if !options.SecureCookies {
 			r = csrf.PlaintextHTTPRequest(r)
 		}
@@ -170,7 +165,7 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Page was not found", "Return to the catalog.")
 		return
 	}
-	summaries, err := h.catalog.listSkills(r.Context())
+	summaries, err := h.catalog.listPublishedSkills(r.Context())
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -201,12 +196,12 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Skill was not found", "Return to the catalog and choose another skill.")
 		return
 	}
-	publication, err := h.catalog.resolveCurrent(r.Context(), skill)
+	publication, err := h.catalog.currentPublication(r.Context(), skill)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
 	}
-	tree, err := h.catalog.openPublicationTree(r.Context(), publication.ID)
+	tree, err := h.catalog.openTree(r.Context(), publication.ID.Tree())
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -272,8 +267,9 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	submissionClosed := false
 	defer func() {
-		// On these early-return paths the error response is already
-		// committed, so a cleanup failure is operator-only diagnostics.
+		// A failed close leaves the snapshot open for retry. The candidate or
+		// error response is already committed, so cleanup failures are
+		// operator-only diagnostics.
 		if !submissionClosed {
 			if err := submission.Close(); err != nil {
 				h.options.Logger.Warn("web upload cleanup failed", "error", err)
@@ -294,10 +290,10 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := submission.Close(); err != nil {
-		h.handleError(w, r, err)
-		return
+		h.options.Logger.Warn("web upload cleanup failed", "error", err)
+	} else {
+		submissionClosed = true
 	}
-	submissionClosed = true
 	http.Redirect(w, r, "/candidates/"+candidate.ID.String(), http.StatusSeeOther)
 }
 
@@ -328,7 +324,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	tree, err := h.catalog.openCandidateTree(r.Context(), id)
+	tree, err := h.catalog.openTree(r.Context(), candidate.Tree)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -452,9 +448,9 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, codeInvalidRequest)
 		return
 	}
-	publication, err := h.catalog.resolveCurrent(r.Context(), skill)
+	publication, err := h.catalog.currentPublication(r.Context(), skill)
 	if err != nil {
-		h.writeAPIDomainError(w, err)
+		h.writeAPIDomainError(w, r, err)
 		return
 	}
 	response := currentResponse{
@@ -485,13 +481,13 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	}
 	publication, err := h.catalog.publication(r.Context(), requestedPublication)
 	if err != nil {
-		h.writeAPIDomainError(w, err)
+		h.writeAPIDomainError(w, r, err)
 		return
 	}
 	resolvedPublication := publication.ID
-	tree, err := h.catalog.openPublicationTree(r.Context(), resolvedPublication)
+	tree, err := h.catalog.openTree(r.Context(), resolvedPublication.Tree())
 	if err != nil {
-		h.writeAPIDomainError(w, err)
+		h.writeAPIDomainError(w, r, err)
 		return
 	}
 	archive, err := h.rootlessZIP(r.Context(), tree)
@@ -501,7 +497,7 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		err = errors.Join(err, closeErr)
 	}
 	if err != nil {
-		h.writeAPIDomainError(w, err)
+		h.writeAPIDomainError(w, r, err)
 		return
 	}
 	defer func() {
@@ -614,13 +610,14 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 	return archive, nil
 }
 
-func (h *handler) writeAPIDomainError(w http.ResponseWriter, err error) {
+func (h *handler) writeAPIDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errNotFound):
 		h.writeAPIError(w, codeNotFound)
 	case errors.Is(err, safetree.ErrLimitExceeded):
 		h.writeAPIError(w, codeTooLarge)
 	default:
+		h.options.Logger.Error("API request failed", "method", r.Method, "path", r.URL.Path, "error", err)
 		h.writeAPIError(w, codeInternal)
 	}
 }

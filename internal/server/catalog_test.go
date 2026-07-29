@@ -100,7 +100,7 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if stored != first {
 		t.Fatalf("stored candidate = %#v, want %#v", stored, first)
 	}
-	candidateTree, err := catalog.openCandidateTree(ctx, first.ID)
+	candidateTree, err := catalog.openTree(ctx, stored.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if len(summaries) != 1 || summaries[0].Skill != first.Skill || summaries[0].Current != secondPublished.ID {
 		t.Fatalf("summaries after restart = %#v", summaries)
 	}
-	publicationTree, err := catalog.openPublicationTree(ctx, secondPublished.ID)
+	publicationTree, err := catalog.openTree(ctx, secondPublished.ID.Tree())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +211,7 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	if _, err := openCatalog(context.Background(), state); !errors.Is(err, errConflict) {
 		t.Fatalf("second OpenCatalog error = %v, want conflict", err)
 	}
-	tree, err := catalog.openCandidateTree(context.Background(), candidate.ID)
+	tree, err := catalog.openTree(context.Background(), candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	if _, err := catalog.candidate(context.Background(), candidate.ID); err != nil {
 		t.Fatalf("catalog operation after errTreesOpen: %v", err)
 	}
-	secondTree, err := catalog.openCandidateTree(context.Background(), candidate.ID)
+	secondTree, err := catalog.openTree(context.Background(), candidate.Tree)
 	if err != nil {
 		t.Fatalf("open tree after errTreesOpen: %v", err)
 	}
@@ -582,15 +582,32 @@ func TestOpenTreeDetectsCorruptDigestDirectory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(final, "assets", "data.txt"), []byte("corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.openCandidateTree(context.Background(), candidate.ID); !errors.Is(err, errTreeMismatch) {
+	if _, err := catalog.openTree(context.Background(), candidate.Tree); !errors.Is(err, errTreeMismatch) {
 		t.Fatalf("open corrupt tree error = %v", err)
 	}
 	closeCatalog(t, catalog)
 
 	catalog = openTestCatalog(t, state)
 	defer closeCatalog(t, catalog)
-	if _, err := catalog.openCandidateTree(context.Background(), candidate.ID); !errors.Is(err, errTreeMismatch) {
+	if _, err := catalog.openTree(context.Background(), candidate.Tree); !errors.Is(err, errTreeMismatch) {
 		t.Fatalf("open corrupt tree after restart error = %v", err)
+	}
+}
+
+func TestSyncTreeStopsWhenContextIsCanceled(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "entry"), []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := syncTree(ctx, root, func(step string) error {
+		if step == "sync tree file" {
+			cancel()
+		}
+		return nil
+	}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("syncTree error = %v, want context cancellation", err)
 	}
 }
 
@@ -781,15 +798,9 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	if _, err := catalog.candidate(ctx, candidate.ID); !errors.Is(err, errNotFound) || !strings.Contains(err.Error(), candidate.ID.String()) {
 		t.Fatalf("Candidate error = %v", err)
 	}
-	if _, err := catalog.openCandidateTree(ctx, candidate.ID); !errors.Is(err, errNotFound) {
-		t.Fatalf("OpenCandidateTree error = %v", err)
-	}
 	if _, err := catalog.publication(ctx, publicationID); !errors.Is(err, errNotFound) ||
 		!strings.Contains(err.Error(), candidate.Skill.String()) || !strings.Contains(err.Error(), candidate.Tree.String()) {
 		t.Fatalf("Publication error = %v", err)
-	}
-	if _, err := catalog.openPublicationTree(ctx, publicationID); !errors.Is(err, errNotFound) {
-		t.Fatalf("OpenPublicationTree error = %v", err)
 	}
 	if _, err := catalog.currentPublication(ctx, candidate.Skill); !errors.Is(err, errNotFound) || !strings.Contains(err.Error(), candidate.Skill.String()) {
 		t.Fatalf("CurrentPublication error = %v", err)

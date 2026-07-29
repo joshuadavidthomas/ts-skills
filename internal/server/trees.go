@@ -120,7 +120,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	if err := c.step("verify staged tree digest"); err != nil {
 		return err
 	}
-	if err := syncTree(staging, c.step); err != nil {
+	if err := syncTree(ctx, staging, c.step); err != nil {
 		return fmt.Errorf("sync staged tree: %w", err)
 	}
 	if err := c.step("sync staged tree"); err != nil {
@@ -156,7 +156,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		if err := c.step("verify existing digest tree"); err != nil {
 			return err
 		}
-		if err := syncTree(final, c.step); err != nil {
+		if err := syncTree(ctx, final, c.step); err != nil {
 			return fmt.Errorf("sync existing digest tree: %w", err)
 		}
 		if err := c.syncDirectory(shard); err != nil {
@@ -258,11 +258,14 @@ func verifyTree(ctx context.Context, directory string, expected agentskill.TreeD
 	return nil
 }
 
-func syncTree(root string, step func(string) error) error {
+func syncTree(ctx context.Context, root string, step func(string) error) error {
 	var directories []string
 	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if entry.Type()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("refuse to sync symbolic link %q", name)
@@ -301,6 +304,9 @@ func syncTree(root string, step func(string) error) error {
 		return leftDepth > rightDepth
 	})
 	for _, directory := range directories {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := syncDirectory(directory); err != nil {
 			return err
 		}
@@ -337,33 +343,12 @@ func (c *catalog) treePaths(digest agentskill.TreeDigest) (string, string) {
 	return shard, filepath.Join(shard, hexDigest[2:])
 }
 
-func (c *catalog) openCandidateTree(ctx context.Context, id agentskill.CandidateID) (*treeView, error) {
-	done, err := c.withOpenState()
-	if err != nil {
-		return nil, err
-	}
-	defer done()
-	candidate, err := queryCandidate(ctx, c.db.QueryRowContext, id)
-	if err != nil {
-		return nil, err
-	}
-	return c.openTree(ctx, candidate.Tree)
-}
-
-func (c *catalog) openPublicationTree(ctx context.Context, id agentskill.PublicationID) (*treeView, error) {
-	done, err := c.withOpenState()
-	if err != nil {
-		return nil, err
-	}
-	defer done()
-	publication, err := queryPublication(ctx, c.db.QueryRowContext, id)
-	if err != nil {
-		return nil, err
-	}
-	return c.openTree(ctx, publication.ID.Tree())
-}
-
 func (c *catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (*treeView, error) {
+	done, err := c.withOpenState()
+	if err != nil {
+		return nil, err
+	}
+	defer done()
 	_, final := c.treePaths(digest)
 	if err := verifyTree(ctx, final, digest); err != nil {
 		return nil, err

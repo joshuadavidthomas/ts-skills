@@ -160,7 +160,7 @@ func TestCatalogRejectsInvalidCuratorsBeforeMutating(t *testing.T) {
 	if err := catalog.setCurrent(ctx, second.ID, curator{}, submittedAt.Add(2*time.Second)); err == nil {
 		t.Fatal("setCurrent accepted a zero curator")
 	}
-	current, err := catalog.resolveCurrent(ctx, firstCandidate.Skill)
+	current, err := catalog.currentPublication(ctx, firstCandidate.Skill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +228,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	firstCandidate := capture(t, catalog, namespace, curator, source, submittedAt, original)
 
 	original["sample/assets/data.txt"].Data = []byte("mutated after capture")
-	candidateTree, err := catalog.openCandidateTree(ctx, firstCandidate.ID)
+	candidateTree, err := catalog.openTree(ctx, firstCandidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err := catalog.resolveCurrent(ctx, firstCandidate.Skill)
+	current, err := catalog.currentPublication(ctx, firstCandidate.Skill)
 	if err != nil || current != firstPublish {
 		t.Fatalf("first publish did not become current (%#v, %v)", current, err)
 	}
@@ -277,7 +277,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if secondPublish.ID == firstPublish.ID {
 		t.Fatalf("second publish returned the first publication %#v", secondPublish)
 	}
-	current, err = catalog.resolveCurrent(ctx, firstCandidate.Skill)
+	current, err = catalog.currentPublication(ctx, firstCandidate.Skill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,14 +287,14 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if err := catalog.setCurrent(ctx, secondPublish.ID, testCurator(laterActor), publishedAt.Add(4*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	current, err = catalog.resolveCurrent(ctx, firstCandidate.Skill)
+	current, err = catalog.currentPublication(ctx, firstCandidate.Skill)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if current.ID != secondPublish.ID {
 		t.Fatal("explicit selection did not move current")
 	}
-	summaries, err := catalog.listSkills(ctx)
+	summaries, err := catalog.listPublishedSkills(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	if exact.ID != secondPublish.ID {
 		t.Fatalf("exact publication lookup = %#v", exact.ID)
 	}
-	publicationTree, err := catalog.openPublicationTree(ctx, exact.ID)
+	publicationTree, err := catalog.openTree(ctx, exact.ID.Tree())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestCatalogConcurrentFirstPublicationsChooseOneCurrent(t *testing.T) {
 	if len(publications) != 2 || publications[0].ID == publications[1].ID {
 		t.Fatalf("concurrent publications = %#v", publications)
 	}
-	current, err := catalog.resolveCurrent(context.Background(), first.Skill)
+	current, err := catalog.currentPublication(context.Background(), first.Skill)
 	if err != nil {
 		t.Fatal(err)
 	}

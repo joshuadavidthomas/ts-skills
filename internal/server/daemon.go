@@ -354,32 +354,35 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	}()
 
 	var serveErr error
-	var shutdownErr error
+	serveStopped := false
 	select {
 	case serveErr = <-serveResult:
-		handlers.closeAdmission()
-		shutdownErr = shutdownHTTP(server, timeout)
-		cancelServerWork()
-		if errors.Is(serveErr, http.ErrServerClosed) {
-			serveErr = nil
-		} else if serveErr != nil {
-			serveErr = fmt.Errorf("serve Tailnet HTTP: %w", serveErr)
-		}
+		serveStopped = true
 	case <-ctx.Done():
-		handlers.closeAdmission()
-		shutdownErr = shutdownHTTP(server, timeout)
-		cancelServerWork()
+	}
+	handlers.closeAdmission()
+	deadline := time.Now().Add(timeout)
+	shutdownCtx, cancelShutdown := context.WithDeadline(context.Background(), deadline)
+	shutdownErr := shutdownHTTP(server, shutdownCtx)
+	cancelShutdown()
+	cancelServerWork()
+	if !serveStopped {
 		serveErr = <-serveResult
-		if errors.Is(serveErr, http.ErrServerClosed) {
-			serveErr = nil
-		} else if serveErr != nil {
+	}
+	if errors.Is(serveErr, http.ErrServerClosed) {
+		serveErr = nil
+	} else if serveErr != nil {
+		if serveStopped {
+			serveErr = fmt.Errorf("serve Tailnet HTTP: %w", serveErr)
+		} else {
 			serveErr = fmt.Errorf("serve Tailnet HTTP during shutdown: %w", serveErr)
 		}
 	}
-	// The drain is bounded by the same deadline as the HTTP shutdown: a
-	// handler that ignores its context must not hold the process open
-	// forever. The waiter channel is buffered so an abandoned waiter
-	// goroutine always sends and exits.
+
+	// The drain shares the HTTP shutdown deadline, so a handler that ignores
+	// its context cannot extend the configured shutdown bound. The waiter
+	// channel is buffered so an abandoned waiter goroutine always sends and
+	// exits.
 	drained := make(chan struct{}, 1)
 	go func() {
 		handlers.wait()
@@ -388,8 +391,19 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	var drainErr error
 	select {
 	case <-drained:
-	case <-time.After(timeout):
-		drainErr = fmt.Errorf("handler drain exceeded %s: abandoning stuck handlers", timeout)
+	default:
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			drainErr = fmt.Errorf("handler drain exceeded %s: abandoning stuck handlers", timeout)
+		} else {
+			timer := time.NewTimer(remaining)
+			defer timer.Stop()
+			select {
+			case <-drained:
+			case <-timer.C:
+				drainErr = fmt.Errorf("handler drain exceeded %s: abandoning stuck handlers", timeout)
+			}
+		}
 	}
 	return errors.Join(shutdownErr, serveErr, drainErr)
 }
@@ -471,9 +485,7 @@ func (g *handlerGate) wait() {
 	}
 }
 
-func shutdownHTTP(server *http.Server, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+func shutdownHTTP(server *http.Server, ctx context.Context) error {
 	if err := server.Shutdown(ctx); err != nil {
 		return errors.Join(fmt.Errorf("gracefully shut down Tailnet HTTP: %w", err), server.Close())
 	}
