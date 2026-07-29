@@ -91,11 +91,26 @@ The exact daemon PID exited after the run. Its ephemeral listener and port
 
 ## Tailnet comparison
 
-This environment has neither `TS_AUTHKEY` nor `TS_SKILLSD_AUTHKEY_FILE`, and
-no configured daemon state directory. A live tsnet node cannot enroll or
-serve without one of those prerequisites. The live-tailnet capability
-(403/200) and TLS checks therefore remain unrun. This is missing coverage,
-not a dev-mode difference.
+A test enrollment key supplied after the first run enrolled an untagged
+scratch node, `ts-skillsd-consolidation2.tail014d2.ts.net`, from state under
+`/tmp`. It answered Tailnet ping and completed TLS with a certificate whose
+subject matched that full MagicDNS name and whose issuer was Let's Encrypt.
+The catalog request returned `200`.
+
+The same Tailnet identity received `403` from `POST /candidates`, so it has
+no `tailscale.com/cap/ts-skills` curation capability. A second enrollment
+attempt with `TS_SKILLSD_TAG=tag:skills-registry` failed before serving:
+
+```text
+ts-skillsd: build daemon runtime: wait for embedded Tailscale node: tsnet.Up: backend: requested tags [tag:skills-registry] are invalid or not permitted
+```
+
+The live read and TLS checks now have coverage, but the curated golden path
+and required `403`/`200` capability comparison remain blocked on a Tailnet
+ACL grant and an auth key permitted to advertise the registry tag. All test
+daemons were stopped by their recorded PIDs; their scratch state and key file
+were removed. The enrolled untagged node may need removal in the Tailnet admin
+console.
 
 ## Diff summary
 
@@ -106,7 +121,8 @@ not a dev-mode difference.
 | Lock SHA-256 | `6a054d…c690446` | `6a054d…c690446` | identical |
 | Install, restore, and missing-skill diagnostic | recorded in `transcript.md` | recorded above | identical |
 | Dev HTTP path | 200/303/200 sequence | 200/303/200 sequence | identical |
-| Tailnet TLS and capability gate | unavailable | unavailable | not compared |
+| Tailnet TLS | unavailable | valid MagicDNS certificate; read request returned 200 | compared |
+| Tailnet capability gate | unavailable | uncurated identity returned 403; no curated identity available | partially compared |
 
 No unsanctioned dev-mode behavioral difference was found. Plan 006 remains
-blocked on a live-tailnet enrollment credential or saved daemon state.
+blocked on a Tailnet curation ACL grant and tagged enrollment permission.
