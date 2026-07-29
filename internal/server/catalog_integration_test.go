@@ -112,6 +112,63 @@ func TestCatalogCaptureReturnsNoCandidateWhenStorageRejects(t *testing.T) {
 	}
 }
 
+func TestCatalogRejectsInvalidCuratorsBeforeMutating(t *testing.T) {
+	catalog, namespace, validCurator, source, submittedAt := newCatalogFixture(t)
+	ctx := context.Background()
+
+	snapshot := stageTree(t, skillSource("# Invalid\n", "invalid"))
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	if _, err := catalog.capture(ctx, curator{}, captureRequest{
+		Namespace: namespace, Staged: snapshot, Root: "sample", Source: source, SubmittedAt: submittedAt,
+	}); err == nil {
+		t.Fatal("capture accepted a zero curator")
+	}
+	var candidates int
+	if err := catalog.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM candidates").Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	if candidates != 0 {
+		t.Fatalf("candidates after rejected capture = %d, want 0", candidates)
+	}
+
+	firstCandidate := capture(t, catalog, namespace, validCurator, source, submittedAt, skillSource("# First\n", "first"))
+	invalid := curator{Actor: actor{ID: "user\n1", Display: "Invalid User"}}
+	if _, err := catalog.publish(ctx, firstCandidate.ID, invalid, submittedAt); err == nil {
+		t.Fatal("publish accepted an invalid curator")
+	}
+	var publications int
+	if err := catalog.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM publications").Scan(&publications); err != nil {
+		t.Fatal(err)
+	}
+	if publications != 0 {
+		t.Fatalf("publications after rejected publish = %d, want 0", publications)
+	}
+
+	first, err := catalog.publish(ctx, firstCandidate.ID, validCurator, submittedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondCandidate := capture(t, catalog, namespace, validCurator, source, submittedAt, skillSource("# Second\n", "second"))
+	second, err := catalog.publish(ctx, secondCandidate.ID, validCurator, submittedAt.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.setCurrent(ctx, second.ID, curator{}, submittedAt.Add(2*time.Second)); err == nil {
+		t.Fatal("setCurrent accepted a zero curator")
+	}
+	current, err := catalog.resolveCurrent(ctx, firstCandidate.Skill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.ID != first.ID {
+		t.Fatalf("current publication after rejected selection = %s, want %s", current.ID.Tree(), first.ID.Tree())
+	}
+}
+
 func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 	store, err := openCatalog(context.Background(), t.TempDir())
 	if err != nil {

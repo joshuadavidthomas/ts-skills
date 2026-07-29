@@ -35,10 +35,10 @@ func ParseNamespace(src string) (Namespace, error) {
 	if canonical == "." || canonical == ".." || strings.ContainsAny(canonical, "/\\") {
 		return Namespace{}, fmt.Errorf("namespace %q is reserved or contains a path separator", canonical)
 	}
-	if strings.TrimSpace(canonical) != canonical {
-		return Namespace{}, fmt.Errorf("namespace must not have leading or trailing whitespace")
-	}
 	for _, r := range canonical {
+		if unicode.IsSpace(r) {
+			return Namespace{}, fmt.Errorf("namespace must not contain whitespace")
+		}
 		if unicode.IsControl(r) {
 			return Namespace{}, fmt.Errorf("namespace must not contain control characters")
 		}

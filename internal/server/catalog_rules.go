@@ -19,6 +19,9 @@ type captureRequest struct {
 }
 
 func (c *catalog) capture(ctx context.Context, curator curator, request captureRequest) (candidate, error) {
+	if err := validateActor(curator.Actor); err != nil {
+		return candidate{}, fmt.Errorf("validate curator: %w", err)
+	}
 	if request.Namespace.String() == "" || request.Staged == nil || request.Source == "" || request.SubmittedAt.IsZero() {
 		return candidate{}, fmt.Errorf("capture requires namespace, staged tree, source, and submission time")
 	}
@@ -43,6 +46,9 @@ func (c *catalog) capture(ctx context.Context, curator curator, request captureR
 }
 
 func (c *catalog) publish(ctx context.Context, id agentskill.CandidateID, curator curator, at time.Time) (publication, error) {
+	if err := validateActor(curator.Actor); err != nil {
+		return publication{}, fmt.Errorf("validate curator: %w", err)
+	}
 	candidate, err := c.candidate(ctx, id)
 	if err != nil {
 		return publication{}, err
@@ -74,6 +80,9 @@ func (c *catalog) publish(ctx context.Context, id agentskill.CandidateID, curato
 }
 
 func (c *catalog) setCurrent(ctx context.Context, id agentskill.PublicationID, curator curator, at time.Time) error {
+	if err := validateActor(curator.Actor); err != nil {
+		return fmt.Errorf("validate curator: %w", err)
+	}
 	selection := currentPublication{Publication: id, SelectedBy: curator.Actor, SelectedAt: canonicalTime(at)}
 	if _, err := c.publication(ctx, id); err != nil {
 		return err

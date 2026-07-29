@@ -43,6 +43,44 @@ func testInstaller(t *testing.T, body string) (*Installer, Project, Requirement,
 	return installer, project, requirement, func(next string) { digest, archive = clientTree(t, next) }
 }
 
+func TestInstallerRejectsZeroProjectBeforeFilesystemOrNetworkAccess(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	t.Cleanup(server.Close)
+	installer, err := NewInstaller(remoteForServer(t, server))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirement, err := Current(clientSkill(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDirectory := t.TempDir()
+	originalDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(workingDirectory); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDirectory) })
+
+	if _, err := installer.Install(context.Background(), Project{}, requirement); err == nil {
+		t.Fatal("Install accepted a zero Project")
+	}
+	if err := installer.Restore(context.Background(), Project{}); err == nil {
+		t.Fatal("Restore accepted a zero Project")
+	}
+	if requests != 0 {
+		t.Fatalf("registry requests = %d, want 0", requests)
+	}
+	if _, err := os.Stat(filepath.Join(workingDirectory, ".agents")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("zero project created managed paths: %v", err)
+	}
+}
+
 func TestInstallIsIdempotentAndKeepsCanonicalLock(t *testing.T) {
 	installer, project, requirement, _ := testInstaller(t, "one")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {

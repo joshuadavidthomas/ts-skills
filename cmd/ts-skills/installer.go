@@ -32,6 +32,9 @@ func NewInstaller(remote *Remote) (*Installer, error) {
 }
 
 func (i *Installer) Install(ctx context.Context, project Project, requirement Requirement) (locked LockedSkill, err error) {
+	if err := project.validate(); err != nil {
+		return LockedSkill{}, err
+	}
 	fetchedLock, fetchedLockExists, err := readLockSnapshot(project)
 	if err != nil {
 		return LockedSkill{}, err
@@ -83,6 +86,9 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 }
 
 func (i *Installer) Restore(ctx context.Context, project Project) (err error) {
+	if err := project.validate(); err != nil {
+		return err
+	}
 	writer, err := project.acquireWriter(ctx)
 	if err != nil {
 		return err
