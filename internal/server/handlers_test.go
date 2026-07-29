@@ -1,4 +1,4 @@
-package web
+package server
 
 import (
 	"archive/zip"
@@ -23,17 +23,15 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/storage"
 )
 
 type fixedCuratorResolver struct {
-	curator registry.Curator
+	curator curator
 	err     error
 }
 
-func (r *fixedCuratorResolver) Curator(*http.Request) (registry.Curator, error) {
+func (r *fixedCuratorResolver) resolve(*http.Request) (curator, error) {
 	return r.curator, r.err
 }
 
@@ -43,33 +41,30 @@ type webFixture struct {
 	client   *http.Client
 	cookie   *http.Cookie
 	token    string
-	storage  *storage.Catalog
+	storage  *catalog
 	state    string
 	staging  string
 	resolver *fixedCuratorResolver
-	key      CSRFKey
+	key      csrfKey
 }
 
 func newWebFixture(t *testing.T) *webFixture {
 	t.Helper()
 	state := t.TempDir()
-	records, err := storage.OpenCatalog(context.Background(), state)
+	records, err := openCatalog(context.Background(), state)
 	if err != nil {
 		t.Fatal(err)
 	}
 	staging := t.TempDir()
-	catalog, err := registry.NewCatalog(records, staging, safetree.PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	actor := registry.Actor{ID: "user:42", Display: "Curator <One>"}
+	catalog := records
+	actor := actor{ID: "user:42", Display: "Curator <One>"}
 	keyBytes := bytes.Repeat([]byte{0x5a}, 32)
-	key, err := NewCSRFKey(keyBytes)
+	key, err := newCSRFKey(keyBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := &fixedCuratorResolver{curator: registry.Curator{Actor: actor}}
-	handler, err := NewHandler(catalog, resolver, Options{
+	resolver := &fixedCuratorResolver{curator: curator{Actor: actor}}
+	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
 		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
@@ -100,7 +95,7 @@ func newWebFixture(t *testing.T) *webFixture {
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
-		if err := fixture.storage.Close(); err != nil {
+		if err := fixture.storage.close(); err != nil {
 			t.Errorf("close storage: %v", err)
 		}
 	})
@@ -110,18 +105,15 @@ func newWebFixture(t *testing.T) *webFixture {
 func (f *webFixture) restart() {
 	f.t.Helper()
 	f.server.Close()
-	if err := f.storage.Close(); err != nil {
+	if err := f.storage.close(); err != nil {
 		f.t.Fatal(err)
 	}
-	records, err := storage.OpenCatalog(context.Background(), f.state)
+	records, err := openCatalog(context.Background(), f.state)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	catalog, err := registry.NewCatalog(records, f.staging, safetree.PrototypeLimits())
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	handler, err := NewHandler(catalog, f.resolver, Options{
+	catalog := records
+	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
 		StagingParent: f.staging, Limits: safetree.PrototypeLimits(), CSRFKey: f.key, SecureCookies: false,
 	})
 	if err != nil {
@@ -261,7 +253,7 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := fixture.storage.Candidate(context.Background(), id)
+	candidate, err := fixture.storage.candidate(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +358,7 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	}
 	unpublishedPath := fixture.uploadDirectory("Unpublished for permission check.\n")
 
-	fixture.resolver.err = registry.ErrCurationDenied
+	fixture.resolver.err = errCurationDenied
 	readPaths := []string{
 		"/",
 		unpublishedPath,
@@ -490,7 +482,7 @@ func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &handler{options: Options{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
+	h := &handler{options: handlerOptions{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
 	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
 		"SKILL.md":        {Data: []byte("s")},
 		"assets/data.txt": {Data: []byte("a")},
@@ -760,7 +752,7 @@ func failingTemplates(names ...string) *template.Template {
 func TestRenderFallsBackWhenPageTemplateFails(t *testing.T) {
 	pages := failingTemplates("page")
 	template.Must(pages.New("error").Parse(`<h1>{{.Title}}</h1><p>{{.Action}}</p>`))
-	h := &handler{pages: pages, options: Options{Logger: discardLogger()}}
+	h := &handler{pages: pages, options: handlerOptions{Logger: discardLogger()}}
 
 	recorder := httptest.NewRecorder()
 	h.render(recorder, http.StatusOK, "page", nil)
@@ -775,7 +767,7 @@ func TestRenderFallsBackWhenPageTemplateFails(t *testing.T) {
 }
 
 func TestRenderErrorFallsBackToPlaintextWhenErrorTemplateFails(t *testing.T) {
-	h := &handler{pages: failingTemplates("error"), options: Options{Logger: discardLogger()}}
+	h := &handler{pages: failingTemplates("error"), options: handlerOptions{Logger: discardLogger()}}
 
 	recorder := httptest.NewRecorder()
 	h.renderError(recorder, http.StatusInternalServerError, "Unreachable", "Never rendered")
@@ -797,7 +789,7 @@ func TestHandleErrorLogsUnexpectedFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	captured := &recordSlogHandler{}
-	h := &handler{pages: pages, options: Options{Logger: slog.New(captured)}}
+	h := &handler{pages: pages, options: handlerOptions{Logger: slog.New(captured)}}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/candidates", nil)
@@ -816,23 +808,24 @@ func TestHandleErrorLogsUnexpectedFailure(t *testing.T) {
 	}
 }
 
-type errListSkillsCatalog struct{ Catalog }
-
-func (c errListSkillsCatalog) ListSkills(context.Context) ([]registry.SkillSummary, error) {
-	return nil, errors.New("catalog storage unavailable")
-}
-
 func TestNewHandlerDefaultsLogger(t *testing.T) {
 	captured := &recordSlogHandler{}
 	restore := slog.Default()
 	slog.SetDefault(slog.New(captured))
 	defer slog.SetDefault(restore)
 
-	key, err := NewCSRFKey(bytes.Repeat([]byte{1}, 32))
+	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHandler(errListSkillsCatalog{}, &fixedCuratorResolver{}, Options{
+	catalog, err := openCatalog(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.close() })
+	catalog.listSkillsErr = errors.New("catalog storage unavailable")
+	resolver := &fixedCuratorResolver{}
+	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
 		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
@@ -859,14 +852,14 @@ func TestValidateUploadLabelRejectsUntrustedText(t *testing.T) {
 }
 
 func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
-	if _, err := NewCSRFKey(make([]byte, 31)); err == nil {
+	if _, err := newCSRFKey(make([]byte, 31)); err == nil {
 		t.Fatal("short CSRF key accepted")
 	}
-	if _, err := NewCSRFKey(make([]byte, 32)); err == nil {
+	if _, err := newCSRFKey(make([]byte, 32)); err == nil {
 		t.Fatal("zero CSRF key accepted")
 	}
-	key, err := NewCSRFKey(bytes.Repeat([]byte{1}, 32))
-	if err != nil || key == (CSRFKey{}) {
+	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
+	if err != nil || key == (csrfKey{}) {
 		t.Fatalf("valid key = %x, %v", key, err)
 	}
 }

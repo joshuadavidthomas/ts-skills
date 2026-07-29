@@ -1,4 +1,4 @@
-package upload
+package server
 
 import (
 	"bytes"
@@ -22,9 +22,9 @@ type directoryPart struct {
 	body     string
 }
 
-func stageDirectory(t *testing.T, parent string, limits safetree.Limits, parts ...directoryPart) (*Submission, error) {
+func stageDirectory(t *testing.T, parent string, limits safetree.Limits, parts ...directoryPart) (*submission, error) {
 	t.Helper()
-	return StageBrowserDirectory(context.Background(), parent, directoryReader(t, parts...), limits)
+	return stageBrowserDirectory(context.Background(), parent, directoryReader(t, parts...), limits)
 }
 
 func directoryReader(t *testing.T, parts ...directoryPart) *multipart.Reader {
@@ -167,8 +167,8 @@ func TestBrowserDirectoryRejectsMalformedManifestAndPartSequence(t *testing.T) {
 	for name, parts := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := stageDirectory(t, t.TempDir(), safetree.PrototypeLimits(), parts...)
-			if !errors.Is(err, ErrMalformedUpload) {
-				t.Fatalf("error = %v, want ErrMalformedUpload", err)
+			if !errors.Is(err, errMalformedUpload) {
+				t.Fatalf("error = %v, want errMalformedUpload", err)
 			}
 		})
 	}
@@ -181,11 +181,11 @@ func TestBrowserDirectoryCancellationSurvivesStaging(t *testing.T) {
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := StageBrowserDirectory(ctx, t.TempDir(), reader, safetree.PrototypeLimits())
+	_, err := stageBrowserDirectory(ctx, t.TempDir(), reader, safetree.PrototypeLimits())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled directory error = %v, want context.Canceled", err)
 	}
-	if errors.Is(err, ErrMalformedUpload) {
+	if errors.Is(err, errMalformedUpload) {
 		t.Fatalf("canceled directory error flattened into malformed upload: %v", err)
 	}
 }

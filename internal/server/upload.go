@@ -1,4 +1,4 @@
-package upload
+package server
 
 import (
 	"bytes"
@@ -15,11 +15,11 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-var ErrMalformedUpload = errors.New("malformed skill upload")
+var errMalformedUpload = errors.New("malformed skill upload")
 
 // Submission owns one validated, staged upload tree. Snapshot lends that tree
 // to a caller; the caller must not close it. Close remains Submission's job.
-type Submission struct {
+type submission struct {
 	snapshot      *safetree.Snapshot
 	root          string
 	label         string
@@ -28,28 +28,28 @@ type Submission struct {
 
 // Snapshot lends the validated staged tree. The Submission retains ownership;
 // callers must not close the returned snapshot.
-func (s *Submission) Snapshot() *safetree.Snapshot {
+func (s *submission) Snapshot() *safetree.Snapshot {
 	if s == nil {
 		return nil
 	}
 	return s.snapshot
 }
 
-func (s *Submission) Root() string {
+func (s *submission) Root() string {
 	if s == nil {
 		return ""
 	}
 	return s.root
 }
 
-func (s *Submission) Label() string {
+func (s *submission) Label() string {
 	if s == nil {
 		return ""
 	}
 	return s.label
 }
 
-func (s *Submission) Close() error {
+func (s *submission) Close() error {
 	if s == nil || s.snapshot == nil {
 		return nil
 	}
@@ -70,7 +70,7 @@ type manifestEntry struct {
 	Size  int64  `json:"size"`
 }
 
-func StageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits safetree.Limits) (_ *Submission, err error) {
+func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits safetree.Limits) (_ *submission, err error) {
 	if body == nil {
 		return nil, malformed("multipart directory parts are missing", nil)
 	}
@@ -144,7 +144,7 @@ func StageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 	if err != nil {
 		return nil, err
 	}
-	return &Submission{snapshot: snapshot, root: root, label: root}, nil
+	return &submission{snapshot: snapshot, root: root, label: root}, nil
 }
 
 func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string, error) {
@@ -225,7 +225,7 @@ func (r *countingReader) Read(dst []byte) (int, error) {
 
 func malformed(problem string, cause error) error {
 	if cause == nil {
-		return fmt.Errorf("%w: %s", ErrMalformedUpload, problem)
+		return fmt.Errorf("%w: %s", errMalformedUpload, problem)
 	}
-	return fmt.Errorf("%w: %s: %w", ErrMalformedUpload, problem, cause)
+	return fmt.Errorf("%w: %s: %w", errMalformedUpload, problem, cause)
 }

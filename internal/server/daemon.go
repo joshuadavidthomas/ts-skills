@@ -1,4 +1,4 @@
-package daemon
+package server
 
 import (
 	"context"
@@ -19,11 +19,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/storage"
-	"github.com/joshuadavidthomas/ts-skills/internal/tailnet"
-	"github.com/joshuadavidthomas/ts-skills/internal/web"
 	"tailscale.com/ipn"
 	"tailscale.com/types/persist"
 )
@@ -59,20 +55,7 @@ type DevConfig struct {
 	Started           func(net.Addr)
 }
 
-// DevModeFromEnv reports whether TS_SKILLSD_DEV enables dev mode.
-func DevModeFromEnv() (bool, error) {
-	value := os.Getenv("TS_SKILLSD_DEV")
-	if value == "" {
-		return false, nil
-	}
-	enabled, err := strconv.ParseBool(value)
-	if err != nil {
-		return false, fmt.Errorf("TS_SKILLSD_DEV must be a boolean value such as 1 or true")
-	}
-	return enabled, nil
-}
-
-func DevConfigFromEnv() (DevConfig, error) {
+func devConfigFromEnv() (DevConfig, error) {
 	listen := os.Getenv("TS_SKILLSD_DEV_LISTEN")
 	ephemeralFallback := listen == ""
 	if listen == "" {
@@ -129,7 +112,7 @@ func isLoopbackHost(host string) bool {
 // ConfigFromEnv reads daemon configuration. For first enrollment, it resolves
 // TS_SKILLSD_AUTHKEY_FILE before TS_AUTHKEY. Later starts need neither value
 // when the tsnet state file already contains an enrolled node key.
-func ConfigFromEnv() (Config, error) {
+func configFromEnv() (Config, error) {
 	config := Config{
 		StateDir: os.Getenv("TS_SKILLSD_STATE_DIR"),
 		Hostname: os.Getenv("TS_SKILLSD_HOSTNAME"),
@@ -303,6 +286,13 @@ func Run(ctx context.Context, config Config) error {
 	if ctx == nil {
 		return fmt.Errorf("run daemon: context must be provided")
 	}
+	if config == (Config{}) {
+		var err error
+		config, err = configFromEnv()
+		if err != nil {
+			return err
+		}
+	}
 	config, err := normalizeConfig(config)
 	if err != nil {
 		return err
@@ -317,6 +307,15 @@ func Run(ctx context.Context, config Config) error {
 func RunDev(ctx context.Context, config DevConfig) error {
 	if ctx == nil {
 		return fmt.Errorf("run daemon: context must be provided")
+	}
+	if config.StateDir == "" && config.Listen == "" {
+		started := config.Started
+		var err error
+		config, err = devConfigFromEnv()
+		if err != nil {
+			return err
+		}
+		config.Started = started
 	}
 	config, err := normalizeDevConfig(config)
 	if err != nil {
@@ -481,38 +480,34 @@ func shutdownHTTP(server *http.Server, timeout time.Duration) error {
 	return nil
 }
 
-func openRegistryCore(ctx context.Context, stateDir string) (_ *storage.Catalog, _ *registry.Catalog, _ web.CSRFKey, err error) {
-	records, err := storage.OpenCatalog(ctx, stateDir)
+func openRegistryCore(ctx context.Context, stateDir string) (_ *catalog, _ csrfKey, err error) {
+	catalog, err := openCatalog(ctx, stateDir)
 	if err != nil {
-		return nil, nil, web.CSRFKey{}, fmt.Errorf("open registry storage: %w", err)
+		return nil, csrfKey{}, fmt.Errorf("open registry storage: %w", err)
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, records.Close())
+			err = errors.Join(err, catalog.close())
 		}
 	}()
 
-	csrfKey, err := loadOrCreateCSRFKey(stateDir)
+	key, err := loadOrCreateCSRFKey(stateDir)
 	if err != nil {
-		return nil, nil, web.CSRFKey{}, err
+		return nil, csrfKey{}, err
 	}
-	catalog, err := registry.NewCatalog(records, filepath.Join(stateDir, "tmp"), safetree.PrototypeLimits())
-	if err != nil {
-		return nil, nil, web.CSRFKey{}, fmt.Errorf("construct registry catalog: %w", err)
-	}
-	return records, catalog, csrfKey, nil
+	return catalog, key, nil
 }
 
 // buildRuntime constructs the production runtime from normalized config.
 func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
-	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
+	catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
 		return runtime{}, err
 	}
-	closeRecords := true
+	closeCatalog := true
 	defer func() {
-		if closeRecords {
-			err = errors.Join(err, records.Close())
+		if closeCatalog {
+			err = errors.Join(err, catalog.close())
 		}
 	}()
 
@@ -527,7 +522,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 			logger.Info(fmt.Sprintf(format, args...))
 		}
 	}
-	tailConfig := tailnet.ServerConfig{
+	tailConfig := tailnetConfig{
 		Hostname: config.Hostname,
 		StateDir: filepath.Join(config.StateDir, "tsnet"),
 		AuthKey:  config.AuthKey,
@@ -536,26 +531,26 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	if config.Tag != "" {
 		tailConfig.AdvertiseTags = []string{config.Tag}
 	}
-	tailServer, err := tailnet.ListenTLS(ctx, tailConfig)
+	tailServer, err := listenTLS(ctx, tailConfig)
 	if err != nil {
 		return runtime{}, err
 	}
 	closeTailnet := true
 	defer func() {
 		if closeTailnet {
-			err = errors.Join(err, tailServer.Close())
+			err = errors.Join(err, tailServer.close())
 		}
 	}()
 
-	localClient, err := tailServer.LocalClient()
+	localClient, err := tailServer.localClient()
 	if err != nil {
 		return runtime{}, err
 	}
-	actors, err := tailnet.NewActorResolver(localClient)
+	actors, err := newActorResolver(localClient)
 	if err != nil {
 		return runtime{}, err
 	}
-	handler, err := web.NewHandler(catalog, actors, web.Options{
+	handler, err := newHandler(catalog, actors.curator, handlerOptions{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
@@ -567,13 +562,13 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	}
 
 	cleanup := &runtimeCleanup{
-		closeNetwork: tailServer.Close,
-		closeStorage: records.Close,
+		closeNetwork: tailServer.close,
+		closeStorage: catalog.close,
 	}
 	closeTailnet = false
-	closeRecords = false
+	closeCatalog = false
 	return runtime{
-		listener: tailServer.Listener(),
+		listener: tailServer.listenerAddr(),
 		handler:  handler,
 		close:    cleanup.close,
 	}, nil
@@ -581,19 +576,19 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 
 // buildDevRuntime constructs the loopback runtime from normalized config.
 func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err error) {
-	records, catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
+	catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
 		return runtime{}, err
 	}
-	closeRecords := true
+	closeCatalog := true
 	defer func() {
-		if closeRecords {
-			err = errors.Join(err, records.Close())
+		if closeCatalog {
+			err = errors.Join(err, catalog.close())
 		}
 	}()
 
-	actor := registry.Actor{ID: "dev", Display: "dev@localhost"}
-	handler, err := web.NewHandler(catalog, staticCuratorResolver{curator: registry.Curator{Actor: actor}}, web.Options{
+	devCurator := curator{Actor: actor{ID: "dev", Display: "dev@localhost"}}
+	handler, err := newHandler(catalog, func(*http.Request) (curator, error) { return devCurator, nil }, handlerOptions{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,
@@ -626,24 +621,14 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 			}
 			return nil
 		},
-		closeStorage: records.Close,
+		closeStorage: catalog.close,
 	}
-	closeRecords = false
+	closeCatalog = false
 	return runtime{
 		listener: listener,
 		handler:  handler,
 		close:    cleanup.close,
 	}, nil
-}
-
-// staticCuratorResolver grants every request one fixed curator. It is only
-// safe behind a loopback listener where every caller is the developer.
-type staticCuratorResolver struct {
-	curator registry.Curator
-}
-
-func (r staticCuratorResolver) Curator(*http.Request) (registry.Curator, error) {
-	return r.curator, nil
 }
 
 type runtimeCleanup struct {
@@ -671,41 +656,41 @@ func (c *runtimeCleanup) close() error {
 	return errors.Join(networkErr, storageErr)
 }
 
-func loadOrCreateCSRFKey(stateDir string) (web.CSRFKey, error) {
+func loadOrCreateCSRFKey(stateDir string) (csrfKey, error) {
 	path := filepath.Join(stateDir, "csrf.key")
 	info, err := os.Lstat(path)
 	if err == nil {
 		if !info.Mode().IsRegular() {
-			return web.CSRFKey{}, fmt.Errorf("load CSRF key %q: path is not a regular file", path)
+			return csrfKey{}, fmt.Errorf("load CSRF key %q: path is not a regular file", path)
 		}
 		if err := os.Chmod(path, 0o600); err != nil {
-			return web.CSRFKey{}, fmt.Errorf("set CSRF key permissions: %w", err)
+			return csrfKey{}, fmt.Errorf("set CSRF key permissions: %w", err)
 		}
 		contents, err := os.ReadFile(path)
 		if err != nil {
-			return web.CSRFKey{}, fmt.Errorf("read CSRF key: %w", err)
+			return csrfKey{}, fmt.Errorf("read CSRF key: %w", err)
 		}
-		key, err := web.NewCSRFKey(contents)
+		key, err := newCSRFKey(contents)
 		if err != nil {
-			return web.CSRFKey{}, fmt.Errorf("parse CSRF key: %w", err)
+			return csrfKey{}, fmt.Errorf("parse CSRF key: %w", err)
 		}
 		return key, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return web.CSRFKey{}, fmt.Errorf("inspect CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("inspect CSRF key: %w", err)
 	}
 
 	contents := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, contents); err != nil {
-		return web.CSRFKey{}, fmt.Errorf("generate CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("generate CSRF key: %w", err)
 	}
-	key, err := web.NewCSRFKey(contents)
+	key, err := newCSRFKey(contents)
 	if err != nil {
-		return web.CSRFKey{}, fmt.Errorf("construct CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("construct CSRF key: %w", err)
 	}
 	temporary, err := os.CreateTemp(stateDir, ".csrf-key-")
 	if err != nil {
-		return web.CSRFKey{}, fmt.Errorf("create temporary CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("create temporary CSRF key: %w", err)
 	}
 	temporaryPath := temporary.Name()
 	removeTemporary := true
@@ -716,35 +701,25 @@ func loadOrCreateCSRFKey(stateDir string) (web.CSRFKey, error) {
 	}()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
-		return web.CSRFKey{}, fmt.Errorf("set temporary CSRF key permissions: %w", err)
+		return csrfKey{}, fmt.Errorf("set temporary CSRF key permissions: %w", err)
 	}
 	if _, err := temporary.Write(contents); err != nil {
 		_ = temporary.Close()
-		return web.CSRFKey{}, fmt.Errorf("write temporary CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("write temporary CSRF key: %w", err)
 	}
 	if err := temporary.Sync(); err != nil {
 		_ = temporary.Close()
-		return web.CSRFKey{}, fmt.Errorf("sync temporary CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("sync temporary CSRF key: %w", err)
 	}
 	if err := temporary.Close(); err != nil {
-		return web.CSRFKey{}, fmt.Errorf("close temporary CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("close temporary CSRF key: %w", err)
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
-		return web.CSRFKey{}, fmt.Errorf("install CSRF key: %w", err)
+		return csrfKey{}, fmt.Errorf("install CSRF key: %w", err)
 	}
 	removeTemporary = false
 	if err := syncDirectory(stateDir); err != nil {
-		return web.CSRFKey{}, fmt.Errorf("sync CSRF key directory: %w", err)
+		return csrfKey{}, fmt.Errorf("sync CSRF key directory: %w", err)
 	}
 	return key, nil
-}
-
-func syncDirectory(path string) error {
-	directory, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	return errors.Join(syncErr, closeErr)
 }

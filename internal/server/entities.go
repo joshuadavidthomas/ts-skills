@@ -1,4 +1,4 @@
-package registry
+package server
 
 import (
 	"time"
@@ -6,44 +6,44 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
-type Actor struct {
+type actor struct {
 	ID      string
 	Display string
 }
 
-// Curator is an Actor authorized to mutate the catalog.
-type Curator struct{ Actor Actor }
+// curator carries an actor authorized to mutate the catalog.
+type curator struct{ Actor actor }
 
-type Provenance struct {
+type provenance struct {
 	Source      string
-	SubmittedBy Actor
+	SubmittedBy actor
 	SubmittedAt time.Time
 }
 
-type Candidate struct {
+type candidate struct {
 	ID         agentskill.CandidateID
 	Skill      agentskill.SkillID
 	Tree       agentskill.TreeDigest
-	Provenance Provenance
+	Provenance provenance
 }
 
-type Publication struct {
+type publication struct {
 	ID          agentskill.PublicationID
 	Candidate   agentskill.CandidateID
-	PublishedBy Actor
+	PublishedBy actor
 	PublishedAt time.Time
 }
 
-// CurrentPublication is the stored audit shape of a selection: who moved
+// currentPublication is the stored audit shape of a selection: who moved
 // the current pointer and when. Transitions persist it but do not return
 // it; a "who selected this" read model would be a deliberate registry read.
-type CurrentPublication struct {
+type currentPublication struct {
 	Publication agentskill.PublicationID
-	SelectedBy  Actor
+	SelectedBy  actor
 	SelectedAt  time.Time
 }
 
-type SkillSummary struct {
+type skillSummary struct {
 	Skill   agentskill.SkillID
 	Current agentskill.PublicationID
 }

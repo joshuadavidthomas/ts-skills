@@ -1,4 +1,4 @@
-package tailnet
+package server
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
@@ -49,7 +48,7 @@ func TestNewTSNetServerCopiesConfigurationAndOwnsLogs(t *testing.T) {
 	var messages []string
 	logf := func(format string, _ ...any) { messages = append(messages, format) }
 	tags := []string{"tag:skills-registry"}
-	server := newTSNetServer(ServerConfig{
+	server := newTSNetServer(tailnetConfig{
 		Hostname:      "registry",
 		StateDir:      "/state",
 		AuthKey:       "tskey-auth-test",
@@ -70,7 +69,7 @@ func TestNewTSNetServerCopiesConfigurationAndOwnsLogs(t *testing.T) {
 		t.Fatalf("diagnostics = %q", got)
 	}
 
-	discard := newTSNetServer(ServerConfig{Hostname: "registry", StateDir: "/state"})
+	discard := newTSNetServer(tailnetConfig{Hostname: "registry", StateDir: "/state"})
 	if discard.Logf == nil || discard.UserLogf == nil {
 		t.Fatal("nil diagnostics were passed through to tsnet defaults")
 	}
@@ -84,7 +83,7 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		Node:        &tailcfg.Node{StableID: "node-human", Name: "workstation.example.ts.net."},
 		UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "alice@example.com"},
 	}, &addresses)
-	resolver, err := NewActorResolver(client)
+	resolver, err := newActorResolver(client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,8 +98,8 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		}
 		request.RemoteAddr = "100.64.0.7:51820"
 		request.Header = headers
-		_, err = resolver.Curator(request)
-		if !errors.Is(err, registry.ErrCurationDenied) {
+		_, err = resolver.curator(request)
+		if !errors.Is(err, errCurationDenied) {
 			t.Fatalf("curator error = %v, want permission denial", err)
 		}
 	}
@@ -116,7 +115,7 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 }
 
 func TestValidateActorRejectsUntrustedText(t *testing.T) {
-	for _, actor := range []registry.Actor{
+	for _, actor := range []actor{
 		{ID: "id\x00", Display: "display"},
 		{ID: string([]byte{0xff}), Display: "display"},
 		{ID: strings.Repeat("a", 257), Display: "display"},
@@ -140,7 +139,7 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 			skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)},
 		},
 	}, &addresses)
-	resolver, err := NewActorResolver(client)
+	resolver, err := newActorResolver(client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +149,7 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 	}
 	request.RemoteAddr = "[fd7a:115c:a1e0::7]:44321"
 
-	curator, err := resolver.Curator(request)
+	curator, err := resolver.curator(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +195,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 				UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "alice@example.com"},
 				CapMap:      test.capMap,
 			}, &addresses)
-			resolver, err := NewActorResolver(client)
+			resolver, err := newActorResolver(client)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -206,7 +205,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 			}
 			request.RemoteAddr = "100.64.0.7:51820"
 
-			_, err = resolver.Curator(request)
+			_, err = resolver.curator(request)
 			if test.wantError {
 				if err == nil {
 					t.Fatal("Curator succeeded with malformed capability rule")
@@ -219,7 +218,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, registry.ErrCurationDenied) {
+			if !errors.Is(err, errCurationDenied) {
 				t.Fatalf("curator error = %v, want permission denial", err)
 			}
 		})
@@ -228,7 +227,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 
 func TestActorResolverValidatesIdentityBeforeCapability(t *testing.T) {
 	var addresses []string
-	resolver, err := NewActorResolver(localClientForWhoIs(t, &apitype.WhoIsResponse{
+	resolver, err := newActorResolver(localClientForWhoIs(t, &apitype.WhoIsResponse{
 		Node: &tailcfg.Node{StableID: "node-human", Name: "human.example.ts.net."},
 	}, &addresses))
 	if err != nil {
@@ -236,7 +235,7 @@ func TestActorResolverValidatesIdentityBeforeCapability(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost, "https://registry.example.ts.net/candidates", nil)
 	request.RemoteAddr = "100.64.0.7:51820"
-	if _, err := resolver.Curator(request); err == nil || errors.Is(err, registry.ErrCurationDenied) {
+	if _, err := resolver.curator(request); err == nil || errors.Is(err, errCurationDenied) {
 		t.Fatalf("curator error = %v, want incomplete identity failure", err)
 	}
 }
@@ -256,7 +255,7 @@ func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 	for name, response := range tests {
 		t.Run(name, func(t *testing.T) {
 			var addresses []string
-			resolver, err := NewActorResolver(localClientForWhoIs(t, response, &addresses))
+			resolver, err := newActorResolver(localClientForWhoIs(t, response, &addresses))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -265,7 +264,7 @@ func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			request.RemoteAddr = "100.64.0.8:1234"
-			if _, err := resolver.Curator(request); err == nil {
+			if _, err := resolver.curator(request); err == nil {
 				t.Fatal("Curator succeeded with incomplete WhoIs identity")
 			}
 		})

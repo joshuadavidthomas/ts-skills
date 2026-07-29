@@ -1,4 +1,4 @@
-package tailnet
+package server
 
 import (
 	"context"
@@ -8,14 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
-	"unicode"
-	"unicode/utf8"
-
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"tailscale.com/client/local"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
+	"time"
 )
 
 const (
@@ -27,81 +23,67 @@ type capabilityRule struct {
 	Curate bool `json:"curate"`
 }
 
-// ActorResolver maps the peer accepted by tsnet to its registry identity. It
+// actorResolver maps the peer accepted by tsnet to its registry identity. It
 // does not consult HTTP headers because they are controlled by the caller.
-type ActorResolver struct {
+type actorResolver struct {
 	local *local.Client
 }
 
-func NewActorResolver(client *local.Client) (*ActorResolver, error) {
+func newActorResolver(client *local.Client) (*actorResolver, error) {
 	if client == nil {
 		return nil, fmt.Errorf("tailnet LocalAPI client must be provided")
 	}
-	return &ActorResolver{local: client}, nil
+	return &actorResolver{local: client}, nil
 }
 
-func (r *ActorResolver) Curator(request *http.Request) (registry.Curator, error) {
+func (r *actorResolver) curator(request *http.Request) (curator, error) {
 	if r == nil || r.local == nil {
-		return registry.Curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
+		return curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
 	}
 	if request == nil {
-		return registry.Curator{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
+		return curator{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
 	}
 
 	who, err := r.local.WhoIs(request.Context(), request.RemoteAddr)
 	if err != nil {
-		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
+		return curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
 	}
 	if who == nil || who.Node == nil {
-		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
+		return curator{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
 	}
-	var actor registry.Actor
+	var resolvedActor actor
 	if len(who.Node.Tags) != 0 {
 		if who.Node.StableID.IsZero() || strings.TrimSpace(who.Node.Name) == "" {
-			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
+			return curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
 		}
 		display := strings.TrimSuffix(who.Node.Name, ".") + " [" + strings.Join(who.Node.Tags, ", ") + "]"
-		actor = registry.Actor{ID: string(who.Node.StableID), Display: display}
-		if err := validateActor(actor); err != nil {
-			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
+		resolvedActor = actor{ID: string(who.Node.StableID), Display: display}
+		if err := validateActor(resolvedActor); err != nil {
+			return curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	} else {
 		if who.UserProfile == nil || who.UserProfile.ID.IsZero() || strings.TrimSpace(who.UserProfile.LoginName) == "" {
-			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
+			return curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
 		}
-		actor = registry.Actor{ID: strconv.FormatInt(int64(who.UserProfile.ID), 10), Display: who.UserProfile.LoginName}
-		if err := validateActor(actor); err != nil {
-			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
+		resolvedActor = actor{ID: strconv.FormatInt(int64(who.UserProfile.ID), 10), Display: who.UserProfile.LoginName}
+		if err := validateActor(resolvedActor); err != nil {
+			return curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	}
 
 	rules, err := tailcfg.UnmarshalCapJSON[capabilityRule](who.CapMap, skillsCapabilityName)
 	if err != nil {
-		return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
+		return curator{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
 	}
 	for _, rule := range rules {
 		if rule.Curate {
-			return registry.Curator{Actor: actor}, nil
+			return curator{Actor: resolvedActor}, nil
 		}
 	}
-	return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, registry.ErrCurationDenied)
+	return curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, errCurationDenied)
 }
 
-func validateActor(actor registry.Actor) error {
-	for field, value := range map[string]string{"actor id": actor.ID, "actor display": actor.Display} {
-		if value == "" || !utf8.ValidString(value) || len(value) > 256 {
-			return fmt.Errorf("%s must be nonempty valid UTF-8 of at most 256 bytes", field)
-		}
-		for _, r := range value {
-			if unicode.IsControl(r) {
-				return fmt.Errorf("%s must not contain control characters", field)
-			}
-		}
-	}
-	return nil
-}
-
-type ServerConfig struct {
+type tailnetConfig struct {
 	Hostname      string
 	StateDir      string
 	AuthKey       string
@@ -111,13 +93,13 @@ type ServerConfig struct {
 	Logf func(string, ...any)
 }
 
-// Server owns one embedded Tailscale node and its Tailnet-only TLS listener.
-type Server struct {
+// tailnetServer owns one embedded Tailscale node and its Tailnet-only TLS listener.
+type tailnetServer struct {
 	server   *tsnet.Server
 	listener net.Listener
 }
 
-func ListenTLS(ctx context.Context, config ServerConfig) (_ *Server, err error) {
+func listenTLS(ctx context.Context, config tailnetConfig) (_ *tailnetServer, err error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("start Tailnet server: context must be provided")
 	}
@@ -154,10 +136,10 @@ func ListenTLS(ctx context.Context, config ServerConfig) (_ *Server, err error) 
 		return nil, fmt.Errorf("listen with Tailnet HTTPS: %w", listenErr)
 	}
 	closeOnError = false
-	return &Server{server: ts, listener: listener}, nil
+	return &tailnetServer{server: ts, listener: listener}, nil
 }
 
-func newTSNetServer(config ServerConfig) *tsnet.Server {
+func newTSNetServer(config tailnetConfig) *tsnet.Server {
 	logf := config.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
@@ -172,14 +154,14 @@ func newTSNetServer(config ServerConfig) *tsnet.Server {
 	}
 }
 
-func (s *Server) Listener() net.Listener {
+func (s *tailnetServer) listenerAddr() net.Listener {
 	if s == nil {
 		return nil
 	}
 	return s.listener
 }
 
-func (s *Server) LocalClient() (*local.Client, error) {
+func (s *tailnetServer) localClient() (*local.Client, error) {
 	if s == nil || s.server == nil {
 		return nil, fmt.Errorf("tailnet server is unavailable")
 	}
@@ -190,7 +172,7 @@ func (s *Server) LocalClient() (*local.Client, error) {
 	return client, nil
 }
 
-func (s *Server) Close() error {
+func (s *tailnetServer) close() error {
 	if s == nil || s.server == nil {
 		return nil
 	}

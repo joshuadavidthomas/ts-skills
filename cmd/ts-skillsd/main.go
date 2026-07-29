@@ -6,9 +6,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/daemon"
+	"github.com/joshuadavidthomas/ts-skills/internal/server"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 	"tailscale.com/hostinfo"
 )
@@ -30,25 +32,48 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	dev, err := daemon.DevModeFromEnv()
+	dev, err := devModeFromEnv()
 	if err != nil {
 		return err
 	}
 	if !dev {
-		config, err := daemon.ConfigFromEnv()
-		if err != nil {
-			return err
-		}
-		return daemon.Run(ctx, config)
+		return server.Run(ctx, server.Config{})
 	}
 
-	config, err := daemon.DevConfigFromEnv()
+	stateDir, err := devStateDirForLog()
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode treats every local connection as dev@localhost; never expose this listener\n")
-	config.Started = func(address net.Addr) {
-		fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode: http://%s (state: %s)\n", address, config.StateDir)
+	return server.RunDev(ctx, server.DevConfig{Started: func(address net.Addr) {
+		fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode treats every local connection as dev@localhost; never expose this listener\n")
+		fmt.Fprintf(os.Stderr, "ts-skillsd: dev mode: http://%s (state: %s)\n", address, stateDir)
+	}})
+}
+
+func devModeFromEnv() (bool, error) {
+	value := os.Getenv("TS_SKILLSD_DEV")
+	if value == "" {
+		return false, nil
 	}
-	return daemon.RunDev(ctx, config)
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("TS_SKILLSD_DEV must be a boolean value such as 1 or true")
+	}
+	return enabled, nil
+}
+
+func devStateDirForLog() (string, error) {
+	stateDir := os.Getenv("TS_SKILLSD_STATE_DIR")
+	if stateDir == "" {
+		cache, err := os.UserCacheDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve default dev state directory: %w", err)
+		}
+		stateDir = filepath.Join(cache, "ts-skillsd-dev")
+	}
+	absolute, err := filepath.Abs(stateDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve dev state directory: %w", err)
+	}
+	return absolute, nil
 }

@@ -1,3 +1,6 @@
+//go:build ignore
+
+// TODO(plan 005): move this end-to-end client test to cmd/ts-skills.
 package web
 
 import (

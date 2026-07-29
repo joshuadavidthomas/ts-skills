@@ -1,4 +1,4 @@
-package storage
+package server
 
 import (
 	"context"
@@ -12,25 +12,24 @@ import (
 	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
-func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.CandidateID) (registry.Candidate, error) {
+func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.CandidateID) (candidate, error) {
 	row := queryRow(ctx, `
 		SELECT id, namespace, name, tree_digest, source_label,
 		       submitted_actor_id, submitted_actor_display, submitted_at_ns
 		FROM candidates WHERE id = ?`, candidateIDBlob(id))
 	candidate, err := scanCandidate(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Candidate{}, fmt.Errorf("candidate %s: %w", id, registry.ErrNotFound)
+		return candidate, fmt.Errorf("candidate %s: %w", id, errNotFound)
 	}
 	if err != nil {
-		return registry.Candidate{}, fmt.Errorf("read candidate %s: %w", id, err)
+		return candidate, fmt.Errorf("read candidate %s: %w", id, err)
 	}
 	return candidate, nil
 }
 
-func scanCandidate(row *sql.Row) (registry.Candidate, error) {
+func scanCandidate(row *sql.Row) (candidate, error) {
 	var (
 		idBlob, digestBlob                   []byte
 		namespaceText, nameText, sourceLabel string
@@ -41,34 +40,34 @@ func scanCandidate(row *sql.Row) (registry.Candidate, error) {
 		&idBlob, &namespaceText, &nameText, &digestBlob, &sourceLabel,
 		&actorID, &actorDisplay, &submittedAtNanoseconds,
 	); err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
 	id, err := candidateIDFromBlob(idBlob)
 	if err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
 	skill, err := skillFromText(namespaceText, nameText)
 	if err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
 	digest, err := digestFromBlob(digestBlob)
 	if err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
 	if err := validateRecordText("candidate source", sourceLabel); err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
-	actor := registry.Actor{ID: actorID, Display: actorDisplay}
+	actor := actor{ID: actorID, Display: actorDisplay}
 	if err := validateActor(actor); err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
-	return registry.Candidate{
+	return candidate{
 		ID: id, Skill: skill, Tree: digest,
-		Provenance: registry.Provenance{Source: sourceLabel, SubmittedBy: actor, SubmittedAt: time.Unix(0, submittedAtNanoseconds).UTC()},
+		Provenance: provenance{Source: sourceLabel, SubmittedBy: actor, SubmittedAt: time.Unix(0, submittedAtNanoseconds).UTC()},
 	}, nil
 }
 
-func queryPublication(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.PublicationID) (registry.Publication, error) {
+func queryPublication(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.PublicationID) (publication, error) {
 	row := queryRow(ctx, `
 		SELECT namespace, name, tree_digest, candidate_id,
 		       published_actor_id, published_actor_display, published_at_ns
@@ -77,15 +76,15 @@ func queryPublication(ctx context.Context, queryRow func(context.Context, string
 		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()))
 	publication, err := scanPublication(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Publication{}, fmt.Errorf("publication %s at %s: %w", id.Skill(), id.Tree(), registry.ErrNotFound)
+		return publication, fmt.Errorf("publication %s at %s: %w", id.Skill(), id.Tree(), errNotFound)
 	}
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("read publication %s at %s: %w", id.Skill(), id.Tree(), err)
+		return publication, fmt.Errorf("read publication %s at %s: %w", id.Skill(), id.Tree(), err)
 	}
 	return publication, nil
 }
 
-func scanPublication(row *sql.Row) (registry.Publication, error) {
+func scanPublication(row *sql.Row) (publication, error) {
 	var (
 		digestBytes, candidateBytes               []byte
 		namespaceText, nameText, actorID, display string
@@ -95,44 +94,44 @@ func scanPublication(row *sql.Row) (registry.Publication, error) {
 		&namespaceText, &nameText, &digestBytes, &candidateBytes,
 		&actorID, &display, &publishedAtNanoseconds,
 	); err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
 	skill, err := skillFromText(namespaceText, nameText)
 	if err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
 	digest, err := digestFromBlob(digestBytes)
 	if err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
 	id, err := agentskill.NewPublicationID(skill, digest)
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("decode publication identity: %w", err)
+		return publication{}, fmt.Errorf("decode publication identity: %w", err)
 	}
 	candidate, err := candidateIDFromBlob(candidateBytes)
 	if err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
-	actor := registry.Actor{ID: actorID, Display: display}
+	actor := actor{ID: actorID, Display: display}
 	if err := validateActor(actor); err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
-	return registry.Publication{ID: id, Candidate: candidate, PublishedBy: actor, PublishedAt: time.Unix(0, publishedAtNanoseconds).UTC()}, nil
+	return publication{ID: id, Candidate: candidate, PublishedBy: actor, PublishedAt: time.Unix(0, publishedAtNanoseconds).UTC()}, nil
 }
 
-func (c *Catalog) Publication(ctx context.Context, id agentskill.PublicationID) (registry.Publication, error) {
+func (c *catalog) publication(ctx context.Context, id agentskill.PublicationID) (publication, error) {
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
 	defer done()
 	return queryPublication(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *Catalog) CurrentPublication(ctx context.Context, skill agentskill.SkillID) (registry.Publication, error) {
+func (c *catalog) currentPublication(ctx context.Context, skill agentskill.SkillID) (publication, error) {
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.Publication{}, err
+		return publication{}, err
 	}
 	defer done()
 	row := c.db.QueryRowContext(ctx, `
@@ -145,17 +144,17 @@ func (c *Catalog) CurrentPublication(ctx context.Context, skill agentskill.Skill
 		 AND p.tree_digest = current.tree_digest
 		WHERE current.namespace = ? AND current.name = ?`,
 		skill.Namespace().String(), skill.Name().String())
-	publication, err := scanPublication(row)
+	current, err := scanPublication(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return registry.Publication{}, fmt.Errorf("current publication for %s: %w", skill, registry.ErrNotFound)
+		return publication{}, fmt.Errorf("current publication for %s: %w", skill, errNotFound)
 	}
 	if err != nil {
-		return registry.Publication{}, fmt.Errorf("resolve current publication for %s: %w", skill, err)
+		return publication{}, fmt.Errorf("resolve current publication for %s: %w", skill, err)
 	}
-	return publication, nil
+	return current, nil
 }
 
-func (c *Catalog) ListPublishedSkills(ctx context.Context) (summaries []registry.SkillSummary, err error) {
+func (c *catalog) listPublishedSkills(ctx context.Context) (summaries []skillSummary, err error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -188,14 +187,13 @@ func (c *Catalog) ListPublishedSkills(ctx context.Context) (summaries []registry
 		if err != nil {
 			return nil, fmt.Errorf("decode current publication: %w", err)
 		}
-		summaries = append(summaries, registry.SkillSummary{Skill: skill, Current: publication})
+		summaries = append(summaries, skillSummary{Skill: skill, Current: publication})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list published skills: %w", err)
 	}
 	// SQLite's text collation and Go's bytewise order agree for valid UTF-8,
-	// but sorting here makes the interface's canonical order independent of
-	// database collation settings.
+	// but sorting here keeps the canonical order independent of collation.
 	sort.Slice(summaries, func(i, j int) bool {
 		return summaries[i].Skill.String() < summaries[j].Skill.String()
 	})
@@ -235,7 +233,7 @@ func validateRecordText(field, value string) error {
 	return nil
 }
 
-func validateActor(actor registry.Actor) error {
+func validateActor(actor actor) error {
 	if err := validateRecordText("actor id", actor.ID); err != nil {
 		return err
 	}

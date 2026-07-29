@@ -1,4 +1,4 @@
-package web
+package server
 
 import (
 	"archive/zip"
@@ -26,9 +26,7 @@ import (
 	"github.com/gorilla/csrf"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/upload"
 )
 
 const maxRequestBytes int64 = 32 << 20
@@ -39,40 +37,24 @@ var templatesFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-type Catalog interface {
-	Capture(context.Context, registry.Curator, registry.CaptureRequest) (registry.Candidate, error)
-	Candidate(context.Context, agentskill.CandidateID) (registry.Candidate, error)
-	OpenCandidateTree(context.Context, agentskill.CandidateID) (registry.Tree, error)
-	Publish(context.Context, agentskill.CandidateID, registry.Curator, time.Time) (registry.Publication, error)
-	SetCurrent(context.Context, agentskill.PublicationID, registry.Curator, time.Time) error
-	ListSkills(context.Context) ([]registry.SkillSummary, error)
-	ResolveCurrent(context.Context, agentskill.SkillID) (registry.Publication, error)
-	Publication(context.Context, agentskill.PublicationID) (registry.Publication, error)
-	OpenPublicationTree(context.Context, agentskill.PublicationID) (registry.Tree, error)
-}
+type csrfKey [32]byte
 
-type CuratorResolver interface {
-	Curator(*http.Request) (registry.Curator, error)
-}
-
-type CSRFKey [32]byte
-
-func NewCSRFKey(src []byte) (CSRFKey, error) {
-	var key CSRFKey
+func newCSRFKey(src []byte) (csrfKey, error) {
+	var key csrfKey
 	if len(src) != len(key) {
 		return key, fmt.Errorf("CSRF key must contain exactly %d bytes", len(key))
 	}
 	copy(key[:], src)
-	if key == (CSRFKey{}) {
-		return CSRFKey{}, fmt.Errorf("CSRF key must not be all zero")
+	if key == (csrfKey{}) {
+		return csrfKey{}, fmt.Errorf("CSRF key must not be all zero")
 	}
 	return key, nil
 }
 
-type Options struct {
+type handlerOptions struct {
 	StagingParent string
 	Limits        safetree.Limits
-	CSRFKey       CSRFKey
+	CSRFKey       csrfKey
 	SecureCookies bool
 	// Logger receives diagnostics for unexpected request failures and
 	// post-commit cleanup failures; nil selects slog.Default().
@@ -80,21 +62,21 @@ type Options struct {
 }
 
 type handler struct {
-	catalog         Catalog
-	curators        CuratorResolver
-	options         Options
+	catalog         *catalog
+	curator         func(*http.Request) (curator, error)
+	options         handlerOptions
 	pages           *template.Template
 	maxArchiveBytes int64
 }
 
-func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (http.Handler, error) {
+func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, error), options handlerOptions) (http.Handler, error) {
 	if catalog == nil {
 		return nil, fmt.Errorf("web catalog must be provided")
 	}
-	if curators == nil {
+	if resolveCurator == nil {
 		return nil, fmt.Errorf("curator resolver must be provided")
 	}
-	if options.CSRFKey == (CSRFKey{}) {
+	if options.CSRFKey == (csrfKey{}) {
 		return nil, fmt.Errorf("CSRF key must be provided")
 	}
 	if err := safetree.ValidateLimits(options.Limits); err != nil {
@@ -122,7 +104,7 @@ func NewHandler(catalog Catalog, curators CuratorResolver, options Options) (htt
 	if err != nil {
 		return nil, fmt.Errorf("open embedded web assets: %w", err)
 	}
-	h := &handler{catalog: catalog, curators: curators, options: options, pages: pages, maxArchiveBytes: maxArchiveBytes}
+	h := &handler{catalog: catalog, curator: resolveCurator, options: options, pages: pages, maxArchiveBytes: maxArchiveBytes}
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
@@ -181,7 +163,7 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Page was not found", "Return to the catalog.")
 		return
 	}
-	summaries, err := h.catalog.ListSkills(r.Context())
+	summaries, err := h.catalog.listSkills(r.Context())
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -212,12 +194,12 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Skill was not found", "Return to the catalog and choose another skill.")
 		return
 	}
-	publication, err := h.catalog.ResolveCurrent(r.Context(), skill)
+	publication, err := h.catalog.resolveCurrent(r.Context(), skill)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
 	}
-	tree, err := h.catalog.OpenPublicationTree(r.Context(), publication.ID)
+	tree, err := h.catalog.openPublicationTree(r.Context(), publication.ID)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -277,7 +259,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
 		return
 	}
-	submission, err := upload.StageBrowserDirectory(r.Context(), h.options.StagingParent, body, h.options.Limits)
+	submission, err := stageBrowserDirectory(r.Context(), h.options.StagingParent, body, h.options.Limits)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -298,7 +280,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the selected directory and try again.")
 		return
 	}
-	candidate, err := h.catalog.Capture(r.Context(), curator, registry.CaptureRequest{
+	candidate, err := h.catalog.capture(r.Context(), curator, captureRequest{
 		Namespace: namespace, Staged: submission.Snapshot(), Root: submission.Root(), Source: source, SubmittedAt: time.Now().UTC(),
 	})
 	if err != nil {
@@ -334,12 +316,12 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
 	}
-	candidate, err := h.catalog.Candidate(r.Context(), id)
+	candidate, err := h.catalog.candidate(r.Context(), id)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
 	}
-	tree, err := h.catalog.OpenCandidateTree(r.Context(), id)
+	tree, err := h.catalog.openCandidateTree(r.Context(), id)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -363,9 +345,9 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	_, publicationErr := h.catalog.Publication(r.Context(), publicationID)
+	_, publicationErr := h.catalog.publication(r.Context(), publicationID)
 	published := publicationErr == nil
-	if publicationErr != nil && !errors.Is(publicationErr, registry.ErrNotFound) {
+	if publicationErr != nil && !errors.Is(publicationErr, errNotFound) {
 		h.handleError(w, r, publicationErr)
 		return
 	}
@@ -402,7 +384,7 @@ func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if _, err := h.catalog.Publish(r.Context(), id, curator, time.Now().UTC()); err != nil {
+	if _, err := h.catalog.publish(r.Context(), id, curator, time.Now().UTC()); err != nil {
 		h.handleError(w, r, err)
 		return
 	}
@@ -437,24 +419,24 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	if err := h.catalog.SetCurrent(r.Context(), publication, curator, time.Now().UTC()); err != nil {
+	if err := h.catalog.setCurrent(r.Context(), publication, curator, time.Now().UTC()); err != nil {
 		h.handleError(w, r, err)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (h *handler) resolveCurator(w http.ResponseWriter, r *http.Request) (registry.Curator, bool) {
-	curator, err := h.curators.Curator(r)
+func (h *handler) resolveCurator(w http.ResponseWriter, r *http.Request) (curator, bool) {
+	resolved, err := h.curator(r)
 	switch {
-	case errors.Is(err, registry.ErrCurationDenied):
+	case errors.Is(err, errCurationDenied):
 		h.renderError(w, http.StatusForbidden, "You do not have permission to curate skills", "Ask your Tailnet admin to grant tailscale.com/cap/ts-skills with curate:true, then try again.")
 	case err != nil:
 		h.renderError(w, http.StatusUnauthorized, "Identity could not be verified", "Reconnect to the Tailnet and try again.")
 	default:
-		return curator, true
+		return resolved, true
 	}
-	return registry.Curator{}, false
+	return curator{}, false
 }
 
 func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +445,7 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
-	publication, err := h.catalog.ResolveCurrent(r.Context(), skill)
+	publication, err := h.catalog.resolveCurrent(r.Context(), skill)
 	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
@@ -494,13 +476,13 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
-	publication, err := h.catalog.Publication(r.Context(), requestedPublication)
+	publication, err := h.catalog.publication(r.Context(), requestedPublication)
 	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
 	}
 	resolvedPublication := publication.ID
-	tree, err := h.catalog.OpenPublicationTree(r.Context(), resolvedPublication)
+	tree, err := h.catalog.openPublicationTree(r.Context(), resolvedPublication)
 	if err != nil {
 		h.writeAPIDomainError(w, err)
 		return
@@ -627,7 +609,7 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 
 func (h *handler) writeAPIDomainError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, registry.ErrNotFound):
+	case errors.Is(err, errNotFound):
 		h.writeAPIError(w, protocol.CodeNotFound)
 	case errors.Is(err, safetree.ErrLimitExceeded):
 		h.writeAPIError(w, protocol.CodeTooLarge)
@@ -763,7 +745,7 @@ func resolveTreeFile(ctx context.Context, tree fs.FS, query map[string][]string)
 		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
 	}
 	var contents bytes.Buffer
-	_, copyErr := io.Copy(&contents, &contextReader{ctx: ctx, source: file})
+	_, copyErr := io.Copy(&contents, &requestContextReader{ctx: ctx, source: file})
 	closeErr := file.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
@@ -774,13 +756,13 @@ func resolveTreeFile(ctx context.Context, tree fs.FS, query map[string][]string)
 	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: contents.String()}, nil
 }
 
-// contextReader aborts a streaming read as soon as ctx is cancelled.
-type contextReader struct {
+// requestContextReader aborts a streaming read as soon as ctx is cancelled.
+type requestContextReader struct {
 	ctx    context.Context
 	source io.Reader
 }
 
-func (r *contextReader) Read(buffer []byte) (int, error) {
+func (r *requestContextReader) Read(buffer []byte) (int, error) {
 	if err := r.ctx.Err(); err != nil {
 		return 0, err
 	}
@@ -804,9 +786,9 @@ func sortFileTree(node *fileTreeNode) {
 
 func malformedRequest(problem string, cause error) error {
 	if cause == nil {
-		return fmt.Errorf("%w: %s", upload.ErrMalformedUpload, problem)
+		return fmt.Errorf("%w: %s", errMalformedUpload, problem)
 	}
-	return fmt.Errorf("%w: %s: %w", upload.ErrMalformedUpload, problem, cause)
+	return fmt.Errorf("%w: %s: %w", errMalformedUpload, problem, cause)
 }
 
 func (h *handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
@@ -814,12 +796,12 @@ func (h *handler) handleError(w http.ResponseWriter, r *http.Request, err error)
 	switch {
 	case errors.Is(err, safetree.ErrLimitExceeded), errors.As(err, &maxBytes):
 		h.renderError(w, http.StatusRequestEntityTooLarge, "Upload is too large", "Choose a smaller upload and try again.")
-	case errors.Is(err, upload.ErrMalformedUpload), errors.Is(err, safetree.ErrInvalidPath),
+	case errors.Is(err, errMalformedUpload), errors.Is(err, safetree.ErrInvalidPath),
 		errors.Is(err, agentskill.ErrInvalidName), errors.Is(err, agentskill.ErrInvalidDocument), errors.Is(err, agentskill.ErrInvalidTree):
 		h.renderError(w, http.StatusBadRequest, "Upload is invalid", "Check the skill files and upload them again.")
-	case errors.Is(err, registry.ErrNotFound):
+	case errors.Is(err, errNotFound):
 		h.renderError(w, http.StatusNotFound, "Registry item was not found", "Return to the catalog and choose another item.")
-	case errors.Is(err, registry.ErrConflict):
+	case errors.Is(err, errConflict):
 		h.renderError(w, http.StatusConflict, "Registry item conflicts with existing data", "Reload the page before trying again.")
 	default:
 		h.options.Logger.Error("web request failed", "method", r.Method, "path", r.URL.Path, "error", err)

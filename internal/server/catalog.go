@@ -1,4 +1,4 @@
-package storage
+package server
 
 import (
 	"context"
@@ -10,15 +10,13 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
-var ErrTreesOpen = errors.New("registry trees remain open")
+var errTreesOpen = errors.New("registry trees remain open")
 
-// Catalog stores registry facts in SQLite and tree contents in digest-addressed
+// catalog stores registry facts in SQLite and tree contents in digest-addressed
 // directories. Its lifetime lock makes the state directory a single-writer,
 // single-process resource.
-var _ registry.CatalogStore = (*Catalog)(nil)
 
 // closePhase states which owned resource Close releases next, so a failed
 // Close can be retried and resumes exactly where it stopped. The legal
@@ -35,7 +33,7 @@ const (
 	catalogClosed
 )
 
-type Catalog struct {
+type catalog struct {
 	db        *sql.DB
 	lock      *flock.Flock
 	stateDir  string
@@ -53,11 +51,12 @@ type Catalog struct {
 	digestMu    sync.Mutex
 	digestLocks map[agentskill.TreeDigest]*digestMutex
 
-	// afterFilesystemStep and syncDirectory are package-private failure seams
-	// used to prove that metadata is never committed ahead of its tree.
-	// Production leaves the step hook nil and uses the real directory sync.
-	afterFilesystemStep func(string) error
-	syncDirectory       func(string) error
+	// Package-private failure and synchronization seams used by tests.
+	afterFilesystemStep       func(string) error
+	syncDirectory             func(string) error
+	beforeRecordCandidate     func()
+	afterMissingCurrentLookup func()
+	listSkillsErr             error
 }
 
 type digestMutex struct {
@@ -65,7 +64,7 @@ type digestMutex struct {
 	refs int
 }
 
-func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
+func openCatalog(ctx context.Context, stateDir string) (_ *catalog, err error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("open registry storage: context must be provided")
 	}
@@ -90,7 +89,7 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 	}
 	if !locked {
 		return nil, errors.Join(
-			fmt.Errorf("lock registry state directory: %w", registry.ErrConflict),
+			fmt.Errorf("lock registry state directory: %w", errConflict),
 			stateLock.Close(),
 		)
 	}
@@ -116,7 +115,7 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 		}
 	}()
 
-	catalog := &Catalog{
+	catalog := &catalog{
 		db:            db,
 		lock:          stateLock,
 		stateDir:      absolute,
@@ -131,7 +130,7 @@ func OpenCatalog(ctx context.Context, stateDir string) (_ *Catalog, err error) {
 	return catalog, nil
 }
 
-func (c *Catalog) Close() error {
+func (c *catalog) close() error {
 	if c == nil {
 		return nil
 	}
@@ -145,7 +144,7 @@ func (c *Catalog) Close() error {
 		openTrees := c.openTrees
 		c.refsMu.Unlock()
 		if openTrees != 0 {
-			return fmt.Errorf("%w: %d", ErrTreesOpen, openTrees)
+			return fmt.Errorf("%w: %d", errTreesOpen, openTrees)
 		}
 		c.phase = catalogDatabaseOpen
 		fallthrough
@@ -172,7 +171,7 @@ func (c *Catalog) Close() error {
 	return nil
 }
 
-func (c *Catalog) withOpenState() (func(), error) {
+func (c *catalog) withOpenState() (func(), error) {
 	if c == nil {
 		return nil, fmt.Errorf("registry storage is nil")
 	}
@@ -184,7 +183,7 @@ func (c *Catalog) withOpenState() (func(), error) {
 	return c.stateMu.RUnlock, nil
 }
 
-func (c *Catalog) lockDigest(digest agentskill.TreeDigest) func() {
+func (c *catalog) lockDigest(digest agentskill.TreeDigest) func() {
 	c.digestMu.Lock()
 	entry := c.digestLocks[digest]
 	if entry == nil {
@@ -206,7 +205,7 @@ func (c *Catalog) lockDigest(digest agentskill.TreeDigest) func() {
 	}
 }
 
-func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candidate, directory agentskill.Directory) error {
+func (c *catalog) recordCandidate(ctx context.Context, candidate candidate, directory agentskill.Directory) error {
 	done, err := c.withOpenState()
 	if err != nil {
 		return err
@@ -214,6 +213,9 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 	defer done()
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if c.beforeRecordCandidate != nil {
+		c.beforeRecordCandidate()
 	}
 
 	unlock := c.lockDigest(candidate.Tree)
@@ -239,7 +241,7 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 	)
 	if err != nil {
 		if isConstraintError(err) {
-			return fmt.Errorf("insert candidate: %w", registry.ErrConflict)
+			return fmt.Errorf("insert candidate: %w", errConflict)
 		}
 		return fmt.Errorf("insert candidate: %w", err)
 	}
@@ -253,16 +255,16 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 	return nil
 }
 
-func (c *Catalog) Candidate(ctx context.Context, id agentskill.CandidateID) (registry.Candidate, error) {
+func (c *catalog) candidate(ctx context.Context, id agentskill.CandidateID) (candidate, error) {
 	done, err := c.withOpenState()
 	if err != nil {
-		return registry.Candidate{}, err
+		return candidate{}, err
 	}
 	defer done()
 	return queryCandidate(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *Catalog) PersistPublication(ctx context.Context, publication registry.Publication, initialCurrent *registry.CurrentPublication) (_ bool, err error) {
+func (c *catalog) persistPublication(ctx context.Context, publication publication, initialCurrent *currentPublication) (_ bool, err error) {
 	if initialCurrent != nil && initialCurrent.Publication != publication.ID {
 		return false, fmt.Errorf("initial current publication must match publication")
 	}
@@ -330,7 +332,7 @@ func (c *Catalog) PersistPublication(ctx context.Context, publication registry.P
 // rollbackTransaction always rolls the transaction back so a panic cannot leak
 // it, joins a genuine rollback failure into err, and ignores the benign
 // sql.ErrTxDone returned after a successful commit.
-func (c *Catalog) rollbackTransaction(tx *sql.Tx, err error) error {
+func (c *catalog) rollbackTransaction(tx *sql.Tx, err error) error {
 	rollback := c.rollbackTx
 	if rollback == nil {
 		rollback = (*sql.Tx).Rollback
@@ -341,7 +343,7 @@ func (c *Catalog) rollbackTransaction(tx *sql.Tx, err error) error {
 	return err
 }
 
-func (c *Catalog) PersistCurrent(ctx context.Context, selection registry.CurrentPublication) error {
+func (c *catalog) persistCurrent(ctx context.Context, selection currentPublication) error {
 	done, err := c.withOpenState()
 	if err != nil {
 		return err

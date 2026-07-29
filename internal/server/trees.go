@@ -1,4 +1,4 @@
-package storage
+package server
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"sync"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func ensureStateDirectory(stateDir string) error {
@@ -84,7 +83,7 @@ func createDirectory(name string, mode fs.FileMode) (bool, error) {
 	return false, nil
 }
 
-func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
+func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
 	staging, err := os.MkdirTemp(c.tmpDir, ".tree-")
 	if err != nil {
 		return fmt.Errorf("create tree staging directory: %w", err)
@@ -109,7 +108,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		return fmt.Errorf("hash staged tree: %w", err)
 	}
 	if actual != expected {
-		return fmt.Errorf("%w: candidate says %s, copied tree hashes to %s", registry.ErrTreeMismatch, expected, actual)
+		return fmt.Errorf("%w: candidate says %s, copied tree hashes to %s", errTreeMismatch, expected, actual)
 	}
 	directory, err := agentskill.Load(os.DirFS(staging), ".")
 	if err != nil {
@@ -149,7 +148,7 @@ func (c *Catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	switch {
 	case statErr == nil:
 		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("%w: digest path is not a real directory", registry.ErrTreeMismatch)
+			return fmt.Errorf("%w: digest path is not a real directory", errTreeMismatch)
 		}
 		if err := verifyTree(ctx, final, expected); err != nil {
 			return err
@@ -251,10 +250,10 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 func verifyTree(ctx context.Context, directory string, expected agentskill.TreeDigest) error {
 	actual, err := agentskill.SumTree(ctx, os.DirFS(directory), ".")
 	if err != nil {
-		return fmt.Errorf("%w: verify digest tree: %v", registry.ErrTreeMismatch, err)
+		return fmt.Errorf("%w: verify digest tree: %v", errTreeMismatch, err)
 	}
 	if actual != expected {
-		return fmt.Errorf("%w: digest path says %s, tree hashes to %s", registry.ErrTreeMismatch, expected, actual)
+		return fmt.Errorf("%w: digest path says %s, tree hashes to %s", errTreeMismatch, expected, actual)
 	}
 	return nil
 }
@@ -322,7 +321,7 @@ func syncDirectory(directory string) error {
 	return errors.Join(syncErr, closeErr)
 }
 
-func (c *Catalog) step(name string) error {
+func (c *catalog) step(name string) error {
 	if c.afterFilesystemStep == nil {
 		return nil
 	}
@@ -332,13 +331,13 @@ func (c *Catalog) step(name string) error {
 	return nil
 }
 
-func (c *Catalog) treePaths(digest agentskill.TreeDigest) (string, string) {
+func (c *catalog) treePaths(digest agentskill.TreeDigest) (string, string) {
 	hexDigest := strings.TrimPrefix(digest.String(), "sha256:")
 	shard := filepath.Join(c.treesDir, hexDigest[:2])
 	return shard, filepath.Join(shard, hexDigest[2:])
 }
 
-func (c *Catalog) OpenCandidateTree(ctx context.Context, id agentskill.CandidateID) (registry.Tree, error) {
+func (c *catalog) openCandidateTree(ctx context.Context, id agentskill.CandidateID) (*treeView, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -351,7 +350,7 @@ func (c *Catalog) OpenCandidateTree(ctx context.Context, id agentskill.Candidate
 	return c.openTree(ctx, candidate.Tree)
 }
 
-func (c *Catalog) OpenPublicationTree(ctx context.Context, id agentskill.PublicationID) (registry.Tree, error) {
+func (c *catalog) openPublicationTree(ctx context.Context, id agentskill.PublicationID) (*treeView, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -364,7 +363,7 @@ func (c *Catalog) OpenPublicationTree(ctx context.Context, id agentskill.Publica
 	return c.openTree(ctx, publication.ID.Tree())
 }
 
-func (c *Catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (registry.Tree, error) {
+func (c *catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (*treeView, error) {
 	_, final := c.treePaths(digest)
 	if err := verifyTree(ctx, final, digest); err != nil {
 		return nil, err
@@ -375,7 +374,7 @@ func (c *Catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (r
 	return &treeView{files: os.DirFS(final), release: c.releaseTree}, nil
 }
 
-func (c *Catalog) releaseTree() {
+func (c *catalog) releaseTree() {
 	c.refsMu.Lock()
 	defer c.refsMu.Unlock()
 	if c.openTrees > 0 {

@@ -1,4 +1,4 @@
-package registry
+package server
 
 import (
 	"testing"
@@ -28,21 +28,21 @@ func TestFlatEntitiesCarryCatalogFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor := Actor{ID: "user:1", Display: "Person"}
-	provenance := Provenance{Source: "sample", SubmittedBy: actor, SubmittedAt: time.Now()}
-	got := Candidate{ID: candidate, Skill: skill, Tree: agentskill.TreeDigest{}, Provenance: provenance}
+	actor := actor{ID: "user:1", Display: "Person"}
+	provenance := provenance{Source: "sample", SubmittedBy: actor, SubmittedAt: time.Now()}
+	got := testCandidate(candidate, skill, agentskill.TreeDigest{}, provenance)
 	if got.Skill != skill || got.Provenance != provenance {
 		t.Fatalf("candidate = %#v", got)
 	}
-	current := CurrentPublication{Publication: publication, SelectedBy: actor, SelectedAt: time.Now()}
+	current := currentPublication{Publication: publication, SelectedBy: actor, SelectedAt: time.Now()}
 	if current.Publication != publication {
 		t.Fatalf("current = %#v", current)
 	}
 }
 
 func TestCuratorCarriesAuthorizedActor(t *testing.T) {
-	actor := Actor{ID: "user:1", Display: "Person"}
-	if got := (Curator{Actor: actor}).Actor; got != actor {
+	actor := actor{ID: "user:1", Display: "Person"}
+	if got := (curator{Actor: actor}).Actor; got != actor {
 		t.Fatalf("curator actor = %#v, want %#v", got, actor)
 	}
 }
