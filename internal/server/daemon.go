@@ -558,10 +558,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	if err != nil {
 		return runtime{}, err
 	}
-	actors, err := newActorResolver(localClient)
-	if err != nil {
-		return runtime{}, err
-	}
+	actors := &actorResolver{local: localClient}
 	handler, err := newHandler(catalog, actors.curator, handlerOptions{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
 		Limits:        safetree.PrototypeLimits(),

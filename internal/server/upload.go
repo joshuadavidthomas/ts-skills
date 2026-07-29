@@ -115,8 +115,7 @@ func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 		if part.FormName() != expectedName || part.FileName() == "" {
 			return nil, malformed(fmt.Sprintf("expected file multipart part %s", expectedName), nil)
 		}
-		counter := &countingReader{source: part}
-		addErr := builder.AddFile(ctx, entry.Path, entry.Size, counter)
+		addErr := builder.AddFile(ctx, entry.Path, entry.Size, part)
 		if addErr != nil {
 			switch {
 			case errors.Is(addErr, safetree.ErrLimitExceeded):
@@ -125,12 +124,11 @@ func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 				return nil, addErr
 			case errors.Is(addErr, safetree.ErrInvalidPath):
 				return nil, malformed("directory path is unsafe or collides with another path", addErr)
+			case errors.Is(addErr, safetree.ErrSizeMismatch):
+				return nil, malformed(fmt.Sprintf("%s size does not match its manifest entry", expectedName), addErr)
 			default:
 				return nil, fmt.Errorf("stage uploaded file %q: %w", entry.Path, addErr)
 			}
-		}
-		if counter.count != entry.Size {
-			return nil, malformed(fmt.Sprintf("%s size does not match its manifest entry", expectedName), nil)
 		}
 	}
 	if extra, nextErr := body.NextPart(); nextErr != io.EOF {
@@ -210,17 +208,6 @@ func validateUploadPath(name string, limits safetree.Limits) error {
 
 func isWindowsAbsolute(name string) bool {
 	return len(name) >= 3 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')) && name[1] == ':' && name[2] == '/'
-}
-
-type countingReader struct {
-	source io.Reader
-	count  int64
-}
-
-func (r *countingReader) Read(dst []byte) (int, error) {
-	n, err := r.source.Read(dst)
-	r.count += int64(n)
-	return n, err
 }
 
 func malformed(problem string, cause error) error {

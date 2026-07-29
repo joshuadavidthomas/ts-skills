@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -109,6 +110,32 @@ func TestCatalogCaptureReturnsNoCandidateWhenStorageRejects(t *testing.T) {
 	}
 	if got != (candidate{}) {
 		t.Fatalf("candidate on failed capture = %#v", got)
+	}
+}
+
+func TestCatalogCaptureRejectsInvalidSourceBeforeMutating(t *testing.T) {
+	catalog, namespace, curator, _, submittedAt := newCatalogFixture(t)
+	snapshot := stageTree(t, skillSource("# Invalid\n", "invalid"))
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+
+	for _, source := range []string{"", "source\x00", string([]byte{0xff}), strings.Repeat("a", 257)} {
+		if _, err := catalog.capture(context.Background(), curator, captureRequest{
+			Namespace: namespace, Staged: snapshot, Root: "sample", Source: source, SubmittedAt: submittedAt,
+		}); err == nil {
+			t.Fatalf("capture accepted source %q", source)
+		}
+	}
+
+	var candidates int
+	if err := catalog.db.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM candidates").Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	if candidates != 0 {
+		t.Fatalf("candidates after rejected captures = %d, want 0", candidates)
 	}
 }
 

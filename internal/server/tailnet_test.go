@@ -83,10 +83,7 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		Node:        &tailcfg.Node{StableID: "node-human", Name: "workstation.example.ts.net."},
 		UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "alice@example.com"},
 	}, &addresses)
-	resolver, err := newActorResolver(client)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resolver := actorResolver{local: client}
 
 	for _, headers := range []http.Header{
 		{"X-Forwarded-For": {"100.64.0.99"}, "X-Tailscale-User-Login": {"mallory@example.com"}},
@@ -139,10 +136,7 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 			skillsCapabilityName: {tailcfg.RawMessage(`{"curate":true}`)},
 		},
 	}, &addresses)
-	resolver, err := newActorResolver(client)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resolver := actorResolver{local: client}
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://registry.example.ts.net/candidates", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -195,10 +189,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 				UserProfile: &tailcfg.UserProfile{ID: 42, LoginName: "alice@example.com"},
 				CapMap:      test.capMap,
 			}, &addresses)
-			resolver, err := newActorResolver(client)
-			if err != nil {
-				t.Fatal(err)
-			}
+			resolver := actorResolver{local: client}
 			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://registry.example.ts.net/candidates", nil)
 			if err != nil {
 				t.Fatal(err)
@@ -227,12 +218,9 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 
 func TestActorResolverValidatesIdentityBeforeCapability(t *testing.T) {
 	var addresses []string
-	resolver, err := newActorResolver(localClientForWhoIs(t, &apitype.WhoIsResponse{
+	resolver := actorResolver{local: localClientForWhoIs(t, &apitype.WhoIsResponse{
 		Node: &tailcfg.Node{StableID: "node-human", Name: "human.example.ts.net."},
-	}, &addresses))
-	if err != nil {
-		t.Fatal(err)
-	}
+	}, &addresses)}
 	request := httptest.NewRequest(http.MethodPost, "https://registry.example.ts.net/candidates", nil)
 	request.RemoteAddr = "100.64.0.7:51820"
 	if _, err := resolver.curator(request); err == nil || errors.Is(err, errCurationDenied) {
@@ -255,10 +243,7 @@ func TestActorResolverRejectsIncompleteWhoIsIdentity(t *testing.T) {
 	for name, response := range tests {
 		t.Run(name, func(t *testing.T) {
 			var addresses []string
-			resolver, err := newActorResolver(localClientForWhoIs(t, response, &addresses))
-			if err != nil {
-				t.Fatal(err)
-			}
+			resolver := actorResolver{local: localClientForWhoIs(t, response, &addresses)}
 			request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://registry.example.ts.net/", nil)
 			if err != nil {
 				t.Fatal(err)

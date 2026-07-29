@@ -20,7 +20,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/gorilla/csrf"
@@ -278,7 +277,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	source := submission.Label()
-	if err := validateUploadLabel(source); err != nil {
+	if err := validateRecordText("upload source label", source); err != nil {
 		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the selected directory and try again.")
 		return
 	}
@@ -363,18 +362,6 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		Published: published, CSRFField: csrf.TemplateField(r),
 	}
 	h.render(w, http.StatusOK, "review", data)
-}
-
-func validateUploadLabel(label string) error {
-	if label == "" || !utf8.ValidString(label) || len(label) > 256 {
-		return fmt.Errorf("upload source label must be nonempty valid UTF-8 of at most 256 bytes")
-	}
-	for _, r := range label {
-		if unicode.IsControl(r) {
-			return fmt.Errorf("upload source label must not contain control characters")
-		}
-	}
-	return nil
 }
 
 func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {

@@ -16,6 +16,7 @@ import (
 var (
 	ErrInvalidPath   = errors.New("invalid tree path")
 	ErrLimitExceeded = errors.New("tree limit exceeded")
+	ErrSizeMismatch  = errors.New("declared file size does not match input")
 )
 
 type Limits struct {
@@ -152,6 +153,10 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 	if written > remainingTotal {
 		_ = os.Remove(destination)
 		return &LimitError{Limit: "expanded bytes", Max: b.limits.MaxExpandedBytes, Actual: b.bytes + written}
+	}
+	if written != declaredSize {
+		_ = os.Remove(destination)
+		return fmt.Errorf("%w: declared %d bytes, wrote %d", ErrSizeMismatch, declaredSize, written)
 	}
 	if err := os.Chmod(destination, 0o644); err != nil {
 		_ = os.Remove(destination)

@@ -22,8 +22,11 @@ func (c *catalog) capture(ctx context.Context, curator curator, request captureR
 	if err := validateActor(curator.Actor); err != nil {
 		return candidate{}, fmt.Errorf("validate curator: %w", err)
 	}
-	if request.Namespace.String() == "" || request.Staged == nil || request.Source == "" || request.SubmittedAt.IsZero() {
-		return candidate{}, fmt.Errorf("capture requires namespace, staged tree, source, and submission time")
+	if request.Namespace.String() == "" || request.Staged == nil || request.SubmittedAt.IsZero() {
+		return candidate{}, fmt.Errorf("capture requires namespace, staged tree, and submission time")
+	}
+	if err := validateRecordText("candidate source", request.Source); err != nil {
+		return candidate{}, fmt.Errorf("validate capture: %w", err)
 	}
 	provenance := provenance{Source: request.Source, SubmittedBy: curator.Actor, SubmittedAt: canonicalTime(request.SubmittedAt)}
 	inspection, err := agentskill.Inspect(ctx, request.Staged.FS(), request.Root)

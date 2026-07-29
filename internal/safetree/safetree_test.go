@@ -84,6 +84,33 @@ func TestBuilderUsesActualBytesForLimits(t *testing.T) {
 	}
 }
 
+func TestBuilderRejectsDeclaredSizeMismatch(t *testing.T) {
+	builder, err := NewBuilder(t.TempDir(), PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = builder.Close() }()
+
+	for _, test := range []struct {
+		name     string
+		declared int64
+		contents string
+	}{
+		{name: "short", declared: 3, contents: "ab"},
+		{name: "long", declared: 1, contents: "ab"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := builder.AddFile(context.Background(), test.name, test.declared, bytes.NewBufferString(test.contents))
+			if !errors.Is(err, ErrSizeMismatch) {
+				t.Fatalf("AddFile() error = %v, want ErrSizeMismatch", err)
+			}
+		})
+	}
+	if err := builder.AddFile(context.Background(), "exact", 2, bytes.NewBufferString("ab")); err != nil {
+		t.Fatalf("AddFile() after mismatch: %v", err)
+	}
+}
+
 func TestFinishTransfersOwnership(t *testing.T) {
 	parent := t.TempDir()
 	builder, err := NewBuilder(parent, PrototypeLimits())

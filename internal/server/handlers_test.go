@@ -975,14 +975,6 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	}
 }
 
-func TestValidateUploadLabelRejectsUntrustedText(t *testing.T) {
-	for _, label := range []string{"", "source\x00", string([]byte{0xff}), strings.Repeat("a", 257)} {
-		if err := validateUploadLabel(label); err == nil {
-			t.Fatalf("validateUploadLabel(%q) succeeded", label)
-		}
-	}
-}
-
 func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
 	if _, err := newCSRFKey(make([]byte, 31)); err == nil {
 		t.Fatal("short CSRF key accepted")

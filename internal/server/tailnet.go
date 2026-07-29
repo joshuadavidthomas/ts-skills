@@ -29,13 +29,6 @@ type actorResolver struct {
 	local *local.Client
 }
 
-func newActorResolver(client *local.Client) (*actorResolver, error) {
-	if client == nil {
-		return nil, fmt.Errorf("tailnet LocalAPI client must be provided")
-	}
-	return &actorResolver{local: client}, nil
-}
-
 func (r *actorResolver) curator(request *http.Request) (curator, error) {
 	if r == nil || r.local == nil {
 		return curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
