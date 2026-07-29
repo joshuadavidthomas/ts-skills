@@ -90,7 +90,11 @@ func rejectPathComponents(name string, allowMissing bool) error {
 	for current := clean; ; current = filepath.Dir(current) {
 		info, err := os.Lstat(current)
 		if errors.Is(err, fs.ErrNotExist) && allowMissing {
-			return nil
+			parent := filepath.Dir(current)
+			if parent == current {
+				return nil
+			}
+			continue
 		}
 		if err != nil {
 			return fmt.Errorf("inspect managed path component %q: %w", current, err)

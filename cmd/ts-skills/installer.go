@@ -18,6 +18,7 @@ var (
 	ErrBusy             = errors.New("project is being modified by another ts-skills process")
 	ErrIdentityMismatch = errors.New("registry returned another publication")
 	ErrDigestMismatch   = errors.New("fetched tree digest does not match publication")
+	ErrLocalChanges     = errors.New("installed skill differs from the project lock")
 	ErrProjectChanged   = errors.New("project changed during restore")
 )
 
@@ -54,6 +55,9 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 	}
 	before, err := writer.destinationState(ctx, requirement.Skill())
 	if err != nil {
+		return LockedSkill{}, err
+	}
+	if err := assertManagedDestination(oldLock, requirement.Skill(), before); err != nil {
 		return LockedSkill{}, err
 	}
 	verified, err := writer.stageAndVerify(ctx, requirement, fetched)
@@ -176,6 +180,9 @@ func (p restorePlan) matches(ctx context.Context, writer *projectWriter) error {
 }
 
 func readLockSnapshot(project Project) ([]byte, bool, error) {
+	if err := rejectLink(project.LockPath(), true); err != nil {
+		return nil, false, fmt.Errorf("inspect project lock: %w", err)
+	}
 	contents, err := os.ReadFile(project.LockPath())
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, false, nil
@@ -191,6 +198,20 @@ func closeFetchedTree(fetched FetchedSkill) error {
 		return nil
 	}
 	return fetched.Tree.Close()
+}
+
+func assertManagedDestination(lock Lock, skill agentskill.SkillID, state destinationState) error {
+	if !state.exists {
+		return nil
+	}
+	locked, found := lock.Lookup(skill)
+	if !found {
+		return fmt.Errorf("%w: %s is not listed in ts-skills.lock", ErrLocalChanges, skill.String())
+	}
+	if state.digest != locked.Publication.Tree() {
+		return fmt.Errorf("%w: %s", ErrLocalChanges, skill.String())
+	}
+	return nil
 }
 
 func (w *projectWriter) assertUnchanged(ctx context.Context, skill agentskill.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
@@ -336,12 +357,12 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	staged, err := verified.transfer()
+	destination := w.project.destination(verified.publication.Skill().Name().String())
+	exists, err := inspectDestination(destination)
 	if err != nil {
 		return err
 	}
-	destination := w.project.destination(verified.publication.Skill().Name().String())
-	exists, err := inspectDestination(destination)
+	staged, err := verified.transfer()
 	if err != nil {
 		return err
 	}
@@ -351,22 +372,29 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 		if err != nil {
 			return err
 		}
-		if err := os.Rename(destination, trash); err != nil {
+		if err := w.rename(destination, trash); err != nil {
 			return fmt.Errorf("move old skill aside: %w", err)
 		}
 	}
-	if err := os.Rename(staged, destination); err != nil {
+	if err := w.rename(staged, destination); err != nil {
 		rollbackErr := error(nil)
 		if trash != "" {
-			rollbackErr = os.Rename(trash, destination)
+			rollbackErr = w.rename(trash, destination)
 		}
 		return errors.Join(fmt.Errorf("replace skill destination: %w", err), rollbackErr)
 	}
-	if err := syncDirectory(w.project.SkillsDir()); err != nil {
-		return err
+	if err := w.syncDirectory(w.project.SkillsDir()); err != nil {
+		return w.rollbackReplacement(destination, trash, err)
 	}
 	if writeLock {
-		if err := w.writeLock(lock); err != nil {
+		committed, err := w.writeLock(lock)
+		if err != nil && !committed {
+			return w.rollbackReplacement(destination, trash, err)
+		}
+		if err != nil {
+			if trash != "" {
+				_ = os.RemoveAll(trash)
+			}
 			return err
 		}
 	}
@@ -376,22 +404,38 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 	return nil
 }
 
-func (w *projectWriter) writeLock(lock Lock) error {
+func (w *projectWriter) rollbackReplacement(destination, trash string, cause error) error {
+	rollbackErr := os.RemoveAll(destination)
+	if rollbackErr == nil && trash != "" {
+		rollbackErr = w.rename(trash, destination)
+	}
+	if rollbackErr == nil {
+		rollbackErr = w.syncDirectory(w.project.SkillsDir())
+	}
+	return errors.Join(cause, rollbackErr)
+}
+
+// writeLock reports whether the new lock name replaced the old one. Once the
+// rename succeeds, the skill and lock agree even if syncing their parent fails.
+func (w *projectWriter) writeLock(lock Lock) (committed bool, err error) {
 	contents, err := encodeLockBytes(lock)
 	if err != nil {
-		return err
+		return false, err
 	}
 	temporary, err := temporaryPath(filepath.Dir(w.project.LockPath()), lockTemporaryPrefix)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := writeSyncedFile(temporary, contents, 0o600); err != nil {
-		return err
+		return false, errors.Join(err, os.Remove(temporary))
 	}
-	if err := os.Rename(temporary, w.project.LockPath()); err != nil {
-		return fmt.Errorf("replace project lock: %w", err)
+	if err := w.rename(temporary, w.project.LockPath()); err != nil {
+		return false, errors.Join(fmt.Errorf("replace project lock: %w", err), os.Remove(temporary))
 	}
-	return syncDirectory(filepath.Dir(w.project.LockPath()))
+	if err := w.syncDirectory(filepath.Dir(w.project.LockPath())); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func encodeLockBytes(lock Lock) ([]byte, error) {

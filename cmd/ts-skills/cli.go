@@ -189,6 +189,8 @@ func commandError(operation string, err error) error {
 	switch {
 	case errors.Is(err, ErrBusy):
 		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
+	case errors.Is(err, ErrLocalChanges):
+		message = fmt.Sprintf("cannot %s because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again", operation)
 	case errors.Is(err, ErrProjectChanged):
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
 	case errors.Is(err, ErrIdentityMismatch), errors.Is(err, ErrDigestMismatch):

@@ -50,10 +50,12 @@ func (v *verifiedTree) transfer() (string, error) {
 }
 
 type projectWriter struct {
-	project Project
-	lock    *flock.Flock
-	staging map[string]struct{}
-	closed  bool
+	project       Project
+	lock          *flock.Flock
+	staging       map[string]struct{}
+	syncDirectory func(string) error
+	rename        func(string, string) error
+	closed        bool
 }
 
 func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
@@ -78,7 +80,7 @@ func (p Project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if !locked {
 		return nil, errors.Join(ErrBusy, fileLock.Close())
 	}
-	writer := &projectWriter{project: p, lock: fileLock, staging: make(map[string]struct{})}
+	writer := &projectWriter{project: p, lock: fileLock, staging: make(map[string]struct{}), syncDirectory: syncDirectory, rename: os.Rename}
 	if err := writer.sweepLitter(); err != nil {
 		return nil, errors.Join(err, writer.close())
 	}

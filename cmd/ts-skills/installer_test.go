@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestInstallIsIdempotentAndKeepsCanonicalLock(t *testing.T) {
 	}
 }
 
-func TestInstallUpgradeReplacesDestination(t *testing.T) {
+func TestInstallUpgradeReplacesManagedDestination(t *testing.T) {
 	installer, project, requirement, update := testInstaller(t, "old")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
@@ -72,9 +73,57 @@ func TestInstallUpgradeReplacesDestination(t *testing.T) {
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
-	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "assets", "data.txt"))
-	if err != nil || string(contents) != "asset" {
+	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("new")) {
 		t.Fatalf("installed contents = %q, %v", contents, err)
+	}
+}
+
+func TestInstallDoesNotReplaceUnmanagedDestination(t *testing.T) {
+	installer, project, requirement, _ := testInstaller(t, "registry")
+	destination := filepath.Join(project.SkillsDir(), "sample")
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(destination, "SKILL.md")
+	if err := os.WriteFile(local, []byte("local"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrLocalChanges) {
+		t.Fatalf("Install() error = %v, want ErrLocalChanges", err)
+	}
+	contents, err := os.ReadFile(local)
+	if err != nil || string(contents) != "local" {
+		t.Fatalf("unmanaged skill contents = %q, %v", contents, err)
+	}
+	if _, err := os.Stat(project.LockPath()); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("lock exists after rejected install: %v", err)
+	}
+}
+
+func TestInstallDoesNotReplaceModifiedDestination(t *testing.T) {
+	installer, project, requirement, update := testInstaller(t, "old")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(project.SkillsDir(), "sample", "local.txt")
+	if err := os.WriteFile(local, []byte("edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	update("new")
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrLocalChanges) {
+		t.Fatalf("Install() error = %v, want ErrLocalChanges", err)
+	}
+	if _, err := os.Stat(local); err != nil {
+		t.Fatalf("local edit removed: %v", err)
+	}
+	after, err := os.ReadFile(project.LockPath())
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("lock changed after rejected install: %q, %v", after, err)
 	}
 }
 
@@ -106,6 +155,145 @@ func TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths(t *testin
 	after, _ := os.ReadFile(project.LockPath())
 	if !bytes.Equal(lock, after) {
 		t.Fatal("restore rewrote lock")
+	}
+}
+
+func TestReadLockSnapshotRejectsSymlink(t *testing.T) {
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(project.LockPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), project.LockPath()); err != nil {
+		t.Skipf("create lock symlink: %v", err)
+	}
+	if _, _, err := readLockSnapshot(project); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("readLockSnapshot() error = %v, want symbolic-link rejection", err)
+	}
+}
+
+func TestReadLockSnapshotRejectsSymlinkedParent(t *testing.T) {
+	project, err := OpenProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(t.TempDir(), filepath.Join(project.root, ".agents")); err != nil {
+		t.Skipf("create managed-directory symlink: %v", err)
+	}
+	if _, _, err := readLockSnapshot(project); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("readLockSnapshot() error = %v, want symbolic-link rejection", err)
+	}
+}
+
+func stagedUpgrade(t *testing.T) (Project, *projectWriter, *verifiedTree, Lock) {
+	t.Helper()
+	installer, project, requirement, update := testInstaller(t, "old")
+	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	update("new")
+	fetched, err := installer.remote.Fetch(context.Background(), requirement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeFetchedTree(fetched) })
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.close() })
+	oldLock, _, _, err := writer.readLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := writer.stageAndVerify(context.Background(), requirement, fetched)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = verified.close() })
+	newLock, err := oldLock.With(LockedSkill{Publication: verified.publication})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return project, writer, verified, newLock
+}
+
+func TestReplaceRollsBackWhenDestinationSyncFails(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	before, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	writer.syncDirectory = func(path string) error {
+		if path == project.SkillsDir() && !failed {
+			failed = true
+			return errors.New("sync skills directory")
+		}
+		return syncDirectory(path)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after destination sync failure")
+	}
+	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("destination after rollback = %q, %v", contents, err)
+	}
+	after, err := os.ReadFile(project.LockPath())
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("lock after rollback = %q, %v", after, err)
+	}
+}
+
+func TestReplaceRollsBackWhenLockRenameFails(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	before, err := os.ReadFile(project.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer.rename = func(old, new string) error {
+		if new == project.LockPath() {
+			return errors.New("replace lock")
+		}
+		return os.Rename(old, new)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after lock rename failure")
+	}
+	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("destination after rollback = %q, %v", contents, err)
+	}
+	after, err := os.ReadFile(project.LockPath())
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("lock after rollback = %q, %v", after, err)
+	}
+}
+
+func TestReplaceLeavesDestinationAndLockAlignedAfterLockRename(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	writer.syncDirectory = func(path string) error {
+		if path == filepath.Dir(project.LockPath()) {
+			return errors.New("sync lock directory")
+		}
+		return syncDirectory(path)
+	}
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after lock directory sync failure")
+	}
+	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("new")) {
+		t.Fatalf("destination after lock rename = %q, %v", contents, err)
+	}
+	wantLock, err := encodeLockBytes(newLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotLock, err := os.ReadFile(project.LockPath())
+	if err != nil || !bytes.Equal(gotLock, wantLock) {
+		t.Fatalf("lock after lock rename = %q, %v", gotLock, err)
 	}
 }
 
