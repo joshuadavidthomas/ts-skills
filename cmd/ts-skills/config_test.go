@@ -1,4 +1,4 @@
-package config
+package main
 
 import (
 	"net/http"
@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/client"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -48,7 +47,7 @@ func TestLoadProducesOriginAcceptedByRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.NewRemote(loaded.Registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
+	if _, err := NewRemote(loaded.Registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
 		t.Fatalf("NewRemote(config registry): %v", err)
 	}
 }

@@ -1,10 +1,4 @@
-// Package install installs locked Agent Skills into a project.
-//
-// Installs stage complete trees beside their destination, then rename them into
-// place and write the lock last. A crash can leave reserved stage or trash
-// directories, or a tree that disagrees with its lock. Running the same
-// install or restore again removes litter and converges selected destinations.
-package install
+package main
 
 import (
 	"bytes"
@@ -27,9 +21,9 @@ var (
 	ErrProjectChanged   = errors.New("project changed during restore")
 )
 
-type Installer struct{ remote Remote }
+type Installer struct{ remote *Remote }
 
-func NewInstaller(remote Remote) (*Installer, error) {
+func NewInstaller(remote *Remote) (*Installer, error) {
 	if remote == nil {
 		return nil, fmt.Errorf("installer remote must be provided")
 	}

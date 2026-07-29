@@ -22,7 +22,6 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -362,8 +361,8 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	readPaths := []string{
 		"/",
 		unpublishedPath,
-		"/api/" + protocol.Version + "/skills/team/sample/current",
-		"/api/" + protocol.Version + "/skills/team/sample/publications/" + digest + "/tree.zip",
+		"/api/" + apiVersion + "/skills/team/sample/current",
+		"/api/" + apiVersion + "/skills/team/sample/publications/" + digest + "/tree.zip",
 	}
 	for _, path := range readPaths {
 		fixture.get(path)
@@ -426,7 +425,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 
 	request, err := http.NewRequest(
 		http.MethodGet,
-		fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/publications/"+digest+"/tree.zip",
+		fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip",
 		nil,
 	)
 	if err != nil {
@@ -442,18 +441,15 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 		t.Fatalf("tree status = %d: %s", response.StatusCode, body)
 	}
 	for header, want := range map[string]string{
-		protocol.HeaderPublicationNamespace: "team",
-		protocol.HeaderPublicationName:      "sample",
-		protocol.HeaderPublicationDigest:    digest,
+		headerPublicationNamespace: "team",
+		headerPublicationName:      "sample",
+		headerPublicationDigest:    digest,
 	} {
 		if got := response.Header.Get(header); got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
-	ceiling, err := protocol.TreeArchiveCeiling(safetree.PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
+	ceiling := agentskill.TreeArchiveMaxBytes
 	if int64(len(body)) > ceiling {
 		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", len(body), ceiling)
 	}
@@ -463,8 +459,8 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	}
 	var names []string
 	for _, file := range archive.File {
-		if file.Method != protocol.TreeArchiveZIPMethod {
-			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, protocol.TreeArchiveZIPMethod)
+		if file.Method != agentskill.TreeArchiveZIPMethod {
+			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, agentskill.TreeArchiveZIPMethod)
 		}
 		names = append(names, file.Name)
 	}
@@ -475,13 +471,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 }
 
 func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
-	limits := safetree.Limits{
-		MaxFiles: 2, MaxPathBytes: 15, MaxDepth: 2, MaxFileBytes: 1, MaxExpandedBytes: 2,
-	}
-	ceiling, err := protocol.TreeArchiveCeiling(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ceiling := agentskill.TreeArchiveMaxBytes
 	h := &handler{options: handlerOptions{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
 	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
 		"SKILL.md":        {Data: []byte("s")},

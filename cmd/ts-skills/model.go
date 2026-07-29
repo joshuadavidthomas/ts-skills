@@ -1,10 +1,7 @@
-package install
+package main
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"io/fs"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
@@ -38,16 +35,7 @@ type LockedSkill struct {
 	Publication agentskill.PublicationID
 }
 
-type FetchedTree interface {
-	fs.FS
-	io.Closer
-}
-
 type FetchedSkill struct {
 	Publication agentskill.PublicationID
-	Tree        FetchedTree
-}
-
-type Remote interface {
-	Fetch(context.Context, Requirement) (FetchedSkill, error)
+	Tree        *fetchedTree
 }

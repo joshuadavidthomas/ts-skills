@@ -1,16 +1,15 @@
-package config
+package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/client"
 	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
-	Registry client.Origin
+	Registry Origin
 }
 
 type document struct {
@@ -46,7 +45,7 @@ func Load(path string) (Config, error) {
 	if raw.Registry == nil || *raw.Registry == "" {
 		return Config{}, fmt.Errorf("decode config %q: registry is required", path)
 	}
-	origin, err := client.ParseOrigin(*raw.Registry)
+	origin, err := ParseOrigin(*raw.Registry)
 	if err != nil {
 		return Config{}, fmt.Errorf("decode config %q registry: %w", path, err)
 	}

@@ -1,4 +1,4 @@
-package cli
+package main
 
 import (
 	"archive/zip"
@@ -16,8 +16,6 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/client"
-	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -27,10 +25,10 @@ func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	constructErr := errors.New("injected registry client construction failure")
-	newClientRemote = func(client.Origin, *http.Client, string, safetree.Limits) (*client.Remote, error) {
+	newClientRemote = func(Origin, *http.Client, string, safetree.Limits) (*Remote, error) {
 		return nil, constructErr
 	}
-	t.Cleanup(func() { newClientRemote = client.NewRemote })
+	t.Cleanup(func() { newClientRemote = NewRemote })
 	cleanupErr := errors.New("injected staging removal failure")
 	removeClientStaging = func(string) error { return cleanupErr }
 	t.Cleanup(func() { removeClientStaging = os.RemoveAll })
@@ -69,13 +67,13 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/current") {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set(protocol.HeaderPublicationNamespace, "team")
-		w.Header().Set(protocol.HeaderPublicationName, "sample")
-		w.Header().Set(protocol.HeaderPublicationDigest, digest.String())
+		w.Header().Set(headerPublicationNamespace, "team")
+		w.Header().Set(headerPublicationName, "sample")
+		w.Header().Set(headerPublicationDigest, digest.String())
 		_, _ = w.Write(archive.Bytes())
 	}))
 	defer server.Close()
@@ -86,7 +84,7 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 	}
 	project := t.TempDir()
 	var stdout, stderr bytes.Buffer
-	if err := Run(context.Background(), []string{"install", "--project", project, "--config", configPath, "team/sample"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"install", "--project", project, "--config", configPath, "team/sample"}, &stdout, &stderr); err != nil {
 		t.Fatalf("install: %v; stderr=%s", err, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), digest.String()) {
@@ -98,7 +96,7 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	if err := Run(context.Background(), []string{"restore", "--project", project, "--config", configPath}, strings.NewReader(""), &stdout, &stderr); err != nil {
+	if err := run(context.Background(), []string{"restore", "--project", project, "--config", configPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("restore: %v; stderr=%s", err, stderr.String())
 	}
 	if contents, err := os.ReadFile(filepath.Join(destination, "asset.txt")); err != nil || string(contents) != "asset" {
@@ -109,11 +107,11 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 func TestRunRejectsMissingProjectAndInvalidDigest(t *testing.T) {
 	streams := func() (*bytes.Buffer, *bytes.Buffer) { return &bytes.Buffer{}, &bytes.Buffer{} }
 	stdout, stderr := streams()
-	if err := Run(context.Background(), []string{"install", "team/sample"}, strings.NewReader(""), stdout, stderr); err == nil || !strings.Contains(err.Error(), "--project") {
+	if err := run(context.Background(), []string{"install", "team/sample"}, stdout, stderr); err == nil || !strings.Contains(err.Error(), "--project") {
 		t.Fatalf("missing project error = %v", err)
 	}
 	stdout, stderr = streams()
-	if err := Run(context.Background(), []string{"install", "--project", t.TempDir(), "--digest", "bad", "team/sample"}, strings.NewReader(""), stdout, stderr); err == nil || !strings.Contains(err.Error(), "--digest") {
+	if err := run(context.Background(), []string{"install", "--project", t.TempDir(), "--digest", "bad", "team/sample"}, stdout, stderr); err == nil || !strings.Contains(err.Error(), "--digest") {
 		t.Fatalf("invalid digest error = %v", err)
 	}
 }
@@ -121,7 +119,7 @@ func TestRunRejectsMissingProjectAndInvalidDigest(t *testing.T) {
 func TestRunHelpExitsCleanlyWithUsageOnStderr(t *testing.T) {
 	for _, command := range []string{"install", "restore"} {
 		var stdout, stderr bytes.Buffer
-		if err := Run(context.Background(), []string{command, "-h"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		if err := run(context.Background(), []string{command, "-h"}, &stdout, &stderr); err != nil {
 			t.Fatalf("Run(%q -h) = %v, want nil", command, err)
 		}
 		if !strings.Contains(stderr.String(), "Usage of ts-skills "+command) {
@@ -136,11 +134,11 @@ func TestRunHelpExitsCleanlyWithUsageOnStderr(t *testing.T) {
 func TestRunReportsUnknownFlagOnce(t *testing.T) {
 	for _, command := range []string{"install", "restore"} {
 		var stdout, stderr bytes.Buffer
-		err := Run(context.Background(), []string{command, "--bogus"}, strings.NewReader(""), &stdout, &stderr)
+		err := run(context.Background(), []string{command, "--bogus"}, &stdout, &stderr)
 		if err == nil {
 			t.Fatalf("Run(%q --bogus) = nil, want error", command)
 		}
-		if !AlreadyReported(err) {
+		if !alreadyReported(err) {
 			t.Fatalf("Run(%q --bogus) error = %v, want AlreadyReported", command, err)
 		}
 		if !strings.Contains(stderr.String(), "flag provided but not defined") {
@@ -153,12 +151,12 @@ func TestRunReportsUnknownFlagOnce(t *testing.T) {
 }
 
 func TestAlreadyReportedRejectsUnreportedErrors(t *testing.T) {
-	if AlreadyReported(errors.New("plain")) {
-		t.Fatal("AlreadyReported(plain error) = true, want false")
+	if alreadyReported(errors.New("plain")) {
+		t.Fatal("alreadyReported(plain error) = true, want false")
 	}
 	wrapped := fmt.Errorf("outer: %w", reportedError{errors.New("inner")})
-	if !AlreadyReported(wrapped) {
-		t.Fatal("AlreadyReported(wrapped reportedError) = false, want true")
+	if !alreadyReported(wrapped) {
+		t.Fatal("alreadyReported(wrapped reportedError) = false, want true")
 	}
 }
 
@@ -167,8 +165,8 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 		err  error
 		want string
 	}{
-		"invalid request": {protocol.ErrInvalidRequest, "cannot install because the registry rejected the request as invalid"},
-		"internal error":  {protocol.ErrInternal, "cannot install because the registry could not complete the request"},
+		"invalid request": {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
+		"internal error":  {errInternal, "cannot install because the registry could not complete the request"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -187,7 +185,7 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 func TestRunVersionReportsBuildVersion(t *testing.T) {
 	for _, command := range []string{"version", "--version"} {
 		var stdout, stderr bytes.Buffer
-		if err := Run(context.Background(), []string{command}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		if err := run(context.Background(), []string{command}, &stdout, &stderr); err != nil {
 			t.Fatalf("Run(%q) = %v", command, err)
 		}
 		if got := stdout.String(); got != "ts-skills dev\n" {

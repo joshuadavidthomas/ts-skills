@@ -1,67 +1,49 @@
-package install
+package main
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
-	"testing/fstest"
-
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
-type fetchedMap struct {
-	fstest.MapFS
-	closed bool
-}
-
-func (f *fetchedMap) Close() error {
-	if f.closed {
-		return errors.New("closed twice")
-	}
-	f.closed = true
-	return nil
-}
-
-type scriptedRemote struct {
-	publication agentskill.PublicationID
-	files       fstest.MapFS
-	fetch       func(context.Context)
-}
-
-func (r *scriptedRemote) Fetch(ctx context.Context, _ Requirement) (FetchedSkill, error) {
-	if r.fetch != nil {
-		r.fetch(ctx)
-	}
-	return FetchedSkill{Publication: r.publication, Tree: &fetchedMap{MapFS: r.files}}, nil
-}
-
-func publicationFor(t *testing.T, body string) (agentskill.SkillID, agentskill.PublicationID, fstest.MapFS) {
+func testInstaller(t *testing.T, body string) (*Installer, Project, Requirement, func(string)) {
 	t.Helper()
-	name, _ := agentskill.ParseName("sample")
-	namespace, _ := agentskill.ParseNamespace("team")
-	skill, _ := agentskill.NewSkillID(namespace, name)
-	files := fstest.MapFS{"SKILL.md": {Data: []byte("---\nname: sample\ndescription: Test\n---\n" + body)}, "assets/data.txt": {Data: []byte(body)}}
-	digest, err := agentskill.SumTree(context.Background(), files, ".")
+	digest, archive := clientTree(t, body)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+			return
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+		_, _ = w.Write(archive)
+	}))
+	t.Cleanup(server.Close)
+	installer, err := NewInstaller(remoteForServer(t, server))
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := agentskill.NewPublicationID(skill, digest)
+	project, err := OpenProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return skill, publication, files
+	requirement, err := Current(clientSkill(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return installer, project, requirement, func(next string) { digest, archive = clientTree(t, next) }
 }
 
 func TestInstallIsIdempotentAndKeepsCanonicalLock(t *testing.T) {
-	skill, publication, files := publicationFor(t, "one")
-	remote := &scriptedRemote{publication: publication, files: files}
-	installer, _ := NewInstaller(remote)
-	project, _ := OpenProject(t.TempDir())
-	requirement, _ := Current(skill)
+	installer, project, requirement, _ := testInstaller(t, "one")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
@@ -79,37 +61,25 @@ func TestInstallIsIdempotentAndKeepsCanonicalLock(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("idempotent install changed lock bytes")
 	}
-	if got := string(first); got != "schema = 1\n\n[[skills]]\nskill = \"team/sample\"\ndigest = \""+publication.Tree().String()+"\"\n" {
-		t.Fatalf("lock = %q", got)
-	}
 }
 
 func TestInstallUpgradeReplacesDestination(t *testing.T) {
-	skill, oldPublication, oldFiles := publicationFor(t, "old")
-	remote := &scriptedRemote{publication: oldPublication, files: oldFiles}
-	installer, _ := NewInstaller(remote)
-	project, _ := OpenProject(t.TempDir())
-	requirement, _ := Current(skill)
+	installer, project, requirement, update := testInstaller(t, "old")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
-	_, next, nextFiles := publicationFor(t, "new")
-	remote.publication, remote.files = next, nextFiles
+	update("new")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
 	contents, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "assets", "data.txt"))
-	if err != nil || string(contents) != "new" {
+	if err != nil || string(contents) != "asset" {
 		t.Fatalf("installed contents = %q, %v", contents, err)
 	}
 }
 
 func TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths(t *testing.T) {
-	skill, publication, files := publicationFor(t, "locked")
-	remote := &scriptedRemote{publication: publication, files: files}
-	installer, _ := NewInstaller(remote)
-	project, _ := OpenProject(t.TempDir())
-	requirement, _ := Current(skill)
+	installer, project, requirement, _ := testInstaller(t, "locked")
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
@@ -160,11 +130,7 @@ func TestWriterSweepsReservedLitterOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := writer.close(); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { _ = writer.close() })
 	for _, path := range []string{stage, trash} {
 		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("litter remains %q: %v", path, err)

@@ -1,4 +1,4 @@
-package client
+package main
 
 import (
 	"archive/zip"
@@ -18,8 +18,6 @@ import (
 	"strings"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/install"
-	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -89,10 +87,7 @@ func NewRemote(origin Origin, httpClient *http.Client, stagingParent string, lim
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	maxZIPBytes, err := protocol.TreeArchiveCeiling(limits)
-	if err != nil {
-		return nil, fmt.Errorf("registry tree limits: %w", err)
-	}
+	maxZIPBytes := agentskill.TreeArchiveMaxBytes
 
 	privateClient := *httpClient
 	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -103,12 +98,12 @@ func NewRemote(origin Origin, httpClient *http.Client, stagingParent string, lim
 	}, nil
 }
 
-func (r *Remote) Fetch(ctx context.Context, requirement install.Requirement) (install.FetchedSkill, error) {
+func (r *Remote) Fetch(ctx context.Context, requirement Requirement) (FetchedSkill, error) {
 	if r == nil || r.client == nil || requirement.Skill().String() == "" {
-		return install.FetchedSkill{}, fmt.Errorf("fetch requires a configured registry and valid requirement")
+		return FetchedSkill{}, fmt.Errorf("fetch requires a configured registry and valid requirement")
 	}
 	if ctx == nil {
-		return install.FetchedSkill{}, fmt.Errorf("fetch context must be provided")
+		return FetchedSkill{}, fmt.Errorf("fetch context must be provided")
 	}
 
 	var publication agentskill.PublicationID
@@ -116,13 +111,13 @@ func (r *Remote) Fetch(ctx context.Context, requirement install.Requirement) (in
 		var err error
 		publication, err = agentskill.NewPublicationID(requirement.Skill(), digest)
 		if err != nil {
-			return install.FetchedSkill{}, err
+			return FetchedSkill{}, err
 		}
 	} else {
 		var err error
 		publication, err = r.resolveCurrent(ctx, requirement.Skill())
 		if err != nil {
-			return install.FetchedSkill{}, err
+			return FetchedSkill{}, err
 		}
 	}
 	return r.fetchTree(ctx, publication)
@@ -130,7 +125,7 @@ func (r *Remote) Fetch(ctx context.Context, requirement install.Requirement) (in
 
 func (r *Remote) resolveCurrent(ctx context.Context, skill agentskill.SkillID) (agentskill.PublicationID, error) {
 	endpoint := r.endpoint(
-		"api", protocol.Version, "skills", skill.Namespace().String(), skill.Name().String(), "current",
+		"api", apiVersion, "skills", skill.Namespace().String(), skill.Name().String(), "current",
 	)
 	response, err := r.get(ctx, endpoint, "application/json")
 	if err != nil {
@@ -145,83 +140,83 @@ func (r *Remote) resolveCurrent(ctx context.Context, skill agentskill.SkillID) (
 	}
 	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: read current response: %v", protocol.ErrProtocol, err)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: read current response: %v", errProtocol, err)
 	}
-	var wire protocol.CurrentResponse
+	var wire currentResponse
 	if err := decodeStrictJSON(body, &wire); err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: decode current response: %v", protocol.ErrProtocol, err)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: decode current response: %v", errProtocol, err)
 	}
 	namespace, err := agentskill.ParseNamespace(wire.Namespace)
 	if err != nil || namespace.String() != wire.Namespace {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical namespace", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical namespace", errProtocol)
 	}
 	name, err := agentskill.ParseName(wire.Name)
 	if err != nil || name.String() != wire.Name {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical Agent Skill name", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical Agent Skill name", errProtocol)
 	}
 	responseSkill, err := agentskill.NewSkillID(namespace, name)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response identity: %v", protocol.ErrProtocol, err)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: current response identity: %v", errProtocol, err)
 	}
 	if responseSkill != skill {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response names another skill", install.ErrIdentityMismatch)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: current response names another skill", ErrIdentityMismatch)
 	}
 	digest, err := agentskill.ParseTreeDigest(wire.Digest)
 	if err != nil || digest.String() != wire.Digest {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has an invalid digest", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has an invalid digest", errProtocol)
 	}
 	return agentskill.NewPublicationID(responseSkill, digest)
 }
 
-func (r *Remote) fetchTree(ctx context.Context, expected agentskill.PublicationID) (_ install.FetchedSkill, err error) {
+func (r *Remote) fetchTree(ctx context.Context, expected agentskill.PublicationID) (_ FetchedSkill, err error) {
 	requestedSkill := expected.Skill()
 	endpoint := r.endpoint(
-		"api", protocol.Version, "skills", requestedSkill.Namespace().String(), requestedSkill.Name().String(),
+		"api", apiVersion, "skills", requestedSkill.Namespace().String(), requestedSkill.Name().String(),
 		"publications", expected.Tree().String(), "tree.zip",
 	)
 	response, err := r.get(ctx, endpoint, "application/zip")
 	if err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("download publication tree: %w", err)
+		return FetchedSkill{}, fmt.Errorf("download publication tree: %w", err)
 	}
 	defer func() { err = errors.Join(err, response.Body.Close()) }()
 	if response.StatusCode != http.StatusOK {
-		return install.FetchedSkill{}, r.responseError(response)
+		return FetchedSkill{}, r.responseError(response)
 	}
 	if err := requireContentType(response.Header.Get("Content-Type"), "application/zip", false); err != nil {
-		return install.FetchedSkill{}, err
+		return FetchedSkill{}, err
 	}
 	publication, err := parseTreePublication(response.Header)
 	if err != nil {
-		return install.FetchedSkill{}, err
+		return FetchedSkill{}, err
 	}
 	if publication != expected {
-		return install.FetchedSkill{}, fmt.Errorf("%w: tree response identifies another publication", install.ErrIdentityMismatch)
+		return FetchedSkill{}, fmt.Errorf("%w: tree response identifies another publication", ErrIdentityMismatch)
 	}
 	if response.ContentLength > r.maxZIPBytes {
-		return install.FetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
+		return FetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
 	}
 
 	spool, err := os.CreateTemp(r.stagingParent, ".ts-skills-download-*.zip")
 	if err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("create download staging file: %w", err)
+		return FetchedSkill{}, fmt.Errorf("create download staging file: %w", err)
 	}
 	spoolName := spool.Name()
 	defer func() { _ = os.Remove(spoolName) }()
 	written, copyErr := io.Copy(spool, io.LimitReader(response.Body, r.maxZIPBytes+1))
 	closeErr := spool.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("stage publication archive: %w", err)
+		return FetchedSkill{}, fmt.Errorf("stage publication archive: %w", err)
 	}
 	if written > r.maxZIPBytes {
-		return install.FetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: written}
+		return FetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: written}
 	}
 	if response.ContentLength >= 0 && written != response.ContentLength {
-		return install.FetchedSkill{}, fmt.Errorf("%w: tree response was truncated", protocol.ErrProtocol)
+		return FetchedSkill{}, fmt.Errorf("%w: tree response was truncated", errProtocol)
 	}
 
 	snapshot, err := r.decodeZIP(ctx, spoolName)
 	if err != nil {
-		return install.FetchedSkill{}, err
+		return FetchedSkill{}, err
 	}
 	owned := true
 	defer func() {
@@ -231,51 +226,51 @@ func (r *Remote) fetchTree(ctx context.Context, expected agentskill.PublicationI
 	}()
 	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", protocol.ErrProtocol, err)
+		return FetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", errProtocol, err)
 	}
 	if err := inspection.RequireName(publication.Skill().Name()); err != nil {
-		return install.FetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", install.ErrIdentityMismatch)
+		return FetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", ErrIdentityMismatch)
 	}
 	if inspection.Digest() != publication.Tree() {
-		return install.FetchedSkill{}, fmt.Errorf("%w: expected %s, got %s", install.ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
+		return FetchedSkill{}, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, publication.Tree().String(), inspection.Digest().String())
 	}
 	owned = false
-	return install.FetchedSkill{Publication: publication, Tree: &fetchedTree{snapshot: snapshot}}, nil
+	return FetchedSkill{Publication: publication, Tree: &fetchedTree{snapshot: snapshot}}, nil
 }
 
 func parseTreePublication(header http.Header) (agentskill.PublicationID, error) {
-	namespaceText, err := requiredTreeHeader(header, protocol.HeaderPublicationNamespace)
+	namespaceText, err := requiredTreeHeader(header, headerPublicationNamespace)
 	if err != nil {
 		return agentskill.PublicationID{}, err
 	}
-	nameText, err := requiredTreeHeader(header, protocol.HeaderPublicationName)
+	nameText, err := requiredTreeHeader(header, headerPublicationName)
 	if err != nil {
 		return agentskill.PublicationID{}, err
 	}
-	digestText, err := requiredTreeHeader(header, protocol.HeaderPublicationDigest)
+	digestText, err := requiredTreeHeader(header, headerPublicationDigest)
 	if err != nil {
 		return agentskill.PublicationID{}, err
 	}
 
 	namespace, err := agentskill.ParseNamespace(namespaceText)
 	if err != nil || namespace.String() != namespaceText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", errProtocol)
 	}
 	name, err := agentskill.ParseName(nameText)
 	if err != nil || name.String() != nameText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", errProtocol)
 	}
 	skill, err := agentskill.NewSkillID(namespace, name)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", protocol.ErrProtocol, err)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
 	}
 	digest, err := agentskill.ParseTreeDigest(digestText)
 	if err != nil || digest.String() != digestText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", protocol.ErrProtocol)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", errProtocol)
 	}
 	publication, err := agentskill.NewPublicationID(skill, digest)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", protocol.ErrProtocol, err)
+		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
 	}
 	return publication, nil
 }
@@ -283,7 +278,7 @@ func parseTreePublication(header http.Header) (agentskill.PublicationID, error) 
 func requiredTreeHeader(header http.Header, name string) (string, error) {
 	values := header.Values(name)
 	if len(values) != 1 || values[0] == "" {
-		return "", fmt.Errorf("%w: tree response requires exactly one %s header", protocol.ErrProtocol, name)
+		return "", fmt.Errorf("%w: tree response requires exactly one %s header", errProtocol, name)
 	}
 	return values[0], nil
 }
@@ -294,11 +289,11 @@ func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 		if errors.Is(err, safetree.ErrLimitExceeded) {
 			return nil, err
 		}
-		return nil, fmt.Errorf("%w: inspect tree archive end record: %v", protocol.ErrProtocol, err)
+		return nil, fmt.Errorf("%w: inspect tree archive end record: %v", errProtocol, err)
 	}
 	archive, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open tree archive: %v", protocol.ErrProtocol, err)
+		return nil, fmt.Errorf("%w: open tree archive: %v", errProtocol, err)
 	}
 	defer func() { err = errors.Join(err, archive.Close()) }()
 	if int64(len(archive.File)) > maximumEntries {
@@ -314,15 +309,15 @@ func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 		}
 	}()
 	for _, entry := range archive.File {
-		if entry.Method != protocol.TreeArchiveZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
-			return nil, fmt.Errorf("%w: tree archive contains an unsupported entry", protocol.ErrProtocol)
+		if entry.Method != agentskill.TreeArchiveZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: tree archive contains an unsupported entry", errProtocol)
 		}
 		if entry.UncompressedSize64 > math.MaxInt64 {
 			return nil, &safetree.LimitError{Limit: "file bytes", Max: r.limits.MaxFileBytes, Actual: math.MaxInt64}
 		}
 		input, openErr := entry.Open()
 		if openErr != nil {
-			return nil, fmt.Errorf("%w: open tree archive entry: %v", protocol.ErrProtocol, openErr)
+			return nil, fmt.Errorf("%w: open tree archive entry: %v", errProtocol, openErr)
 		}
 		addErr := builder.AddFile(ctx, entry.Name, int64(entry.UncompressedSize64), input)
 		closeErr := input.Close()
@@ -333,11 +328,11 @@ func (r *Remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 			case errors.Is(addErr, context.Canceled), errors.Is(addErr, context.DeadlineExceeded):
 				return nil, addErr
 			default:
-				return nil, fmt.Errorf("%w: unsafe tree archive entry: %w", protocol.ErrProtocol, addErr)
+				return nil, fmt.Errorf("%w: unsafe tree archive entry: %w", errProtocol, addErr)
 			}
 		}
 		if closeErr != nil {
-			return nil, fmt.Errorf("%w: close tree archive entry: %w", protocol.ErrProtocol, closeErr)
+			return nil, fmt.Errorf("%w: close tree archive entry: %w", errProtocol, closeErr)
 		}
 	}
 	snapshot, err := builder.Finish()
@@ -366,27 +361,27 @@ func (r *Remote) responseError(response *http.Response) error {
 	}
 	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
 	if err != nil {
-		return fmt.Errorf("%w: read error response: %v", protocol.ErrProtocol, err)
+		return fmt.Errorf("%w: read error response: %v", errProtocol, err)
 	}
-	var wire protocol.ErrorResponse
+	var wire errorResponse
 	if err := decodeStrictJSON(body, &wire); err != nil {
-		return fmt.Errorf("%w: decode error response: %v", protocol.ErrProtocol, err)
+		return fmt.Errorf("%w: decode error response: %v", errProtocol, err)
 	}
-	expected, known := protocol.StatusForCode(wire.Code)
+	expected, known := statusForCode(wire.Code)
 	if !known || expected != response.StatusCode || wire.Message == "" {
-		return fmt.Errorf("%w: unknown error code or status", protocol.ErrProtocol)
+		return fmt.Errorf("%w: unknown error code or status", errProtocol)
 	}
 	switch wire.Code {
-	case protocol.CodeNotFound:
-		return fmt.Errorf("%w: requested publication does not exist", protocol.ErrNotFound)
-	case protocol.CodeInvalidRequest:
-		return fmt.Errorf("%w: %s", protocol.ErrInvalidRequest, wire.Message)
-	case protocol.CodeTooLarge:
+	case codeNotFound:
+		return fmt.Errorf("%w: requested publication does not exist", errNotFound)
+	case codeInvalidRequest:
+		return fmt.Errorf("%w: %s", errInvalidRequest, wire.Message)
+	case codeTooLarge:
 		return fmt.Errorf("%w: registry could not return the tree within its limit", safetree.ErrLimitExceeded)
-	case protocol.CodeInternal:
-		return fmt.Errorf("%w: %s", protocol.ErrInternal, wire.Message)
+	case codeInternal:
+		return fmt.Errorf("%w: %s", errInternal, wire.Message)
 	default:
-		return fmt.Errorf("%w: unknown registry error", protocol.ErrProtocol)
+		return fmt.Errorf("%w: unknown registry error", errProtocol)
 	}
 }
 
@@ -401,7 +396,7 @@ func (r *Remote) endpoint(parts ...string) string {
 func requireContentType(header, expected string, allowUTF8Charset bool) error {
 	mediaType, parameters, err := mime.ParseMediaType(header)
 	if err != nil || mediaType != expected {
-		return fmt.Errorf("%w: expected Content-Type %s", protocol.ErrProtocol, expected)
+		return fmt.Errorf("%w: expected Content-Type %s", errProtocol, expected)
 	}
 	if len(parameters) == 0 {
 		return nil
@@ -409,7 +404,7 @@ func requireContentType(header, expected string, allowUTF8Charset bool) error {
 	if allowUTF8Charset && len(parameters) == 1 && strings.EqualFold(parameters["charset"], "utf-8") {
 		return nil
 	}
-	return fmt.Errorf("%w: unexpected Content-Type parameters", protocol.ErrProtocol)
+	return fmt.Errorf("%w: unexpected Content-Type parameters", errProtocol)
 }
 
 func readBounded(source io.Reader, contentLength, maximum int64) ([]byte, error) {

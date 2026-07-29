@@ -1,5 +1,0 @@
-schema = 1
-
-[[skills]]
-skill = "team/sample"
-digest = "sha256:70a1dff65fa87d1310f3e028990af97f9062daed3c0991285b540c3cae6366b8"

@@ -13,4 +13,3 @@ func testCandidate(id agentskill.CandidateID, skill agentskill.SkillID, tree age
 func testCandidates(first, second candidate) []candidate {
 	return []candidate{first, second}
 }
-

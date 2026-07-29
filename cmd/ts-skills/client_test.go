@@ -1,4 +1,4 @@
-package client
+package main
 
 import (
 	"archive/zip"
@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/install"
-	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -135,9 +133,9 @@ func TestOriginURLReturnsFreshCopy(t *testing.T) {
 }
 
 func setClientTreeHeaders(header http.Header, namespace, name, digest string) {
-	header.Set(protocol.HeaderPublicationNamespace, namespace)
-	header.Set(protocol.HeaderPublicationName, name)
-	header.Set(protocol.HeaderPublicationDigest, digest)
+	header.Set(headerPublicationNamespace, namespace)
+	header.Set(headerPublicationName, name)
+	header.Set(headerPublicationDigest, digest)
 }
 
 func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
@@ -145,19 +143,20 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 		MaxFiles: 2, MaxPathBytes: 16, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
 	}
 	digest, archive := clientTree(t, "archive ceiling")
-	maximum, err := protocol.TreeArchiveCeiling(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
+	maximum := agentskill.TreeArchiveMaxBytes
 	responseBody := archive
+	oversized := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/zip")
 		setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+		if oversized {
+			w.Header().Set("Content-Length", fmt.Sprint(maximum+1))
+		}
 		_, _ = w.Write(responseBody)
 	}))
 	defer server.Close()
 	remote := remoteForServerWithLimits(t, server, limits)
-	requirement, err := install.Exact(clientSkill(t), digest)
+	requirement, err := Exact(clientSkill(t), digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +168,7 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	responseBody = append(bytes.Clone(archive), bytes.Repeat([]byte{0}, int(maximum)+1-len(archive))...)
+	oversized = true
 	if _, err := remote.Fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
 		t.Fatalf("oversize tree archive error = %v, want %v", err, safetree.ErrLimitExceeded)
 	}
@@ -192,7 +191,7 @@ func TestDecodeZIPPreservesCancellation(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled decodeZIP error = %v, want context.Canceled", err)
 	}
-	if errors.Is(err, protocol.ErrProtocol) {
+	if errors.Is(err, errProtocol) {
 		t.Fatalf("canceled decodeZIP error flattened into ErrProtocol: %v", err)
 	}
 }
@@ -202,26 +201,26 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 		code string
 		want error
 	}{
-		"not-found":       {protocol.CodeNotFound, protocol.ErrNotFound},
-		"invalid-request": {protocol.CodeInvalidRequest, protocol.ErrInvalidRequest},
-		"too-large":       {protocol.CodeTooLarge, safetree.ErrLimitExceeded},
-		"internal":        {protocol.CodeInternal, protocol.ErrInternal},
+		"not-found":       {codeNotFound, errNotFound},
+		"invalid-request": {codeInvalidRequest, errInvalidRequest},
+		"too-large":       {codeTooLarge, safetree.ErrLimitExceeded},
+		"internal":        {codeInternal, errInternal},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			status, known := protocol.StatusForCode(test.code)
+			status, known := statusForCode(test.code)
 			if !known {
 				t.Fatalf("test code %q has no wire status", test.code)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
-				_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: test.code, Message: "error mapping test"})
+				_ = json.NewEncoder(w).Encode(errorResponse{Code: test.code, Message: "error mapping test"})
 			}))
 			defer server.Close()
 			remote := remoteForServer(t, server)
 			digest, _ := clientTree(t, "error mapping")
-			requirement, err := install.Exact(clientSkill(t), digest)
+			requirement, err := Exact(clientSkill(t), digest)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -272,9 +271,9 @@ func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
 		want    error
 	}{
 		"too many entries":      {archive: archive, limits: limited, want: safetree.ErrLimitExceeded},
-		"underreported entries": {archive: underreported, limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
-		"ZIP64":                 {archive: zip64, limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
-		"deflated entry":        {archive: deflated.Bytes(), limits: safetree.PrototypeLimits(), want: protocol.ErrProtocol},
+		"underreported entries": {archive: underreported, limits: safetree.PrototypeLimits(), want: errProtocol},
+		"ZIP64":                 {archive: zip64, limits: safetree.PrototypeLimits(), want: errProtocol},
+		"deflated entry":        {archive: deflated.Bytes(), limits: safetree.PrototypeLimits(), want: errProtocol},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -284,7 +283,7 @@ func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
 				_, _ = w.Write(test.archive)
 			}))
 			defer server.Close()
-			requirement, err := install.Exact(clientSkill(t), digest)
+			requirement, err := Exact(clientSkill(t), digest)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -306,9 +305,9 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 	currentDigest := firstDigest
 	treeZIP := firstZIP
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
+		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: currentDigest.String()})
+			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: currentDigest.String()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
@@ -316,12 +315,12 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 		_, _ = w.Write(treeZIP)
 	}))
 	defer server.Close()
-	installer, err := install.NewInstaller(remoteForServer(t, server))
+	installer, err := NewInstaller(remoteForServer(t, server))
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, _ := install.OpenProject(t.TempDir())
-	requirement, _ := install.Current(skill)
+	project, _ := OpenProject(t.TempDir())
+	requirement, _ := Current(skill)
 	if _, err := installer.Install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +334,7 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 	}
 
 	currentDigest = secondDigest
-	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, install.ErrDigestMismatch) {
+	if _, err := installer.Install(context.Background(), project, requirement); !errors.Is(err, ErrDigestMismatch) {
 		t.Fatalf("mismatched install error = %v", err)
 	}
 	afterTree, err := os.ReadFile(filepath.Join(project.SkillsDir(), "sample", "SKILL.md"))
@@ -359,9 +358,9 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	treeZIP := firstZIP
 	truncateTree := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
+		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
+			_ = json.NewEncoder(w).Encode(currentResponse{
 				Namespace: "team", Name: "sample", Digest: currentDigest.String(),
 			})
 			return
@@ -377,15 +376,15 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	}))
 	defer server.Close()
 
-	installer, err := install.NewInstaller(remoteForServer(t, server))
+	installer, err := NewInstaller(remoteForServer(t, server))
 	if err != nil {
 		t.Fatal(err)
 	}
-	project, err := install.OpenProject(t.TempDir())
+	project, err := OpenProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	requirement, err := install.Current(skill)
+	requirement, err := Current(skill)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -439,7 +438,7 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 	skill := clientSkill(t)
 	digest, validZIP := clientTree(t, "valid")
-	requirement, _ := install.Exact(skill, digest)
+	requirement, _ := Exact(skill, digest)
 	var unsafe bytes.Buffer
 	unsafeWriter := zip.NewWriter(&unsafe)
 	entry, _ := unsafeWriter.CreateHeader(&zip.FileHeader{Name: "../SKILL.md", Method: zip.Store})
@@ -464,7 +463,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(validZIP)
 			}),
-			expectedErr: protocol.ErrProtocol,
+			expectedErr: errProtocol,
 		},
 		{
 			name: "declared size",
@@ -483,7 +482,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(unsafe.Bytes())
 			}),
-			expectedErr: protocol.ErrProtocol,
+			expectedErr: errProtocol,
 		},
 	}
 	for _, test := range tests {
@@ -515,44 +514,44 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 		{
 			name: "missing namespace",
 			change: func(header http.Header) {
-				header.Del(protocol.HeaderPublicationNamespace)
+				header.Del(headerPublicationNamespace)
 			},
-			expectedErr: protocol.ErrProtocol,
+			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong namespace",
 			change: func(header http.Header) {
-				header.Set(protocol.HeaderPublicationNamespace, "other")
+				header.Set(headerPublicationNamespace, "other")
 			},
-			expectedErr: install.ErrIdentityMismatch,
+			expectedErr: ErrIdentityMismatch,
 		},
 		{
 			name: "missing name",
 			change: func(header http.Header) {
-				header.Del(protocol.HeaderPublicationName)
+				header.Del(headerPublicationName)
 			},
-			expectedErr: protocol.ErrProtocol,
+			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong name",
 			change: func(header http.Header) {
-				header.Set(protocol.HeaderPublicationName, "other")
+				header.Set(headerPublicationName, "other")
 			},
-			expectedErr: install.ErrIdentityMismatch,
+			expectedErr: ErrIdentityMismatch,
 		},
 		{
 			name: "missing digest",
 			change: func(header http.Header) {
-				header.Del(protocol.HeaderPublicationDigest)
+				header.Del(headerPublicationDigest)
 			},
-			expectedErr: protocol.ErrProtocol,
+			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong digest",
 			change: func(header http.Header) {
-				header.Set(protocol.HeaderPublicationDigest, otherDigest.String())
+				header.Set(headerPublicationDigest, otherDigest.String())
 			},
-			expectedErr: install.ErrIdentityMismatch,
+			expectedErr: ErrIdentityMismatch,
 		},
 	}
 
@@ -560,9 +559,9 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 		for _, test := range tests {
 			t.Run(mode+"/"+test.name, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
+					if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
 						w.Header().Set("Content-Type", "application/json")
-						_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
+						_ = json.NewEncoder(w).Encode(currentResponse{
 							Namespace: "team", Name: "sample", Digest: digest.String(),
 						})
 						return
@@ -576,12 +575,12 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 				}))
 				defer server.Close()
 
-				var requirement install.Requirement
+				var requirement Requirement
 				var err error
 				if mode == "exact" {
-					requirement, err = install.Exact(skill, digest)
+					requirement, err = Exact(skill, digest)
 				} else {
-					requirement, err = install.Current(skill)
+					requirement, err = Current(skill)
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -614,12 +613,12 @@ func TestRemoteRejectsCurrentResponseForAnotherSkill(t *testing.T) {
 	digest, _ := clientTree(t, "valid")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "other", Name: "sample", Digest: digest.String()})
+		_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "other", Name: "sample", Digest: digest.String()})
 	}))
 	defer server.Close()
-	requirement, _ := install.Current(clientSkill(t))
+	requirement, _ := Current(clientSkill(t))
 	_, err := remoteForServer(t, server).Fetch(context.Background(), requirement)
-	if !errors.Is(err, install.ErrIdentityMismatch) {
+	if !errors.Is(err, ErrIdentityMismatch) {
 		t.Fatalf("identity mismatch error = %v", err)
 	}
 }

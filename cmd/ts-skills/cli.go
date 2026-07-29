@@ -1,5 +1,5 @@
 // Flag diagnostics are printed by the FlagSet; errors are reported once.
-package cli
+package main
 
 import (
 	"context"
@@ -12,20 +12,16 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/client"
-	"github.com/joshuadavidthomas/ts-skills/internal/config"
-	"github.com/joshuadavidthomas/ts-skills/internal/install"
-	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
 
-func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if ctx == nil {
 		return fmt.Errorf("command context must be provided")
 	}
-	if stdin == nil || stdout == nil || stderr == nil {
-		return fmt.Errorf("command input and output streams must be provided")
+	if stdout == nil || stderr == nil {
+		return fmt.Errorf("command output streams must be provided")
 	}
 	if len(args) == 0 {
 		return fmt.Errorf("choose a command: install, restore, or version")
@@ -66,15 +62,15 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if err != nil {
 		return fmt.Errorf("parse skill %q: %w", flags.Arg(0), err)
 	}
-	var requirement install.Requirement
+	var requirement Requirement
 	if *digestText == "" {
-		requirement, err = install.Current(skill)
+		requirement, err = Current(skill)
 	} else {
 		digest, parseErr := agentskill.ParseTreeDigest(*digestText)
 		if parseErr != nil {
 			return fmt.Errorf("parse --digest: %w", parseErr)
 		}
-		requirement, err = install.Exact(skill, digest)
+		requirement, err = Exact(skill, digest)
 	}
 	if err != nil {
 		return err
@@ -144,46 +140,46 @@ func (e reportedError) Unwrap() error { return e.err }
 
 // AlreadyReported reports whether err's diagnostics were already shown to
 // the user, so the caller should exit nonzero without printing it again.
-func AlreadyReported(err error) bool {
+func alreadyReported(err error) bool {
 	var reported reportedError
 	return errors.As(err, &reported)
 }
 
 // Package-private test seams for construction and staging cleanup failures.
 var (
-	newClientRemote     = client.NewRemote
+	newClientRemote     = NewRemote
 	removeClientStaging = os.RemoveAll
 )
 
-func commandInstaller(configPath, projectPath string) (*install.Installer, install.Project, func() error, error) {
+func commandInstaller(configPath, projectPath string) (*Installer, Project, func() error, error) {
 	noop := func() error { return nil }
 	if configPath == "" {
 		var err error
-		configPath, err = config.DefaultPath()
+		configPath, err = DefaultPath()
 		if err != nil {
-			return nil, install.Project{}, noop, err
+			return nil, Project{}, noop, err
 		}
 	}
-	settings, err := config.Load(configPath)
+	settings, err := Load(configPath)
 	if err != nil {
-		return nil, install.Project{}, noop, err
+		return nil, Project{}, noop, err
 	}
-	project, err := install.OpenProject(projectPath)
+	project, err := OpenProject(projectPath)
 	if err != nil {
-		return nil, install.Project{}, noop, err
+		return nil, Project{}, noop, err
 	}
 	staging, err := os.MkdirTemp("", "ts-skills-client-")
 	if err != nil {
-		return nil, install.Project{}, noop, fmt.Errorf("create client staging directory: %w", err)
+		return nil, Project{}, noop, fmt.Errorf("create client staging directory: %w", err)
 	}
 	cleanup := func() error { return removeClientStaging(staging) }
 	remote, err := newClientRemote(settings.Registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
 	if err != nil {
-		return nil, install.Project{}, noop, errors.Join(err, cleanup())
+		return nil, Project{}, noop, errors.Join(err, cleanup())
 	}
-	installer, err := install.NewInstaller(remote)
+	installer, err := NewInstaller(remote)
 	if err != nil {
-		return nil, install.Project{}, noop, errors.Join(err, cleanup())
+		return nil, Project{}, noop, errors.Join(err, cleanup())
 	}
 	return installer, project, cleanup, nil
 }
@@ -191,21 +187,21 @@ func commandInstaller(configPath, projectPath string) (*install.Installer, insta
 func commandError(operation string, err error) error {
 	var message string
 	switch {
-	case errors.Is(err, install.ErrBusy):
+	case errors.Is(err, ErrBusy):
 		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
-	case errors.Is(err, install.ErrProjectChanged):
+	case errors.Is(err, ErrProjectChanged):
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
-	case errors.Is(err, install.ErrIdentityMismatch), errors.Is(err, install.ErrDigestMismatch):
+	case errors.Is(err, ErrIdentityMismatch), errors.Is(err, ErrDigestMismatch):
 		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
-	case errors.Is(err, protocol.ErrNotFound):
+	case errors.Is(err, errNotFound):
 		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
 	case errors.Is(err, safetree.ErrLimitExceeded):
 		message = fmt.Sprintf("cannot %s because the downloaded skill exceeds the configured safety limits", operation)
-	case errors.Is(err, protocol.ErrProtocol):
+	case errors.Is(err, errProtocol):
 		message = fmt.Sprintf("cannot %s because the registry returned an invalid response", operation)
-	case errors.Is(err, protocol.ErrInvalidRequest):
+	case errors.Is(err, errInvalidRequest):
 		message = fmt.Sprintf("cannot %s because the registry rejected the request as invalid", operation)
-	case errors.Is(err, protocol.ErrInternal):
+	case errors.Is(err, errInternal):
 		message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
 	default:
 		message = fmt.Sprintf("%s failed", operation)

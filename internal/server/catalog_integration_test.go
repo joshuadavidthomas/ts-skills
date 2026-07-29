@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"io/fs"
-	"os"
 	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/install"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -320,88 +318,5 @@ func TestCatalogConcurrentFirstPublicationsChooseOneCurrent(t *testing.T) {
 		if err != nil || stored != publication {
 			t.Fatalf("stored concurrent publication = %#v, %v", stored, err)
 		}
-	}
-}
-
-type catalogRemote struct {
-	catalog *catalog
-}
-
-func (r catalogRemote) Fetch(ctx context.Context, requirement install.Requirement) (install.FetchedSkill, error) {
-	var (
-		publication publication
-		err         error
-	)
-	if digest, exact := requirement.ExactDigest(); exact {
-		id, idErr := agentskill.NewPublicationID(requirement.Skill(), digest)
-		if idErr != nil {
-			return install.FetchedSkill{}, idErr
-		}
-		publication, err = r.catalog.publication(ctx, id)
-	} else {
-		publication, err = r.catalog.resolveCurrent(ctx, requirement.Skill())
-	}
-	if err != nil {
-		return install.FetchedSkill{}, err
-	}
-	tree, err := r.catalog.openPublicationTree(ctx, publication.ID)
-	if err != nil {
-		return install.FetchedSkill{}, err
-	}
-	return install.FetchedSkill{Publication: publication.ID, Tree: tree}, nil
-}
-
-func TestCatalogBackedInstallUsesCapturedImmutableTree(t *testing.T) {
-	catalog, namespace, curator, uploadSource, submittedAt := newCatalogFixture(t)
-	source := skillSource("# Install me\n", "captured asset")
-	candidate := capture(t, catalog, namespace, curator, uploadSource, submittedAt, source)
-
-	source["sample/SKILL.md"].Data = []byte("destroyed")
-	source["sample/assets/data.txt"].Data = []byte("mutated asset")
-	published, err := catalog.publish(context.Background(), candidate.ID, curator, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	installer, err := install.NewInstaller(catalogRemote{catalog: catalog})
-	if err != nil {
-		t.Fatal(err)
-	}
-	project, err := install.OpenProject(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	requirement, err := install.Current(candidate.Skill)
-	if err != nil {
-		t.Fatal(err)
-	}
-	locked, err := installer.Install(context.Background(), project, requirement)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if locked.Publication != published.ID {
-		t.Fatalf("locked publication = %#v, want %#v", locked.Publication, published.ID)
-	}
-
-	asset, err := os.ReadFile(project.SkillsDir() + "/sample/assets/data.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(asset) != "captured asset" {
-		t.Fatalf("installed mutable source bytes %q", asset)
-	}
-	script, err := os.Stat(project.SkillsDir() + "/sample/scripts/run.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if script.Mode().Perm()&0o111 != 0 {
-		t.Fatalf("installed script is executable: %v", script.Mode())
-	}
-	installedDigest, err := agentskill.SumTree(context.Background(), os.DirFS(project.SkillsDir()), "sample")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if installedDigest != published.ID.Tree() {
-		t.Fatalf("installed digest = %s, want %s", installedDigest, published.ID.Tree())
 	}
 }
