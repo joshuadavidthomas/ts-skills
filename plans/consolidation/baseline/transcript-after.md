@@ -91,26 +91,30 @@ The exact daemon PID exited after the run. Its ephemeral listener and port
 
 ## Tailnet comparison
 
-A test enrollment key supplied after the first run enrolled an untagged
-scratch node, `ts-skillsd-consolidation2.tail014d2.ts.net`, from state under
-`/tmp`. It answered Tailnet ping and completed TLS with a certificate whose
-subject matched that full MagicDNS name and whose issuer was Let's Encrypt.
-The catalog request returned `200`.
+An untagged scratch node first verified the denied half of the capability
+gate: `POST /candidates` returned `403` without a curation capability. The
+initial policy name was invalid because Tailscale reserves the
+`tailscale.com` domain. The daemon and policy now use the project-owned
+`joshuadavidthomas.com/cap/ts-skills` name.
 
-The same Tailnet identity received `403` from `POST /candidates`, so it has
-no `joshuadavidthomas.com/cap/ts-skills` curation capability. A second enrollment
-attempt with `TS_SKILLSD_TAG=tag:skills-registry` failed before serving:
+A tagged scratch node, `ts-skillsd-consolidation5.tail014d2.ts.net`, then
+joined with `tag:skills-registry`. It answered Tailnet ping and served a valid
+MagicDNS certificate:
 
 ```text
-ts-skillsd: build daemon runtime: wait for embedded Tailscale node: tsnet.Up: backend: requested tags [tag:skills-registry] are invalid or not permitted
+subject: CN=ts-skillsd-consolidation5.tail014d2.ts.net
+issuer: C=US; O=Let's Encrypt; CN=YE2
 ```
 
-The live read and TLS checks now have coverage, but the curated golden path
-and required `403`/`200` capability comparison remain blocked on a Tailnet
-ACL grant and an auth key permitted to advertise the registry tag. All test
-daemons were stopped by their recorded PIDs; their scratch state and key file
-were removed. The enrolled untagged node may need removal in the Tailnet admin
-console.
+The catalog returned `200`; the curator successfully uploaded, published,
+and selected `team/example-skill` (`303` for each mutation). The current API,
+archive, client install, and lock-only restore produced the same publication
+digest, archive hash, lock hash, installed tree, and missing-skill diagnostic
+as the dev baseline. This is the curated `200` half of the gate.
+
+All test daemons were stopped by their recorded PIDs; their scratch state,
+projects, and auth-key files were removed. The temporary enrolled nodes may
+need removal in the Tailnet admin console.
 
 ## Diff summary
 
@@ -121,8 +125,7 @@ console.
 | Lock SHA-256 | `6a054d…c690446` | `6a054d…c690446` | identical |
 | Install, restore, and missing-skill diagnostic | recorded in `transcript.md` | recorded above | identical |
 | Dev HTTP path | 200/303/200 sequence | 200/303/200 sequence | identical |
-| Tailnet TLS | unavailable | valid MagicDNS certificate; read request returned 200 | compared |
-| Tailnet capability gate | unavailable | uncurated identity returned 403; no curated identity available | partially compared |
+| Tailnet TLS | unavailable | valid MagicDNS certificate; catalog returned 200 | new coverage |
+| Tailnet capability gate | unavailable | uncurated request returned 403; curator mutations returned 303 | new coverage |
 
-No unsanctioned dev-mode behavioral difference was found. Plan 006 remains
-blocked on a Tailnet curation ACL grant and tagged enrollment permission.
+No unsanctioned behavioral difference was found. Plan 006 is complete.

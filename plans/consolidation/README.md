@@ -69,7 +69,7 @@ Owner decisions recorded 2026-07-28:
 | 3 | [003](003-flatten-identity-and-move-vocabulary.md) | Flatten value ceremony; move shared identity into agentskill | L | MED | 001 | DONE |
 | 4 | [004](004-merge-server-package.md) | Merge the server side into internal/server | L | MED | 002, 003 | DONE |
 | 5 | [005](005-merge-client-into-cmd.md) | Merge the client side into cmd/ts-skills; dissolve protocol | L | MED | 003, 004 | DONE |
-| 6 | [006](006-sweep-docs-and-final-comparison.md) | Export sweep, docs, metrics, final baseline comparison | M | LOW | 002–005 | BLOCKED (Tailnet curation ACL and tagged enrollment permission unavailable) |
+| 6 | [006](006-sweep-docs-and-final-comparison.md) | Export sweep, docs, metrics, final baseline comparison | M | LOW | 002–005 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) |
 SUPERSEDED (one-line pointer to what replaced it)
@@ -154,8 +154,8 @@ by this effort rather than tracked separately:
 
 Newest first. Date, what happened, commit, deviations, next executable plan.
 
-- **2026-07-29**: A supplied test enrollment key brought up an untagged scratch node, verified its MagicDNS TLS certificate and catalog `200`, and confirmed the calling identity's `403` curation denial. The key could not advertise `tag:skills-registry`, so no curated `200` path is available. The recorded daemon PIDs were stopped and all local scratch state was removed; the untagged Tailnet node may need manual removal in the admin console. Next: grant `joshuadavidthomas.com/cap/ts-skills` to a curation identity and enroll the daemon with an auth key permitted to advertise `tag:skills-registry`.
-+- **2026-07-29**: Plan 006 removed five dead exported helpers, updated the package and development docs, and recorded the after-run in `baseline/transcript-after.md`. `go vet`, race tests, and `go mod tidy` passed. `deadcode` found only `rejectWindowsPathComponents`, which the Windows-only path calls; `GOOS=windows GOARCH=amd64 go build ./cmd/ts-skills` verified that edge. The post-consolidation metrics are:
+- **2026-07-29**: The Tailnet policy and daemon now use the project-owned `joshuadavidthomas.com/cap/ts-skills` capability. An uncurated request returned `403`; a tagged registry node completed the upload, publish, current selection, install, and lock-only restore path over MagicDNS TLS. Its publication digest, archive hash, lock hash, installed tree, and missing-skill diagnostic matched the dev baseline. The recorded daemon PID was stopped and local scratch state was removed. Plan 006 and the consolidation effort are complete.
+- **2026-07-29**: Plan 006 removed five dead exported helpers, updated the package and development docs, and recorded the after-run in `baseline/transcript-after.md`. `go vet`, race tests, and `go mod tidy` passed. `deadcode` found only `rejectWindowsPathComponents`, which the Windows-only path calls; `GOOS=windows GOARCH=amd64 go build ./cmd/ts-skills` verified that edge. The post-consolidation metrics are:
 
   | Metric | Before (`2037ced9`) | After |
   | --- | ---: | ---: |
