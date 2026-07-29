@@ -84,6 +84,8 @@ const (
 
 var ErrProtocol = errors.New("invalid registry protocol response")
 
+var ErrNotFound = errors.New("registry value not found")
+
 var ErrInvalidRequest = errors.New("invalid registry request")
 
 var ErrInternal = errors.New("registry internal error")

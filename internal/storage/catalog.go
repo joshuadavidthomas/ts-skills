@@ -216,26 +216,26 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 		return err
 	}
 
-	unlock := c.lockDigest(candidate.Tree())
+	unlock := c.lockDigest(candidate.Tree)
 	defer unlock()
-	if err := c.materializeTree(ctx, candidate.Tree(), candidate.Skill().Name(), directory.FS()); err != nil {
+	if err := c.materializeTree(ctx, candidate.Tree, candidate.Skill.Name(), directory.FS()); err != nil {
 		return fmt.Errorf("materialize candidate tree: %w", err)
 	}
 
-	provenance := candidate.Provenance()
+	provenance := candidate.Provenance
 	result, err := c.db.ExecContext(ctx, `
 		INSERT INTO candidates(
 			id, namespace, name, tree_digest, source_label,
 			submitted_actor_id, submitted_actor_display, submitted_at_ns
 		) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		candidateIDBlob(candidate.ID()),
-		candidate.Skill().Namespace().String(),
-		candidate.Skill().Name().String(),
-		digestBlob(candidate.Tree()),
-		provenance.Source().Label(),
-		provenance.SubmittedBy().ID(),
-		provenance.SubmittedBy().Display(),
-		provenance.SubmittedAt().UnixNano(),
+		candidateIDBlob(candidate.ID),
+		candidate.Skill.Namespace().String(),
+		candidate.Skill.Name().String(),
+		digestBlob(candidate.Tree),
+		provenance.Source,
+		provenance.SubmittedBy.ID,
+		provenance.SubmittedBy.Display,
+		provenance.SubmittedAt.UnixNano(),
 	)
 	if err != nil {
 		if isConstraintError(err) {
@@ -253,7 +253,7 @@ func (c *Catalog) RecordCandidate(ctx context.Context, candidate registry.Candid
 	return nil
 }
 
-func (c *Catalog) Candidate(ctx context.Context, id registry.CandidateID) (registry.Candidate, error) {
+func (c *Catalog) Candidate(ctx context.Context, id agentskill.CandidateID) (registry.Candidate, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return registry.Candidate{}, err
@@ -263,7 +263,7 @@ func (c *Catalog) Candidate(ctx context.Context, id registry.CandidateID) (regis
 }
 
 func (c *Catalog) PersistPublication(ctx context.Context, publication registry.Publication, initialCurrent *registry.CurrentPublication) (_ bool, err error) {
-	if initialCurrent != nil && initialCurrent.Publication() != publication.ID() {
+	if initialCurrent != nil && initialCurrent.Publication != publication.ID {
 		return false, fmt.Errorf("initial current publication must match publication")
 	}
 	done, err := c.withOpenState()
@@ -279,15 +279,15 @@ func (c *Catalog) PersistPublication(ctx context.Context, publication registry.P
 		err = c.rollbackTransaction(tx, err)
 	}()
 
-	id := publication.ID()
+	id := publication.ID
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO publications(
 			namespace, name, tree_digest, candidate_id,
 			published_actor_id, published_actor_display, published_at_ns
 		) VALUES(?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(namespace, name, tree_digest) DO NOTHING`,
-		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()), candidateIDBlob(publication.Candidate()),
-		publication.PublishedBy().ID(), publication.PublishedBy().Display(), publication.PublishedAt().UnixNano(),
+		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()), candidateIDBlob(publication.Candidate),
+		publication.PublishedBy.ID, publication.PublishedBy.Display, publication.PublishedAt.UnixNano(),
 	)
 	if err != nil {
 		return false, fmt.Errorf("insert publication: %w", err)
@@ -304,7 +304,7 @@ func (c *Catalog) PersistPublication(ctx context.Context, publication registry.P
 	}
 
 	if initialCurrent != nil {
-		currentID := initialCurrent.Publication()
+		currentID := initialCurrent.Publication
 		currentResult, err := tx.ExecContext(ctx, `
 			INSERT INTO current_publications(
 				namespace, name, tree_digest,
@@ -312,7 +312,7 @@ func (c *Catalog) PersistPublication(ctx context.Context, publication registry.P
 			) VALUES(?, ?, ?, ?, ?, ?)
 			ON CONFLICT(namespace, name) DO NOTHING`,
 			currentID.Skill().Namespace().String(), currentID.Skill().Name().String(), digestBlob(currentID.Tree()),
-			initialCurrent.SelectedBy().ID(), initialCurrent.SelectedBy().Display(), initialCurrent.SelectedAt().UnixNano(),
+			initialCurrent.SelectedBy.ID, initialCurrent.SelectedBy.Display, initialCurrent.SelectedAt.UnixNano(),
 		)
 		if err != nil {
 			return false, fmt.Errorf("insert initial current publication: %w", err)
@@ -347,7 +347,7 @@ func (c *Catalog) PersistCurrent(ctx context.Context, selection registry.Current
 		return err
 	}
 	defer done()
-	id := selection.Publication()
+	id := selection.Publication
 	_, err = c.db.ExecContext(ctx, `
 		INSERT INTO current_publications(
 			namespace, name, tree_digest,
@@ -359,7 +359,7 @@ func (c *Catalog) PersistCurrent(ctx context.Context, selection registry.Current
 			selected_actor_display = excluded.selected_actor_display,
 			selected_at_ns = excluded.selected_at_ns`,
 		id.Skill().Namespace().String(), id.Skill().Name().String(), digestBlob(id.Tree()),
-		selection.SelectedBy().ID(), selection.SelectedBy().Display(), selection.SelectedAt().UnixNano(),
+		selection.SelectedBy.ID, selection.SelectedBy.Display, selection.SelectedAt.UnixNano(),
 	)
 	if err != nil {
 		return fmt.Errorf("persist current publication: %w", err)

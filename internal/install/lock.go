@@ -8,19 +8,18 @@ import (
 	"strconv"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
 
 type Lock struct {
-	entries map[registry.SkillID]LockedSkill
+	entries map[agentskill.SkillID]LockedSkill
 }
 
 func NewLock(skills []LockedSkill) (Lock, error) {
-	lock := Lock{entries: make(map[registry.SkillID]LockedSkill, len(skills))}
-	names := make(map[string]registry.SkillID, len(skills))
+	lock := Lock{entries: make(map[agentskill.SkillID]LockedSkill, len(skills))}
+	names := make(map[string]agentskill.SkillID, len(skills))
 	for _, skill := range skills {
-		publication := skill.Publication()
+		publication := skill.Publication
 		identity := publication.Skill()
 		if identity.String() == "" {
 			return Lock{}, fmt.Errorf("lock contains an invalid skill")
@@ -44,22 +43,22 @@ func (l Lock) Skills() []LockedSkill {
 		skills = append(skills, skill)
 	}
 	sort.Slice(skills, func(i, j int) bool {
-		return skills[i].Publication().Skill().String() < skills[j].Publication().Skill().String()
+		return skills[i].Publication.Skill().String() < skills[j].Publication.Skill().String()
 	})
 	return skills
 }
 
-func (l Lock) Lookup(skill registry.SkillID) (LockedSkill, bool) {
+func (l Lock) Lookup(skill agentskill.SkillID) (LockedSkill, bool) {
 	locked, found := l.entries[skill]
 	return locked, found
 }
 
 func (l Lock) With(skill LockedSkill) (Lock, error) {
 	all := l.Skills()
-	identity := skill.Publication().Skill()
+	identity := skill.Publication.Skill()
 	replaced := false
 	for index := range all {
-		if all[index].Publication().Skill() == identity {
+		if all[index].Publication.Skill() == identity {
 			all[index] = skill
 			replaced = true
 			break
@@ -101,7 +100,7 @@ func DecodeLock(source io.Reader) (Lock, error) {
 	skills := make([]LockedSkill, 0, len(document.Skills))
 	previousSkill := ""
 	for index, entry := range document.Skills {
-		identity, err := registry.ParseSkillID(entry.Skill)
+		identity, err := agentskill.ParseSkillID(entry.Skill)
 		if err != nil {
 			return Lock{}, fmt.Errorf("decode project lock skill %d: %w", index+1, err)
 		}
@@ -114,15 +113,11 @@ func DecodeLock(source io.Reader) (Lock, error) {
 		if err != nil {
 			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
 		}
-		publication, err := registry.NewPublicationID(identity, digest)
+		publication, err := agentskill.NewPublicationID(identity, digest)
 		if err != nil {
 			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
 		}
-		locked, err := NewLockedSkill(publication)
-		if err != nil {
-			return Lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
-		}
-		skills = append(skills, locked)
+		skills = append(skills, LockedSkill{Publication: publication})
 	}
 	lock, err := NewLock(skills)
 	if err != nil {
@@ -140,7 +135,7 @@ func EncodeLock(destination io.Writer, lock Lock) error {
 		return fmt.Errorf("encode project lock: %w", err)
 	}
 	for _, locked := range lock.Skills() {
-		publication := locked.Publication()
+		publication := locked.Publication
 		if _, err := fmt.Fprintf(buffer, "\n[[skills]]\nskill = %s\ndigest = %s\n", strconv.Quote(publication.Skill().String()), strconv.Quote(publication.Tree().String())); err != nil {
 			return fmt.Errorf("encode project lock: %w", err)
 		}

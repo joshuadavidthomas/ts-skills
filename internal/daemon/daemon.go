@@ -592,11 +592,8 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 		}
 	}()
 
-	actor, err := registry.NewActor("dev", "dev@localhost")
-	if err != nil {
-		return runtime{}, fmt.Errorf("construct dev actor: %w", err)
-	}
-	handler, err := web.NewHandler(catalog, staticCuratorResolver{curator: registry.NewCurator(actor)}, web.Options{
+	actor := registry.Actor{ID: "dev", Display: "dev@localhost"}
+	handler, err := web.NewHandler(catalog, staticCuratorResolver{curator: registry.Curator{Actor: actor}}, web.Options{
 		StagingParent: filepath.Join(config.StateDir, "tmp"),
 		Limits:        safetree.PrototypeLimits(),
 		CSRFKey:       csrfKey,

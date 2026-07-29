@@ -11,7 +11,6 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 type fetchedMap struct {
@@ -28,7 +27,7 @@ func (f *fetchedMap) Close() error {
 }
 
 type scriptedRemote struct {
-	publication registry.PublicationID
+	publication agentskill.PublicationID
 	files       fstest.MapFS
 	fetch       func(context.Context)
 }
@@ -37,20 +36,20 @@ func (r *scriptedRemote) Fetch(ctx context.Context, _ Requirement) (FetchedSkill
 	if r.fetch != nil {
 		r.fetch(ctx)
 	}
-	return NewFetchedSkill(r.publication, &fetchedMap{MapFS: r.files})
+	return FetchedSkill{Publication: r.publication, Tree: &fetchedMap{MapFS: r.files}}, nil
 }
 
-func publicationFor(t *testing.T, body string) (registry.SkillID, registry.PublicationID, fstest.MapFS) {
+func publicationFor(t *testing.T, body string) (agentskill.SkillID, agentskill.PublicationID, fstest.MapFS) {
 	t.Helper()
 	name, _ := agentskill.ParseName("sample")
-	namespace, _ := registry.ParseNamespace("team")
-	skill, _ := registry.NewSkillID(namespace, name)
+	namespace, _ := agentskill.ParseNamespace("team")
+	skill, _ := agentskill.NewSkillID(namespace, name)
 	files := fstest.MapFS{"SKILL.md": {Data: []byte("---\nname: sample\ndescription: Test\n---\n" + body)}, "assets/data.txt": {Data: []byte(body)}}
 	digest, err := agentskill.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := registry.NewPublicationID(skill, digest)
+	publication, err := agentskill.NewPublicationID(skill, digest)
 	if err != nil {
 		t.Fatal(err)
 	}

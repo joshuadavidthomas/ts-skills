@@ -115,6 +115,18 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 	}
 }
 
+func TestValidateActorRejectsUntrustedText(t *testing.T) {
+	for _, actor := range []registry.Actor{
+		{ID: "id\x00", Display: "display"},
+		{ID: string([]byte{0xff}), Display: "display"},
+		{ID: strings.Repeat("a", 257), Display: "display"},
+	} {
+		if err := validateActor(actor); err == nil {
+			t.Fatalf("validateActor(%#v) succeeded", actor)
+		}
+	}
+}
+
 func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 	var addresses []string
 	client := localClientForWhoIs(t, &apitype.WhoIsResponse{
@@ -142,11 +154,11 @@ func TestActorResolverUsesTaggedNodeIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if curator.Actor().ID() != "n123CNTRL" {
-		t.Fatalf("actor ID = %q, want stable node ID", curator.Actor().ID())
+	if curator.Actor.ID != "n123CNTRL" {
+		t.Fatalf("actor ID = %q, want stable node ID", curator.Actor.ID)
 	}
-	if curator.Actor().Display() != "automation.example.ts.net [tag:ci, tag:publisher]" {
-		t.Fatalf("actor display = %q", curator.Actor().Display())
+	if curator.Actor.Display != "automation.example.ts.net [tag:ci, tag:publisher]" {
+		t.Fatalf("actor display = %q", curator.Actor.Display)
 	}
 	if len(addresses) != 1 || addresses[0] != request.RemoteAddr {
 		t.Fatalf("WhoIs addresses = %v, want %q", addresses, request.RemoteAddr)

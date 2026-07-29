@@ -22,13 +22,12 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/install"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-func clientSkill(t *testing.T) registry.SkillID {
+func clientSkill(t *testing.T) agentskill.SkillID {
 	t.Helper()
-	skill, err := registry.ParseSkillID("team/sample")
+	skill, err := agentskill.ParseSkillID("team/sample")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +165,7 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetch tree archive: %v", err)
 	}
-	if err := fetched.Tree().Close(); err != nil {
+	if err := fetched.Tree.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -203,7 +202,7 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 		code string
 		want error
 	}{
-		"not-found":       {protocol.CodeNotFound, registry.ErrNotFound},
+		"not-found":       {protocol.CodeNotFound, protocol.ErrNotFound},
 		"invalid-request": {protocol.CodeInvalidRequest, protocol.ErrInvalidRequest},
 		"too-large":       {protocol.CodeTooLarge, safetree.ErrLimitExceeded},
 		"internal":        {protocol.CodeInternal, protocol.ErrInternal},
@@ -597,13 +596,13 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if fetched.Publication().Skill() != skill || fetched.Publication().Tree() != digest {
-					t.Fatalf("fetched publication = %s@%s", fetched.Publication().Skill().String(), fetched.Publication().Tree().String())
+				if fetched.Publication.Skill() != skill || fetched.Publication.Tree() != digest {
+					t.Fatalf("fetched publication = %s@%s", fetched.Publication.Skill().String(), fetched.Publication.Tree().String())
 				}
-				if contents, err := fs.ReadFile(fetched.Tree(), "assets/data.txt"); err != nil || string(contents) != "asset" {
+				if contents, err := fs.ReadFile(fetched.Tree, "assets/data.txt"); err != nil || string(contents) != "asset" {
 					t.Fatalf("rootless fetched asset = %q, %v", contents, err)
 				}
-				if err := fetched.Tree().Close(); err != nil {
+				if err := fetched.Tree.Close(); err != nil {
 					t.Fatal(err)
 				}
 			})

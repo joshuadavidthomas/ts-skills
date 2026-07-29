@@ -17,7 +17,6 @@ import (
 	"strings"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -68,15 +67,12 @@ func (i *Installer) Install(ctx context.Context, project Project, requirement Re
 		return LockedSkill{}, err
 	}
 	defer func() { err = errors.Join(err, verified.close()) }()
-	locked, err = NewLockedSkill(verified.publication)
-	if err != nil {
-		return LockedSkill{}, err
-	}
+	locked = LockedSkill{Publication: verified.publication}
 	newLock, err := oldLock.With(locked)
 	if err != nil {
 		return LockedSkill{}, err
 	}
-	if old, found := oldLock.Lookup(requirement.Skill()); found && old.Publication() == verified.publication && before.exists && before.digest == verified.publication.Tree() {
+	if old, found := oldLock.Lookup(requirement.Skill()); found && old.Publication == verified.publication && before.exists && before.digest == verified.publication.Tree() {
 		return locked, nil
 	}
 	if err := writer.assertUnchanged(ctx, requirement.Skill(), oldBytes, hadLock, before); err != nil {
@@ -143,8 +139,8 @@ type restorePlan struct {
 	lock    Lock
 	bytes   []byte
 	hadLock bool
-	states  map[registry.SkillID]destinationState
-	missing []registry.PublicationID
+	states  map[agentskill.SkillID]destinationState
+	missing []agentskill.PublicationID
 }
 type fetchedRepair struct {
 	requirement Requirement
@@ -156,9 +152,9 @@ func makeRestorePlan(ctx context.Context, writer *projectWriter) (restorePlan, e
 	if err != nil {
 		return restorePlan{}, err
 	}
-	plan := restorePlan{lock: lock, bytes: contents, hadLock: hadLock, states: make(map[registry.SkillID]destinationState)}
+	plan := restorePlan{lock: lock, bytes: contents, hadLock: hadLock, states: make(map[agentskill.SkillID]destinationState)}
 	for _, locked := range lock.Skills() {
-		publication := locked.Publication()
+		publication := locked.Publication
 		state, stateErr := writer.destinationState(ctx, publication.Skill())
 		if stateErr != nil {
 			return restorePlan{}, stateErr
@@ -177,8 +173,8 @@ func (p restorePlan) matches(ctx context.Context, writer *projectWriter) error {
 		return ErrProjectChanged
 	}
 	for _, locked := range lock.Skills() {
-		state, stateErr := writer.destinationState(ctx, locked.Publication().Skill())
-		if stateErr != nil || !sameDestination(state, p.states[locked.Publication().Skill()]) {
+		state, stateErr := writer.destinationState(ctx, locked.Publication.Skill())
+		if stateErr != nil || !sameDestination(state, p.states[locked.Publication.Skill()]) {
 			return ErrProjectChanged
 		}
 	}
@@ -197,13 +193,13 @@ func readLockSnapshot(project Project) ([]byte, bool, error) {
 }
 
 func closeFetchedTree(fetched FetchedSkill) error {
-	if fetched.Tree() == nil {
+	if fetched.Tree == nil {
 		return nil
 	}
-	return fetched.Tree().Close()
+	return fetched.Tree.Close()
 }
 
-func (w *projectWriter) assertUnchanged(ctx context.Context, skill registry.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
+func (w *projectWriter) assertUnchanged(ctx context.Context, skill agentskill.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
 	_, currentBytes, currentHadLock, err := w.readLock()
 	if err != nil || currentHadLock != hadLock || !bytes.Equal(currentBytes, oldBytes) {
 		return ErrProjectChanged
@@ -216,17 +212,17 @@ func (w *projectWriter) assertUnchanged(ctx context.Context, skill registry.Skil
 }
 
 func (w *projectWriter) stageAndVerify(ctx context.Context, requirement Requirement, fetched FetchedSkill) (verified *verifiedTree, err error) {
-	if fetched.Tree() == nil {
+	if fetched.Tree == nil {
 		return nil, fmt.Errorf("%w: fetched tree is missing", ErrIdentityMismatch)
 	}
-	publication := fetched.Publication()
+	publication := fetched.Publication
 	if publication.Skill() != requirement.Skill() {
 		return nil, fmt.Errorf("%w: requested %s, received %s", ErrIdentityMismatch, requirement.Skill(), publication.Skill())
 	}
 	if digest, exact := requirement.ExactDigest(); exact && publication.Tree() != digest {
 		return nil, fmt.Errorf("%w: registry returned a different exact digest", ErrIdentityMismatch)
 	}
-	snapshot, err := stageFetched(ctx, w.project.StateDir(), fetched.Tree())
+	snapshot, err := stageFetched(ctx, w.project.StateDir(), fetched.Tree)
 	if err != nil {
 		return nil, fmt.Errorf("stage fetched tree: %w", err)
 	}

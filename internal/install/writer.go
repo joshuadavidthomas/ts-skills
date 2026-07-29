@@ -13,7 +13,6 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 const (
@@ -23,7 +22,7 @@ const (
 )
 
 type verifiedTree struct {
-	publication registry.PublicationID
+	publication agentskill.PublicationID
 	path        string
 	owned       bool
 	writer      *projectWriter
@@ -161,7 +160,7 @@ type destinationState struct {
 	digest agentskill.TreeDigest
 }
 
-func (w *projectWriter) destinationState(ctx context.Context, skill registry.SkillID) (destinationState, error) {
+func (w *projectWriter) destinationState(ctx context.Context, skill agentskill.SkillID) (destinationState, error) {
 	destination := w.project.destination(skill.Name().String())
 	exists, err := inspectDestination(destination)
 	if err != nil || !exists {

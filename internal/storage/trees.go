@@ -338,7 +338,7 @@ func (c *Catalog) treePaths(digest agentskill.TreeDigest) (string, string) {
 	return shard, filepath.Join(shard, hexDigest[2:])
 }
 
-func (c *Catalog) OpenCandidateTree(ctx context.Context, id registry.CandidateID) (registry.Tree, error) {
+func (c *Catalog) OpenCandidateTree(ctx context.Context, id agentskill.CandidateID) (registry.Tree, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -348,10 +348,10 @@ func (c *Catalog) OpenCandidateTree(ctx context.Context, id registry.CandidateID
 	if err != nil {
 		return nil, err
 	}
-	return c.openTree(ctx, candidate.Tree())
+	return c.openTree(ctx, candidate.Tree)
 }
 
-func (c *Catalog) OpenPublicationTree(ctx context.Context, id registry.PublicationID) (registry.Tree, error) {
+func (c *Catalog) OpenPublicationTree(ctx context.Context, id agentskill.PublicationID) (registry.Tree, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -361,7 +361,7 @@ func (c *Catalog) OpenPublicationTree(ctx context.Context, id registry.Publicati
 	if err != nil {
 		return nil, err
 	}
-	return c.openTree(ctx, publication.ID().Tree())
+	return c.openTree(ctx, publication.ID.Tree())
 }
 
 func (c *Catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (registry.Tree, error) {

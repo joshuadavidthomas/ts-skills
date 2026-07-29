@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"tailscale.com/client/local"
@@ -59,19 +61,16 @@ func (r *ActorResolver) Curator(request *http.Request) (registry.Curator, error)
 			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
 		}
 		display := strings.TrimSuffix(who.Node.Name, ".") + " [" + strings.Join(who.Node.Tags, ", ") + "]"
-		actor, err = registry.NewActor(string(who.Node.StableID), display)
-		if err != nil {
+		actor = registry.Actor{ID: string(who.Node.StableID), Display: display}
+		if err := validateActor(actor); err != nil {
 			return registry.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	} else {
 		if who.UserProfile == nil || who.UserProfile.ID.IsZero() || strings.TrimSpace(who.UserProfile.LoginName) == "" {
 			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
 		}
-		actor, err = registry.NewActor(
-			strconv.FormatInt(int64(who.UserProfile.ID), 10),
-			who.UserProfile.LoginName,
-		)
-		if err != nil {
+		actor = registry.Actor{ID: strconv.FormatInt(int64(who.UserProfile.ID), 10), Display: who.UserProfile.LoginName}
+		if err := validateActor(actor); err != nil {
 			return registry.Curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	}
@@ -82,10 +81,24 @@ func (r *ActorResolver) Curator(request *http.Request) (registry.Curator, error)
 	}
 	for _, rule := range rules {
 		if rule.Curate {
-			return registry.NewCurator(actor), nil
+			return registry.Curator{Actor: actor}, nil
 		}
 	}
 	return registry.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, registry.ErrCurationDenied)
+}
+
+func validateActor(actor registry.Actor) error {
+	for field, value := range map[string]string{"actor id": actor.ID, "actor display": actor.Display} {
+		if value == "" || !utf8.ValidString(value) || len(value) > 256 {
+			return fmt.Errorf("%s must be nonempty valid UTF-8 of at most 256 bytes", field)
+		}
+		for _, r := range value {
+			if unicode.IsControl(r) {
+				return fmt.Errorf("%s must not contain control characters", field)
+			}
+		}
+	}
+	return nil
 }
 
 type ServerConfig struct {

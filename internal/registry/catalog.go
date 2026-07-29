@@ -19,10 +19,10 @@ type Tree interface {
 }
 
 type CaptureRequest struct {
-	Namespace   Namespace
+	Namespace   agentskill.Namespace
 	Staged      *safetree.Snapshot
 	Root        string
-	Source      UploadSource
+	Source      string
 	SubmittedAt time.Time
 }
 
@@ -30,8 +30,8 @@ type CaptureRequest struct {
 // computes catalog transitions; stores only record the facts it supplies.
 type CatalogStore interface {
 	RecordCandidate(context.Context, Candidate, agentskill.Directory) error
-	Candidate(context.Context, CandidateID) (Candidate, error)
-	OpenCandidateTree(context.Context, CandidateID) (Tree, error)
+	Candidate(context.Context, agentskill.CandidateID) (Candidate, error)
+	OpenCandidateTree(context.Context, agentskill.CandidateID) (Tree, error)
 	// PersistPublication inserts publication when absent and, in the same
 	// transaction, records initialCurrent when the registry selected it. It
 	// reports whether publication was inserted; it never replaces an existing
@@ -40,9 +40,9 @@ type CatalogStore interface {
 	// PersistCurrent atomically replaces a skill's current selection.
 	PersistCurrent(context.Context, CurrentPublication) error
 	ListPublishedSkills(context.Context) ([]SkillSummary, error)
-	CurrentPublication(context.Context, SkillID) (Publication, error)
-	Publication(context.Context, PublicationID) (Publication, error)
-	OpenPublicationTree(context.Context, PublicationID) (Tree, error)
+	CurrentPublication(context.Context, agentskill.SkillID) (Publication, error)
+	Publication(context.Context, agentskill.PublicationID) (Publication, error)
+	OpenPublicationTree(context.Context, agentskill.PublicationID) (Tree, error)
 }
 
 type Catalog struct {
@@ -69,63 +69,51 @@ func NewCatalog(store CatalogStore, stagingParent string, limits safetree.Limits
 }
 
 func (c *Catalog) Capture(ctx context.Context, curator Curator, request CaptureRequest) (Candidate, error) {
-	if request.Namespace.canonical == "" || request.Staged == nil || request.Source.label == "" || request.SubmittedAt.IsZero() {
+	if request.Namespace.String() == "" || request.Staged == nil || request.Source == "" || request.SubmittedAt.IsZero() {
 		return Candidate{}, fmt.Errorf("capture requires namespace, staged tree, source, and submission time")
 	}
-	provenance, err := NewProvenance(request.Source, curator.Actor(), request.SubmittedAt)
-	if err != nil {
-		return Candidate{}, err
-	}
+	provenance := Provenance{Source: request.Source, SubmittedBy: curator.Actor, SubmittedAt: canonicalTime(request.SubmittedAt)}
 	inspection, err := agentskill.Inspect(ctx, request.Staged.FS(), request.Root)
 	if err != nil {
 		return Candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}
-	skill, err := NewSkillID(request.Namespace, inspection.Document().Name)
+	skill, err := agentskill.NewSkillID(request.Namespace, inspection.Document().Name)
 	if err != nil {
 		return Candidate{}, err
 	}
-	id, err := NewCandidateID()
+	id, err := agentskill.NewCandidateID()
 	if err != nil {
 		return Candidate{}, err
 	}
-	candidate, err := NewCandidate(id, skill, inspection.Digest(), provenance)
-	if err != nil {
-		return Candidate{}, err
-	}
+	candidate := Candidate{ID: id, Skill: skill, Tree: inspection.Digest(), Provenance: provenance}
 	if err := c.store.RecordCandidate(ctx, candidate, inspection.Directory()); err != nil {
 		return Candidate{}, fmt.Errorf("record candidate: %w", err)
 	}
 	return candidate, nil
 }
 
-func (c *Catalog) Candidate(ctx context.Context, id CandidateID) (Candidate, error) {
+func (c *Catalog) Candidate(ctx context.Context, id agentskill.CandidateID) (Candidate, error) {
 	return c.store.Candidate(ctx, id)
 }
-func (c *Catalog) OpenCandidateTree(ctx context.Context, id CandidateID) (Tree, error) {
+func (c *Catalog) OpenCandidateTree(ctx context.Context, id agentskill.CandidateID) (Tree, error) {
 	return c.store.OpenCandidateTree(ctx, id)
 }
-func (c *Catalog) Publish(ctx context.Context, id CandidateID, curator Curator, at time.Time) (Publication, error) {
+func (c *Catalog) Publish(ctx context.Context, id agentskill.CandidateID, curator Curator, at time.Time) (Publication, error) {
 	candidate, err := c.store.Candidate(ctx, id)
 	if err != nil {
 		return Publication{}, err
 	}
-	publicationID, err := NewPublicationID(candidate.Skill(), candidate.Tree())
+	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		return Publication{}, err
 	}
-	publication, err := NewPublication(publicationID, id, curator.Actor(), at)
-	if err != nil {
-		return Publication{}, err
-	}
+	publication := Publication{ID: publicationID, Candidate: id, PublishedBy: curator.Actor, PublishedAt: canonicalTime(at)}
 	var initialCurrent *CurrentPublication
-	if _, err := c.store.CurrentPublication(ctx, candidate.Skill()); err != nil {
+	if _, err := c.store.CurrentPublication(ctx, candidate.Skill); err != nil {
 		if !errors.Is(err, ErrNotFound) {
 			return Publication{}, err
 		}
-		selection, err := NewCurrentPublication(publicationID, curator.Actor(), at)
-		if err != nil {
-			return Publication{}, err
-		}
+		selection := CurrentPublication{Publication: publicationID, SelectedBy: curator.Actor, SelectedAt: canonicalTime(at)}
 		initialCurrent = &selection
 	}
 	inserted, err := c.store.PersistPublication(ctx, publication, initialCurrent)
@@ -137,11 +125,8 @@ func (c *Catalog) Publish(ctx context.Context, id CandidateID, curator Curator, 
 	}
 	return c.store.Publication(ctx, publicationID)
 }
-func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, curator Curator, at time.Time) error {
-	selection, err := NewCurrentPublication(id, curator.Actor(), at)
-	if err != nil {
-		return err
-	}
+func (c *Catalog) SetCurrent(ctx context.Context, id agentskill.PublicationID, curator Curator, at time.Time) error {
+	selection := CurrentPublication{Publication: id, SelectedBy: curator.Actor, SelectedAt: canonicalTime(at)}
 	if _, err := c.store.Publication(ctx, id); err != nil {
 		return err
 	}
@@ -150,12 +135,12 @@ func (c *Catalog) SetCurrent(ctx context.Context, id PublicationID, curator Cura
 func (c *Catalog) ListSkills(ctx context.Context) ([]SkillSummary, error) {
 	return c.store.ListPublishedSkills(ctx)
 }
-func (c *Catalog) ResolveCurrent(ctx context.Context, skill SkillID) (Publication, error) {
+func (c *Catalog) ResolveCurrent(ctx context.Context, skill agentskill.SkillID) (Publication, error) {
 	return c.store.CurrentPublication(ctx, skill)
 }
-func (c *Catalog) Publication(ctx context.Context, id PublicationID) (Publication, error) {
+func (c *Catalog) Publication(ctx context.Context, id agentskill.PublicationID) (Publication, error) {
 	return c.store.Publication(ctx, id)
 }
-func (c *Catalog) OpenPublicationTree(ctx context.Context, id PublicationID) (Tree, error) {
+func (c *Catalog) OpenPublicationTree(ctx context.Context, id agentskill.PublicationID) (Tree, error) {
 	return c.store.OpenPublicationTree(ctx, id)
 }

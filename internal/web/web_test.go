@@ -62,16 +62,13 @@ func newWebFixture(t *testing.T) *webFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor, err := registry.NewActor("user:42", "Curator <One>")
-	if err != nil {
-		t.Fatal(err)
-	}
+	actor := registry.Actor{ID: "user:42", Display: "Curator <One>"}
 	keyBytes := bytes.Repeat([]byte{0x5a}, 32)
 	key, err := NewCSRFKey(keyBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := &fixedCuratorResolver{curator: registry.NewCurator(actor)}
+	resolver := &fixedCuratorResolver{curator: registry.Curator{Actor: actor}}
 	handler, err := NewHandler(catalog, resolver, Options{
 		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
@@ -260,7 +257,7 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	fixture := newWebFixture(t)
 	instructions := "# Submitted once\n"
 	location := fixture.uploadDirectory(instructions)
-	id, err := registry.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
+	id, err := agentskill.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,8 +273,8 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if candidate.Tree() != expected {
-		t.Fatalf("candidate digest = %s, want submitted digest %s", candidate.Tree(), expected)
+	if candidate.Tree != expected {
+		t.Fatalf("candidate digest = %s, want submitted digest %s", candidate.Tree, expected)
 	}
 }
 
@@ -850,6 +847,14 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	}
 	if !captured.contains("catalog storage unavailable") {
 		t.Error("nil option logger did not fall through to slog.Default()")
+	}
+}
+
+func TestValidateUploadLabelRejectsUntrustedText(t *testing.T) {
+	for _, label := range []string{"", "source\x00", string([]byte{0xff}), strings.Repeat("a", 257)} {
+		if err := validateUploadLabel(label); err == nil {
+			t.Fatalf("validateUploadLabel(%q) succeeded", label)
+		}
 	}
 }
 

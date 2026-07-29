@@ -16,7 +16,6 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/config"
 	"github.com/joshuadavidthomas/ts-skills/internal/install"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
@@ -63,7 +62,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if flags.NArg() != 1 {
 		return fmt.Errorf("install requires one <namespace>/<name> argument")
 	}
-	skill, err := registry.ParseSkillID(flags.Arg(0))
+	skill, err := agentskill.ParseSkillID(flags.Arg(0))
 	if err != nil {
 		return fmt.Errorf("parse skill %q: %w", flags.Arg(0), err)
 	}
@@ -89,7 +88,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if err != nil {
 		return commandError("install", err)
 	}
-	publication := locked.Publication()
+	publication := locked.Publication
 	_, err = fmt.Fprintf(stdout, "Installed %s at %s.\n", publication.Skill().String(), publication.Tree().String())
 	return err
 }
@@ -198,7 +197,7 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
 	case errors.Is(err, install.ErrIdentityMismatch), errors.Is(err, install.ErrDigestMismatch):
 		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
-	case errors.Is(err, registry.ErrNotFound):
+	case errors.Is(err, protocol.ErrNotFound):
 		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
 	case errors.Is(err, safetree.ErrLimitExceeded):
 		message = fmt.Sprintf("cannot %s because the downloaded skill exceeds the configured safety limits", operation)

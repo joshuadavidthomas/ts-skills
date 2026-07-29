@@ -22,7 +22,7 @@ import (
 type catalogFixture struct {
 	directory  agentskill.Directory
 	digest     agentskill.TreeDigest
-	namespace  registry.Namespace
+	namespace  agentskill.Namespace
 	actor      registry.Actor
 	provenance registry.Provenance
 }
@@ -42,40 +42,29 @@ func newFixture(t *testing.T, instructions, asset string) catalogFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	namespace, err := registry.ParseNamespace("team")
+	namespace, err := agentskill.ParseNamespace("team")
 	if err != nil {
 		t.Fatal(err)
 	}
-	actor, err := registry.NewActor("user:1", "Test User")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := registry.NewUploadSource("sample")
-	if err != nil {
-		t.Fatal(err)
-	}
-	provenance, err := registry.NewProvenance(source, actor, time.Date(2026, 2, 3, 4, 5, 6, 7, time.UTC))
-	if err != nil {
-		t.Fatal(err)
+	actor := registry.Actor{ID: "user:1", Display: "Test User"}
+	provenance := registry.Provenance{
+		Source: "sample", SubmittedBy: actor,
+		SubmittedAt: time.Date(2026, 2, 3, 4, 5, 6, 7, time.UTC),
 	}
 	return catalogFixture{directory: directory, digest: digest, namespace: namespace, actor: actor, provenance: provenance}
 }
 
 func (f catalogFixture) candidate(t *testing.T) registry.Candidate {
 	t.Helper()
-	id, err := registry.NewCandidateID()
+	id, err := agentskill.NewCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	skill, err := registry.NewSkillID(f.namespace, f.directory.Document().Name)
+	skill, err := agentskill.NewSkillID(f.namespace, f.directory.Document().Name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := registry.NewCandidate(id, skill, f.digest, f.provenance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return candidate
+	return registry.Candidate{ID: id, Skill: skill, Tree: f.digest, Provenance: f.provenance}
 }
 
 func openCatalog(t *testing.T, state string) *Catalog {
@@ -105,14 +94,14 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if err := catalog.RecordCandidate(ctx, first, firstFixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := catalog.Candidate(ctx, first.ID())
+	stored, err := catalog.Candidate(ctx, first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stored != first {
 		t.Fatalf("stored candidate = %#v, want %#v", stored, first)
 	}
-	candidateTree, err := catalog.OpenCandidateTree(ctx, first.ID())
+	candidateTree, err := catalog.OpenCandidateTree(ctx, first.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,19 +116,13 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 		t.Fatalf("candidate asset = %q", asset)
 	}
 
-	publishedAt := time.Date(2026, 2, 4, 5, 6, 7, 8, time.FixedZone("offset", 3600))
-	firstID, err := registry.NewPublicationID(first.Skill(), first.Tree())
+	publishedAt := time.Unix(0, time.Date(2026, 2, 4, 5, 6, 7, 8, time.FixedZone("offset", 3600)).UnixNano()).UTC()
+	firstID, err := agentskill.NewPublicationID(first.Skill, first.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstPublished, err := registry.NewPublication(firstID, first.ID(), firstFixture.actor, publishedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstCurrent, err := registry.NewCurrentPublication(firstID, firstFixture.actor, publishedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	firstPublished := registry.Publication{ID: firstID, Candidate: first.ID, PublishedBy: firstFixture.actor, PublishedAt: publishedAt}
+	firstCurrent := registry.CurrentPublication{Publication: firstID, SelectedBy: firstFixture.actor, SelectedAt: publishedAt}
 	inserted, err := catalog.PersistPublication(ctx, firstPublished, &firstCurrent)
 	if err != nil || !inserted {
 		t.Fatalf("persist first publication = inserted %t, err %v", inserted, err)
@@ -147,7 +130,7 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if inserted, err := catalog.PersistPublication(ctx, firstPublished, &firstCurrent); err != nil || inserted {
 		t.Fatalf("persist repeated publication = inserted %t, err %v", inserted, err)
 	}
-	currentAfterFirst, err := catalog.CurrentPublication(ctx, first.Skill())
+	currentAfterFirst, err := catalog.CurrentPublication(ctx, first.Skill)
 	if err != nil || currentAfterFirst != firstPublished {
 		t.Fatalf("stored initial current = %#v, %v", currentAfterFirst, err)
 	}
@@ -156,30 +139,24 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if err := catalog.RecordCandidate(ctx, second, secondFixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	secondID, err := registry.NewPublicationID(second.Skill(), second.Tree())
+	secondID, err := agentskill.NewPublicationID(second.Skill, second.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondPublished, err := registry.NewPublication(secondID, second.ID(), firstFixture.actor, publishedAt.Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
+	secondPublished := registry.Publication{ID: secondID, Candidate: second.ID, PublishedBy: firstFixture.actor, PublishedAt: publishedAt.Add(time.Hour)}
 	if inserted, err := catalog.PersistPublication(ctx, secondPublished, nil); err != nil || !inserted {
 		t.Fatalf("persist second publication = inserted %t, err %v", inserted, err)
 	}
-	currentAfterSecond, err := catalog.CurrentPublication(ctx, first.Skill())
+	currentAfterSecond, err := catalog.CurrentPublication(ctx, first.Skill)
 	if err != nil || currentAfterSecond != firstPublished {
 		t.Fatalf("second publication changed current to %#v (%v)", currentAfterSecond, err)
 	}
 	selectedAt := publishedAt.Add(2 * time.Hour)
-	selected, err := registry.NewCurrentPublication(secondID, firstFixture.actor, selectedAt)
-	if err != nil {
-		t.Fatal(err)
-	}
+	selected := registry.CurrentPublication{Publication: secondID, SelectedBy: firstFixture.actor, SelectedAt: selectedAt}
 	if err := catalog.PersistCurrent(ctx, selected); err != nil {
 		t.Fatal(err)
 	}
-	selectedNow, err := catalog.CurrentPublication(ctx, first.Skill())
+	selectedNow, err := catalog.CurrentPublication(ctx, first.Skill)
 	if err != nil || selectedNow != secondPublished {
 		t.Fatalf("stored current selection = %#v (%v)", selectedNow, err)
 	}
@@ -188,15 +165,15 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	catalog = openCatalog(t, state)
 	defer closeCatalog(t, catalog)
 
-	stored, err = catalog.Candidate(ctx, first.ID())
+	stored, err = catalog.Candidate(ctx, first.ID)
 	if err != nil || stored != first {
 		t.Fatalf("candidate after restart = %#v, %v", stored, err)
 	}
-	exact, err := catalog.Publication(ctx, firstPublished.ID())
+	exact, err := catalog.Publication(ctx, firstPublished.ID)
 	if err != nil || exact != firstPublished {
 		t.Fatalf("publication after restart = %#v, %v", exact, err)
 	}
-	current, err := catalog.CurrentPublication(ctx, first.Skill())
+	current, err := catalog.CurrentPublication(ctx, first.Skill)
 	if err != nil || current != secondPublished {
 		t.Fatalf("current after restart = %#v, %v", current, err)
 	}
@@ -204,10 +181,10 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(summaries) != 1 || summaries[0].Skill() != first.Skill() || summaries[0].Current() != secondPublished.ID() {
+	if len(summaries) != 1 || summaries[0].Skill != first.Skill || summaries[0].Current != secondPublished.ID {
 		t.Fatalf("summaries after restart = %#v", summaries)
 	}
-	publicationTree, err := catalog.OpenPublicationTree(ctx, secondPublished.ID())
+	publicationTree, err := catalog.OpenPublicationTree(ctx, secondPublished.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,17 +212,17 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	if _, err := OpenCatalog(context.Background(), state); !errors.Is(err, registry.ErrConflict) {
 		t.Fatalf("second OpenCatalog error = %v, want conflict", err)
 	}
-	tree, err := catalog.OpenCandidateTree(context.Background(), candidate.ID())
+	tree, err := catalog.OpenCandidateTree(context.Background(), candidate.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := catalog.Close(); !errors.Is(err, ErrTreesOpen) {
 		t.Fatalf("Close with open tree = %v, want ErrTreesOpen", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err != nil {
+	if _, err := catalog.Candidate(context.Background(), candidate.ID); err != nil {
 		t.Fatalf("catalog operation after ErrTreesOpen: %v", err)
 	}
-	secondTree, err := catalog.OpenCandidateTree(context.Background(), candidate.ID())
+	secondTree, err := catalog.OpenCandidateTree(context.Background(), candidate.ID)
 	if err != nil {
 		t.Fatalf("open tree after ErrTreesOpen: %v", err)
 	}
@@ -289,7 +266,7 @@ func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	if err := catalog.Close(); !errors.Is(err, injectedDB) {
 		t.Fatalf("first Close error = %v, want database failure", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
+	if _, err := catalog.Candidate(context.Background(), candidate.ID); err == nil {
 		t.Fatal("catalog accepted an operation after database close started")
 	}
 	if competing, err := OpenCatalog(context.Background(), state); !errors.Is(err, registry.ErrConflict) {
@@ -330,7 +307,7 @@ func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	if err := catalog.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); err == nil {
+	if _, err := catalog.Candidate(context.Background(), candidate.ID); err == nil {
 		t.Fatal("catalog accepted an operation after full close")
 	}
 	if err := catalog.Close(); err != nil {
@@ -463,7 +440,7 @@ func TestOpenCatalogMigratesVersion1State(t *testing.T) {
 	}
 	fixture := newFixture(t, "# Migrated\n", "asset")
 	candidate := fixture.candidate(t)
-	provenance := candidate.Provenance()
+	provenance := candidate.Provenance
 	if _, err := db.Exec(migrations[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -472,14 +449,14 @@ func TestOpenCatalogMigratesVersion1State(t *testing.T) {
 			id, namespace, name, tree_digest, source_kind, source_label,
 			submitted_actor_id, submitted_actor_display, submitted_at_ns
 		) VALUES(?, ?, ?, ?, 2, ?, ?, ?, ?)`,
-		candidateIDBlob(candidate.ID()),
-		candidate.Skill().Namespace().String(),
-		candidate.Skill().Name().String(),
-		digestBlob(candidate.Tree()),
-		provenance.Source().Label(),
-		provenance.SubmittedBy().ID(),
-		provenance.SubmittedBy().Display(),
-		provenance.SubmittedAt().UnixNano(),
+		candidateIDBlob(candidate.ID),
+		candidate.Skill.Namespace().String(),
+		candidate.Skill.Name().String(),
+		digestBlob(candidate.Tree),
+		provenance.Source,
+		provenance.SubmittedBy.ID,
+		provenance.SubmittedBy.Display,
+		provenance.SubmittedAt.UnixNano(),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -500,12 +477,12 @@ func TestOpenCatalogMigratesVersion1State(t *testing.T) {
 	if version != schemaVersion {
 		t.Fatalf("schema version after migration = %d, want %d", version, schemaVersion)
 	}
-	migrated, err := catalog.Candidate(ctx, candidate.ID())
+	migrated, err := catalog.Candidate(ctx, candidate.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if migrated.Provenance().Source().Label() != provenance.Source().Label() {
-		t.Fatalf("migrated source label = %q", migrated.Provenance().Source().Label())
+	if migrated.Provenance.Source != provenance.Source {
+		t.Fatalf("migrated source label = %q", migrated.Provenance.Source)
 	}
 	var tableSQL string
 	if err := catalog.db.QueryRowContext(ctx, `SELECT sql FROM sqlite_master WHERE name = 'candidates'`).Scan(&tableSQL); err != nil {
@@ -560,32 +537,29 @@ func TestRecordCandidateRejectsDigestMismatchAndConflict(t *testing.T) {
 	if err := catalog.RecordCandidate(context.Background(), candidate, wrongFixture.directory); !errors.Is(err, registry.ErrTreeMismatch) {
 		t.Fatalf("mismatched tree error = %v", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Candidate(context.Background(), candidate.ID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("mismatched candidate lookup = %v", err)
 	}
 	otherName, err := agentskill.ParseName("other")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherSkill, err := registry.NewSkillID(fixture.namespace, otherName)
+	otherSkill, err := agentskill.NewSkillID(fixture.namespace, otherName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherID, err := registry.NewCandidateID()
+	otherID, err := agentskill.NewCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	mismatchedName, err := registry.NewCandidate(otherID, otherSkill, fixture.digest, fixture.provenance)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mismatchedName := registry.Candidate{ID: otherID, Skill: otherSkill, Tree: fixture.digest, Provenance: fixture.provenance}
 	if err := catalog.RecordCandidate(context.Background(), mismatchedName, fixture.directory); err == nil || !strings.Contains(err.Error(), "candidate names other but SKILL.md names sample") {
 		t.Fatalf("mismatched candidate name error = %v", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), mismatchedName.ID()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Candidate(context.Background(), mismatchedName.ID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("mismatched-name candidate lookup = %v", err)
 	}
-	_, final := catalog.treePaths(mismatchedName.Tree())
+	_, final := catalog.treePaths(mismatchedName.Tree)
 	if _, err := os.Stat(final); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("mismatched-name tree exists: %v", err)
 	}
@@ -605,18 +579,18 @@ func TestOpenTreeDetectsCorruptDigestDirectory(t *testing.T) {
 	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	_, final := catalog.treePaths(candidate.Tree())
+	_, final := catalog.treePaths(candidate.Tree)
 	if err := os.WriteFile(filepath.Join(final, "assets", "data.txt"), []byte("corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.OpenCandidateTree(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrTreeMismatch) {
+	if _, err := catalog.OpenCandidateTree(context.Background(), candidate.ID); !errors.Is(err, registry.ErrTreeMismatch) {
 		t.Fatalf("open corrupt tree error = %v", err)
 	}
 	closeCatalog(t, catalog)
 
 	catalog = openCatalog(t, state)
 	defer closeCatalog(t, catalog)
-	if _, err := catalog.OpenCandidateTree(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrTreeMismatch) {
+	if _, err := catalog.OpenCandidateTree(context.Background(), candidate.ID); !errors.Is(err, registry.ErrTreeMismatch) {
 		t.Fatalf("open corrupt tree after restart error = %v", err)
 	}
 }
@@ -656,13 +630,13 @@ func TestMaterializationFailuresNeverCreateCandidateMetadata(t *testing.T) {
 				t.Fatalf("RecordCandidate error = %v, want injected failure", err)
 			}
 			catalog.afterFilesystemStep = nil
-			if _, err := catalog.Candidate(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
+			if _, err := catalog.Candidate(context.Background(), candidate.ID); !errors.Is(err, registry.ErrNotFound) {
 				t.Fatalf("candidate visible after failed materialization: %v", err)
 			}
 			closeCatalog(t, catalog)
 
 			catalog = openCatalog(t, state)
-			if _, err := catalog.Candidate(context.Background(), candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
+			if _, err := catalog.Candidate(context.Background(), candidate.ID); !errors.Is(err, registry.ErrNotFound) {
 				t.Fatalf("candidate visible after failed materialization and restart: %v", err)
 			}
 			closeCatalog(t, catalog)
@@ -690,7 +664,7 @@ func TestSameShardMaterializationWaitsForItsOwnParentBarrier(t *testing.T) {
 
 	first := firstFixture.candidate(t)
 	second := secondFixture.candidate(t)
-	shard, _ := catalog.treePaths(first.Tree())
+	shard, _ := catalog.treePaths(first.Tree)
 	creatorAtShardSync := make(chan struct{})
 	releaseCreator := make(chan struct{})
 	injected := errors.New("injected shard-parent sync failure")
@@ -739,7 +713,7 @@ func TestSameShardMaterializationWaitsForItsOwnParentBarrier(t *testing.T) {
 		<-firstResult
 		t.Fatalf("second RecordCandidate error = %v, want injected parent-sync failure", err)
 	}
-	if _, err := catalog.Candidate(context.Background(), second.ID()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.Candidate(context.Background(), second.ID); !errors.Is(err, registry.ErrNotFound) {
 		close(releaseCreator)
 		<-firstResult
 		t.Fatalf("second candidate visible before its shard-parent barrier: %v", err)
@@ -749,7 +723,7 @@ func TestSameShardMaterializationWaitsForItsOwnParentBarrier(t *testing.T) {
 	if err := <-firstResult; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.Candidate(context.Background(), first.ID()); err != nil {
+	if _, err := catalog.Candidate(context.Background(), first.ID); err != nil {
 		t.Fatalf("first candidate missing after its shard-parent barrier: %v", err)
 	}
 }
@@ -800,25 +774,25 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Missing\n", "asset")
 	candidate := fixture.candidate(t)
-	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := catalog.Candidate(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.ID().String()) {
+	if _, err := catalog.Candidate(ctx, candidate.ID); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.ID.String()) {
 		t.Fatalf("Candidate error = %v", err)
 	}
-	if _, err := catalog.OpenCandidateTree(ctx, candidate.ID()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.OpenCandidateTree(ctx, candidate.ID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("OpenCandidateTree error = %v", err)
 	}
 	if _, err := catalog.Publication(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) ||
-		!strings.Contains(err.Error(), candidate.Skill().String()) || !strings.Contains(err.Error(), candidate.Tree().String()) {
+		!strings.Contains(err.Error(), candidate.Skill.String()) || !strings.Contains(err.Error(), candidate.Tree.String()) {
 		t.Fatalf("Publication error = %v", err)
 	}
 	if _, err := catalog.OpenPublicationTree(ctx, publicationID); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("OpenPublicationTree error = %v", err)
 	}
-	if _, err := catalog.CurrentPublication(ctx, candidate.Skill()); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill().String()) {
+	if _, err := catalog.CurrentPublication(ctx, candidate.Skill); !errors.Is(err, registry.ErrNotFound) || !strings.Contains(err.Error(), candidate.Skill.String()) {
 		t.Fatalf("CurrentPublication error = %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
@@ -833,18 +807,13 @@ func TestPersistPublicationReportsRollbackFailure(t *testing.T) {
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Missing\n", "asset")
 	candidate := fixture.candidate(t)
-	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	at := time.Date(2026, 2, 4, 5, 6, 7, 0, time.UTC)
+	publication := registry.Publication{ID: id, Candidate: candidate.ID, PublishedBy: fixture.actor, PublishedAt: at}
+	current := registry.CurrentPublication{Publication: id, SelectedBy: fixture.actor, SelectedAt: at}
 	injected := errors.New("injected rollback failure")
 	catalog.rollbackTx = func(tx *sql.Tx) error {
 		return errors.Join(tx.Rollback(), injected)
@@ -856,7 +825,7 @@ func TestPersistPublicationReportsRollbackFailure(t *testing.T) {
 }
 
 func TestCandidateIDBlobRoundTrip(t *testing.T) {
-	id, err := registry.NewCandidateID()
+	id, err := agentskill.NewCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -880,18 +849,13 @@ func TestPersistPublicationRollsBackWhenInitialCurrentFails(t *testing.T) {
 	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	current, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	at := time.Date(2026, 2, 4, 5, 6, 7, 0, time.UTC)
+	publication := registry.Publication{ID: id, Candidate: candidate.ID, PublishedBy: fixture.actor, PublishedAt: at}
+	current := registry.CurrentPublication{Publication: id, SelectedBy: fixture.actor, SelectedAt: at}
 	if _, err := catalog.db.Exec(`
 		CREATE TRIGGER fail_initial_current
 		BEFORE INSERT ON current_publications
@@ -906,7 +870,7 @@ func TestPersistPublicationRollsBackWhenInitialCurrentFails(t *testing.T) {
 	if _, err := catalog.Publication(context.Background(), id); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("publication survived failed initial current insert: %v", err)
 	}
-	if _, err := catalog.CurrentPublication(context.Background(), candidate.Skill()); !errors.Is(err, registry.ErrNotFound) {
+	if _, err := catalog.CurrentPublication(context.Background(), candidate.Skill); !errors.Is(err, registry.ErrNotFound) {
 		t.Fatalf("current publication survived failed initial current insert: %v", err)
 	}
 }
@@ -919,18 +883,13 @@ func TestPersistPublicationIgnoresPostCommitRollbackError(t *testing.T) {
 	if err := catalog.RecordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	id, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := registry.NewPublication(id, candidate.ID(), fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection, err := registry.NewCurrentPublication(id, fixture.actor, time.Now())
-	if err != nil {
-		t.Fatal(err)
-	}
+	at := time.Date(2026, 2, 4, 5, 6, 7, 0, time.UTC)
+	publication := registry.Publication{ID: id, Candidate: candidate.ID, PublishedBy: fixture.actor, PublishedAt: at}
+	selection := registry.CurrentPublication{Publication: id, SelectedBy: fixture.actor, SelectedAt: at}
 	// After a successful commit Rollback reports sql.ErrTxDone; that must not
 	// be joined into the result. This seam returns it even on the post-commit
 	// rollback to prove the deferred rollback filters it.
@@ -939,8 +898,16 @@ func TestPersistPublicationIgnoresPostCommitRollbackError(t *testing.T) {
 	if err != nil || !inserted {
 		t.Fatalf("PersistPublication = inserted %t, err %v; want post-commit sql.ErrTxDone ignored", inserted, err)
 	}
-	current, err := catalog.CurrentPublication(context.Background(), candidate.Skill())
+	current, err := catalog.CurrentPublication(context.Background(), candidate.Skill)
 	if err != nil || current != publication {
 		t.Fatalf("publication not current after ignored rollback error (%#v, %v)", current, err)
+	}
+}
+
+func TestRecordTextValidationRejectsUntrustedText(t *testing.T) {
+	for _, value := range []string{"", "source\x00", string([]byte{0xff}), strings.Repeat("a", 257)} {
+		if err := validateRecordText("source", value); err == nil {
+			t.Fatalf("validateRecordText(%q) succeeded", value)
+		}
 	}
 }

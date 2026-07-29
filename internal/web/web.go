@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gorilla/csrf"
@@ -40,14 +41,14 @@ var staticFS embed.FS
 
 type Catalog interface {
 	Capture(context.Context, registry.Curator, registry.CaptureRequest) (registry.Candidate, error)
-	Candidate(context.Context, registry.CandidateID) (registry.Candidate, error)
-	OpenCandidateTree(context.Context, registry.CandidateID) (registry.Tree, error)
-	Publish(context.Context, registry.CandidateID, registry.Curator, time.Time) (registry.Publication, error)
-	SetCurrent(context.Context, registry.PublicationID, registry.Curator, time.Time) error
+	Candidate(context.Context, agentskill.CandidateID) (registry.Candidate, error)
+	OpenCandidateTree(context.Context, agentskill.CandidateID) (registry.Tree, error)
+	Publish(context.Context, agentskill.CandidateID, registry.Curator, time.Time) (registry.Publication, error)
+	SetCurrent(context.Context, agentskill.PublicationID, registry.Curator, time.Time) error
 	ListSkills(context.Context) ([]registry.SkillSummary, error)
-	ResolveCurrent(context.Context, registry.SkillID) (registry.Publication, error)
-	Publication(context.Context, registry.PublicationID) (registry.Publication, error)
-	OpenPublicationTree(context.Context, registry.PublicationID) (registry.Tree, error)
+	ResolveCurrent(context.Context, agentskill.SkillID) (registry.Publication, error)
+	Publication(context.Context, agentskill.PublicationID) (registry.Publication, error)
+	OpenPublicationTree(context.Context, agentskill.PublicationID) (registry.Tree, error)
 }
 
 type CuratorResolver interface {
@@ -187,8 +188,8 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]skillView, 0, len(summaries))
 	for _, summary := range summaries {
-		digest := summary.Current().Tree().String()
-		views = append(views, skillView{Skill: summary.Skill().String(), Digest: digest, ShortDigest: shortDigest(digest)})
+		digest := summary.Current.Tree().String()
+		views = append(views, skillView{Skill: summary.Skill.String(), Digest: digest, ShortDigest: shortDigest(digest)})
 	}
 	h.render(w, http.StatusOK, "catalog", catalogPageData{Skills: views})
 }
@@ -216,7 +217,7 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	tree, err := h.catalog.OpenPublicationTree(r.Context(), publication.ID())
+	tree, err := h.catalog.OpenPublicationTree(r.Context(), publication.ID)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -235,12 +236,12 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	resolved := publication.ID()
+	resolved := publication.ID
 	data := skillPageData{
 		Skill:       resolved.Skill().String(),
 		Digest:      resolved.Tree().String(),
-		PublishedBy: publication.PublishedBy().Display(),
-		PublishedAt: publication.PublishedAt().Format(time.RFC3339),
+		PublishedBy: publication.PublishedBy.Display,
+		PublishedAt: publication.PublishedAt.Format(time.RFC3339),
 		DownloadPath: "/api/" + protocol.Version + "/skills/" + resolved.Skill().Namespace().String() +
 			"/" + resolved.Skill().Name().String() + "/publications/" + resolved.Tree().String() + "/tree.zip",
 		FileTree: selected.Tree, SelectedPath: selected.Path,
@@ -271,7 +272,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	namespace, err := registry.ParseNamespace(namespaceText)
+	namespace, err := agentskill.ParseNamespace(namespaceText)
 	if err != nil {
 		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
 		return
@@ -292,8 +293,8 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	source, err := registry.NewUploadSource(submission.Label())
-	if err != nil {
+	source := submission.Label()
+	if err := validateUploadLabel(source); err != nil {
 		h.renderError(w, http.StatusBadRequest, "Upload label is invalid", "Rename the selected directory and try again.")
 		return
 	}
@@ -309,7 +310,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	submissionClosed = true
-	http.Redirect(w, r, "/candidates/"+candidate.ID().String(), http.StatusSeeOther)
+	http.Redirect(w, r, "/candidates/"+candidate.ID.String(), http.StatusSeeOther)
 }
 
 type reviewPageData struct {
@@ -328,7 +329,7 @@ type reviewPageData struct {
 }
 
 func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
-	id, err := registry.ParseCandidateID(r.PathValue("candidate"))
+	id, err := agentskill.ParseCandidateID(r.PathValue("candidate"))
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
@@ -357,7 +358,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	publicationID, err := registry.NewPublicationID(candidate.Skill(), candidate.Tree())
+	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -368,19 +369,31 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, publicationErr)
 		return
 	}
-	provenance := candidate.Provenance()
+	provenance := candidate.Provenance
 	data := reviewPageData{
-		CandidateID: id.String(), Skill: candidate.Skill().String(), Digest: candidate.Tree().String(),
-		Source: provenance.Source().Label(), SubmittedBy: provenance.SubmittedBy().Display(),
-		SubmittedAt: provenance.SubmittedAt().Format(time.RFC3339), FileTree: selected.Tree,
+		CandidateID: id.String(), Skill: candidate.Skill.String(), Digest: candidate.Tree.String(),
+		Source: provenance.Source, SubmittedBy: provenance.SubmittedBy.Display,
+		SubmittedAt: provenance.SubmittedAt.Format(time.RFC3339), FileTree: selected.Tree,
 		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary,
 		Published: published, CSRFField: csrf.TemplateField(r),
 	}
 	h.render(w, http.StatusOK, "review", data)
 }
 
+func validateUploadLabel(label string) error {
+	if label == "" || !utf8.ValidString(label) || len(label) > 256 {
+		return fmt.Errorf("upload source label must be nonempty valid UTF-8 of at most 256 bytes")
+	}
+	for _, r := range label {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("upload source label must not contain control characters")
+		}
+	}
+	return nil
+}
+
 func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
-	id, err := registry.ParseCandidateID(r.PathValue("candidate"))
+	id, err := agentskill.ParseCandidateID(r.PathValue("candidate"))
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
@@ -409,7 +422,7 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, malformedRequest("current publication form must contain one skill and digest", nil))
 		return
 	}
-	skill, err := registry.ParseSkillID(r.Form.Get("skill"))
+	skill, err := agentskill.ParseSkillID(r.Form.Get("skill"))
 	if err != nil {
 		h.handleError(w, r, malformedRequest("current skill identity is invalid", err))
 		return
@@ -419,7 +432,7 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, malformedRequest("current tree digest is invalid", err))
 		return
 	}
-	publication, err := registry.NewPublicationID(skill, digest)
+	publication, err := agentskill.NewPublicationID(skill, digest)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -456,9 +469,9 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response := protocol.CurrentResponse{
-		Namespace: publication.ID().Skill().Namespace().String(),
-		Name:      publication.ID().Skill().Name().String(),
-		Digest:    publication.ID().Tree().String(),
+		Namespace: publication.ID.Skill().Namespace().String(),
+		Name:      publication.ID.Skill().Name().String(),
+		Digest:    publication.ID.Tree().String(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -476,7 +489,7 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
-	requestedPublication, err := registry.NewPublicationID(skill, digest)
+	requestedPublication, err := agentskill.NewPublicationID(skill, digest)
 	if err != nil {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
@@ -486,7 +499,7 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, err)
 		return
 	}
-	resolvedPublication := publication.ID()
+	resolvedPublication := publication.ID
 	tree, err := h.catalog.OpenPublicationTree(r.Context(), resolvedPublication)
 	if err != nil {
 		h.writeAPIDomainError(w, err)
@@ -519,16 +532,16 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, resolvedSkill.Name().String()+".zip", time.Time{}, archive)
 }
 
-func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
-	namespace, err := registry.ParseNamespace(namespaceText)
+func parseAPISkill(namespaceText, nameText string) (agentskill.SkillID, error) {
+	namespace, err := agentskill.ParseNamespace(namespaceText)
 	if err != nil || namespace.String() != namespaceText {
-		return registry.SkillID{}, fmt.Errorf("invalid namespace")
+		return agentskill.SkillID{}, fmt.Errorf("invalid namespace")
 	}
 	name, err := agentskill.ParseName(nameText)
 	if err != nil || name.String() != nameText {
-		return registry.SkillID{}, fmt.Errorf("invalid Agent Skill name")
+		return agentskill.SkillID{}, fmt.Errorf("invalid Agent Skill name")
 	}
-	return registry.NewSkillID(namespace, name)
+	return agentskill.NewSkillID(namespace, name)
 }
 
 func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err error) {

@@ -18,7 +18,6 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/client"
 	"github.com/joshuadavidthomas/ts-skills/internal/install"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
-	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -34,12 +33,12 @@ func publishWebCandidate(t *testing.T, fixture *webFixture, instructions string)
 	return digest
 }
 
-func networkInstaller(t *testing.T, fixture *webFixture) (*install.Installer, registry.SkillID) {
+func networkInstaller(t *testing.T, fixture *webFixture) (*install.Installer, agentskill.SkillID) {
 	t.Helper()
 	return networkInstallerWithClient(t, fixture, &http.Client{Timeout: 10 * time.Second})
 }
 
-func networkInstallerWithClient(t *testing.T, fixture *webFixture, httpClient *http.Client) (*install.Installer, registry.SkillID) {
+func networkInstallerWithClient(t *testing.T, fixture *webFixture, httpClient *http.Client) (*install.Installer, agentskill.SkillID) {
 	t.Helper()
 	origin, err := client.ParseOrigin(fixture.server.URL)
 	if err != nil {
@@ -53,7 +52,7 @@ func networkInstallerWithClient(t *testing.T, fixture *webFixture, httpClient *h
 	if err != nil {
 		t.Fatal(err)
 	}
-	skill, err := registry.ParseSkillID("team/sample")
+	skill, err := agentskill.ParseSkillID("team/sample")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +125,8 @@ func TestReadOnlyAPICurrentAndExactDownloadsSurviveStorageRestart(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Publication().Tree().String() != secondDigestText {
-		t.Fatalf("current install digest = %s", locked.Publication().Tree().String())
+	if locked.Publication.Tree().String() != secondDigestText {
+		t.Fatalf("current install digest = %s", locked.Publication.Tree().String())
 	}
 	currentSkill, err := os.ReadFile(filepath.Join(currentProject.SkillsDir(), "sample", "SKILL.md"))
 	if err != nil || !bytes.Contains(currentSkill, []byte("Second network publication.")) {
@@ -147,8 +146,8 @@ func TestReadOnlyAPICurrentAndExactDownloadsSurviveStorageRestart(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Publication().Tree() != firstDigest {
-		t.Fatalf("exact install digest = %s", locked.Publication().Tree().String())
+	if locked.Publication.Tree() != firstDigest {
+		t.Fatalf("exact install digest = %s", locked.Publication.Tree().String())
 	}
 	exactSkill, err := os.ReadFile(filepath.Join(exactProject.SkillsDir(), "sample", "SKILL.md"))
 	if err != nil || !bytes.Contains(exactSkill, []byte("First network publication.")) {
@@ -174,8 +173,8 @@ func TestRestoreUsesLockedPublicationAfterCurrentChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if locked.Publication().Tree().String() != firstDigestText {
-		t.Fatalf("initial install digest = %s, want %s", locked.Publication().Tree().String(), firstDigestText)
+	if locked.Publication.Tree().String() != firstDigestText {
+		t.Fatalf("initial install digest = %s, want %s", locked.Publication.Tree().String(), firstDigestText)
 	}
 	destination := filepath.Join(project.SkillsDir(), "sample")
 	firstTree := readTreeBytes(t, destination)
