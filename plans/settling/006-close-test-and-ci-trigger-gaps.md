@@ -20,6 +20,11 @@
 - **Risk**: LOW
 - **Depends on**: none (run last so new tests assert the landed behavior of 001–005)
 - **Planned at**: working copy `7b926628` (parent `f33fe93e`), 2026-07-29
+- **Authorized deviation**: `maxArchiveBytes` is fixed at
+  `agentskill.TreeArchiveMaxBytes`, not derived from `safetree.Limits` as
+  this plan originally stated. A zero-defaulted, package-private
+  `handlerOptions.maxArchiveBytes` test seam permits a small real-stack
+  `codeTooLarge` test without changing production behavior.
 
 ## Why this matters
 
@@ -66,9 +71,9 @@ exactly where regressions hurt users most:
 - `internal/server/handlers.go:600-609` — `writeAPIDomainError`:
   `errNotFound → codeNotFound`, `safetree.ErrLimitExceeded →
   codeTooLarge`, default → log + `codeInternal`. The archive size limit
-  that trips `ErrLimitExceeded` comes from `h.maxArchiveBytes`, derived
-  in `newHandler` from `options.Limits` — so a test fixture with tiny
-  custom `safetree.Limits` can trip it with a small tree.
+  comes from the fixed `agentskill.TreeArchiveMaxBytes`; the authorized
+  zero-defaulted package-private test seam permits a small real-stack
+  fixture to exercise the limit mapping.
 - `.github/workflows/test.yml:4-16` (and the same shape in `lint.yml`,
   `security.yml`): `paths:` lists `"**/*.go"`, the workflow file,
   `go.mod`, `go.sum` — for both `push` and `pull_request`.
@@ -84,9 +89,10 @@ exactly where regressions hurt users most:
 
 ## Scope
 
-**In scope** (tests and workflows only — no production code):
+**In scope**:
 - `cmd/ts-skills/cli_test.go`
 - `internal/server/handlers_test.go`
+- `internal/server/handlers.go` — package-private archive-limit test seam only
 - `.github/workflows/test.yml`, `.github/workflows/lint.yml`, `.github/workflows/security.yml`
 
 **Out of scope**:
@@ -124,8 +130,8 @@ never-published case — that the current selection is unchanged
 Two handler-level tests through `newWebFixture`'s real stack:
 `GET /api/v1/skills/<ns>/<name>/current` for a skill with no current
 publication → HTTP status and JSON `code` for not-found;
-`GET .../publications/<digest>/tree.zip` against a fixture built with
-small custom `safetree.Limits` such that the real archive exceeds
+`GET .../publications/<digest>/tree.zip` against a fixture with a small
+test-only archive cap such that the real archive exceeds
 `maxArchiveBytes` → the too-large code. Assert both the status and the
 `code` field the CLI switches on.
 

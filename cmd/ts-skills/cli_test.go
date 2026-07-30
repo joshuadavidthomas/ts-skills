@@ -165,8 +165,17 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 		err  error
 		want string
 	}{
-		"invalid request": {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
-		"internal error":  {errInternal, "cannot install because the registry could not complete the request"},
+		"busy":              {errBusy, "cannot install while another ts-skills process is changing this project; wait and try again"},
+		"local changes":     {errLocalChanges, "cannot install because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again"},
+		"project changed":   {errProjectChanged, "cannot install because this project changed while the registry was being read; try again"},
+		"identity mismatch": {errIdentityMismatch, "cannot install because the registry response did not match the requested skill"},
+		"digest mismatch":   {errDigestMismatch, "cannot install because the registry response did not match the requested skill"},
+		"not found":         {errNotFound, "cannot install because the requested skill publication was not found"},
+		"tree limit":        {safetree.ErrLimitExceeded, "cannot install because the downloaded skill exceeds the configured safety limits"},
+		"protocol":          {errProtocol, "cannot install because the registry returned an invalid response"},
+		"invalid request":   {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
+		"internal error":    {errInternal, "cannot install because the registry could not complete the request"},
+		"other":             {errors.New("other"), "install failed"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {

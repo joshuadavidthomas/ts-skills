@@ -6,12 +6,16 @@ on:
     paths:
       - "**/*.go"
       - .github/workflows/test.yml
+      - internal/server/templates/**
+      - internal/server/static/**
       - go.mod
       - go.sum
   pull_request:
     paths:
       - "**/*.go"
       - .github/workflows/test.yml
+      - internal/server/templates/**
+      - internal/server/static/**
       - go.mod
       - go.sum
 

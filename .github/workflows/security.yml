@@ -6,6 +6,8 @@ on:
     paths:
       - "**/*.go"
       - .github/workflows/security.yml
+      - internal/server/templates/**
+      - internal/server/static/**
       - go.mod
       - go.sum
       - mise.toml
@@ -13,6 +15,8 @@ on:
     paths:
       - "**/*.go"
       - .github/workflows/security.yml
+      - internal/server/templates/**
+      - internal/server/static/**
       - go.mod
       - go.sum
       - mise.toml

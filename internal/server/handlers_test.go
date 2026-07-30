@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -51,6 +52,7 @@ type webFixture struct {
 	bodyCap       int64
 	treeWork      chan struct{}
 	treeWorkLimit int
+	archiveLimit  int64
 }
 
 func mustUploadBodyCap(t *testing.T, limits safetree.Limits) int64 {
@@ -71,10 +73,18 @@ func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
 }
 
 func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.Logger) *webFixture {
-	return newWebFixtureWithTreeWork(t, limits, logger, 0)
+	return newWebFixtureWithTreeWorkAndArchiveLimit(t, limits, logger, 0, 0)
 }
 
 func newWebFixtureWithTreeWork(t *testing.T, limits safetree.Limits, logger *slog.Logger, treeWork int) *webFixture {
+	return newWebFixtureWithTreeWorkAndArchiveLimit(t, limits, logger, treeWork, 0)
+}
+
+func newWebFixtureWithArchiveLimit(t *testing.T, archiveLimit int64) *webFixture {
+	return newWebFixtureWithTreeWorkAndArchiveLimit(t, safetree.PrototypeLimits(), nil, 0, archiveLimit)
+}
+
+func newWebFixtureWithTreeWorkAndArchiveLimit(t *testing.T, limits safetree.Limits, logger *slog.Logger, treeWork int, archiveLimit int64) *webFixture {
 	t.Helper()
 	state := t.TempDir()
 	records, err := openCatalog(context.Background(), state)
@@ -99,7 +109,7 @@ func newWebFixtureWithTreeWork(t *testing.T, limits safetree.Limits, logger *slo
 		work = make(chan struct{}, treeWork)
 	}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work,
+		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work, maxArchiveBytes: archiveLimit,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +137,7 @@ func newWebFixtureWithTreeWork(t *testing.T, limits safetree.Limits, logger *slo
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap, treeWork: work, treeWorkLimit: treeWork,
+		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap, treeWork: work, treeWorkLimit: treeWork, archiveLimit: archiveLimit,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -154,7 +164,7 @@ func (f *webFixture) restart() {
 		work = make(chan struct{}, f.treeWorkLimit)
 	}
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work,
+		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work, maxArchiveBytes: f.archiveLimit,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -425,6 +435,91 @@ func TestCurationRoutesEscapeReviewPublishAndChangeCurrent(t *testing.T) {
 	currentCatalog := fixture.get("/")
 	if !strings.Contains(currentCatalog, secondDigest) || strings.Contains(currentCatalog, firstDigest) {
 		t.Fatalf("catalog did not change current: %s", currentCatalog)
+	}
+}
+
+func TestSetCurrentValidatesRequestAndLeavesCurrentUnchanged(t *testing.T) {
+	fixture := newWebFixture(t)
+	candidatePath := fixture.uploadDirectory("Current selection validation.\n")
+	digest := digestPattern.FindString(fixture.get(candidatePath))
+	response := postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+
+	missingDigest := "sha256:" + strings.Repeat("0", 64)
+	for name, values := range map[string]url.Values{
+		"missing skill":      {"digest": {digest}},
+		"missing digest":     {"skill": {"team/sample"}},
+		"duplicate skill":    {"skill": {"team/sample", "team/other"}, "digest": {digest}},
+		"invalid skill":      {"skill": {"not a skill"}, "digest": {digest}},
+		"invalid digest":     {"skill": {"team/sample"}, "digest": {"not-a-digest"}},
+		"unpublished digest": {"skill": {"team/sample"}, "digest": {missingDigest}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := postForm(t, fixture, "/current", values)
+			_ = response.Body.Close()
+			want := http.StatusBadRequest
+			if name == "unpublished digest" {
+				want = http.StatusNotFound
+			}
+			if response.StatusCode != want {
+				t.Fatalf("set current status = %d, want %d", response.StatusCode, want)
+			}
+		})
+	}
+
+	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/current", nil), false)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("current publication status = %d, want 200: %s", response.StatusCode, body)
+	}
+	var current currentResponse
+	if err := json.NewDecoder(response.Body).Decode(&current); err != nil {
+		t.Fatal(err)
+	}
+	if current.Digest != digest {
+		t.Fatalf("current digest = %q, want %q", current.Digest, digest)
+	}
+}
+
+func TestAPIReportsNotFoundAndTooLargeDomainErrors(t *testing.T) {
+	t.Run("not found", func(t *testing.T) {
+		fixture := newWebFixture(t)
+		response := fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/missing/current", nil), false)
+		assertAPIError(t, response, http.StatusNotFound, codeNotFound)
+	})
+
+	t.Run("too large", func(t *testing.T) {
+		fixture := newWebFixtureWithArchiveLimit(t, 1)
+		candidatePath := fixture.uploadDirectory("Archive limit.\n")
+		digest := digestPattern.FindString(fixture.get(candidatePath))
+		response := postForm(t, fixture, candidatePath+"/publish", nil)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusSeeOther {
+			t.Fatalf("publish status = %d", response.StatusCode)
+		}
+
+		response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
+		assertAPIError(t, response, http.StatusRequestEntityTooLarge, codeTooLarge)
+	})
+}
+
+func assertAPIError(t *testing.T, response *http.Response, wantStatus int, wantCode string) {
+	t.Helper()
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != wantStatus {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("API status = %d, want %d: %s", response.StatusCode, wantStatus, body)
+	}
+	var body errorResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != wantCode {
+		t.Fatalf("API error code = %q, want %q", body.Code, wantCode)
 	}
 }
 

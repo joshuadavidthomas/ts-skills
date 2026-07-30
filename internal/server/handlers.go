@@ -65,6 +65,9 @@ type handlerOptions struct {
 	// treeWork is a package-private test seam. Production allocates the
 	// bounded work channel from MaxTreeWork.
 	treeWork chan struct{}
+	// maxArchiveBytes is a package-private test seam. Zero selects the
+	// production archive bound.
+	maxArchiveBytes int64
 }
 
 type handler struct {
@@ -102,7 +105,10 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	if options.MaxTreeWork == 0 {
 		options.MaxTreeWork = defaultTreeWorkLimit
 	}
-	maxArchiveBytes := agentskill.TreeArchiveMaxBytes
+	maxArchiveBytes := options.maxArchiveBytes
+	if maxArchiveBytes == 0 {
+		maxArchiveBytes = agentskill.TreeArchiveMaxBytes
+	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}

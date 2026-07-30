@@ -29,7 +29,7 @@ are never reused or renumbered.)
 | [004](004-installer-concurrency-and-convergence.md) | Concurrent installs succeed; trash recovery converges | M | — | DONE |
 | [003](003-bound-read-route-cost.md) | Bound read-route cost: verify once, cap concurrency, cap previews | M | 001 | DONE — concurrent first opens may both verify |
 | [005](005-close-small-hardening-gaps.md) | Review-page gating, dev state guard, headers, client message hygiene | M | — (after 003) | DONE |
-| [006](006-close-test-and-ci-trigger-gaps.md) | Cover untested error surfaces; widen CI path triggers | S | — (run last) | TODO |
+| [006](006-close-test-and-ci-trigger-gaps.md) | Cover untested error surfaces; widen CI path triggers | S | — (run last) | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) |
 SUPERSEDED (one-line pointer to what replaced it)
@@ -50,6 +50,12 @@ SUPERSEDED (one-line pointer to what replaced it)
 Newest first. A few lines per entry — date, what happened, link,
 deviations, next executable plan.
 
+- **2026-07-29**: Completed 006 — covered every CLI error mapping,
+  `setCurrent` validation and API not-found/too-large responses, and
+  made the three gating workflows run for embedded templates and static
+  assets. The archive limit is fixed rather than limits-derived, so the
+  real-route test uses a zero-defaulted package-private test seam. No
+  remaining settling plan.
 - **2026-07-29**: Completed 004 — removed the install-only stale lock
   snapshot check, made pending-trash recovery converge or report retained
   data, and routed the last replacement failure through rollback. Next:
