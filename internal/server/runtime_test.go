@@ -155,7 +155,7 @@ func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 		t.Fatal("HTTP connection was not closed after the shutdown timeout")
 	}
 
-	// The stuck handler must not hold the daemon open: run returns once the
+	// The stuck handler must not hold the server open: run returns once the
 	// drain bound expires, reporting both the forced HTTP shutdown and the
 	// bounded drain.
 	select {
@@ -167,7 +167,7 @@ func TestServeBoundsDrainWhenHandlerIgnoresShutdown(t *testing.T) {
 			t.Fatalf("run error = %v, want the drain bound reported", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemon hung on a handler that ignores shutdown")
+		t.Fatal("server hung on a handler that ignores shutdown")
 	}
 	if elapsed := time.Since(shutdownStarted); elapsed > timeout+75*time.Millisecond {
 		t.Fatalf("shutdown took %s, want one %s bound", elapsed, timeout)
@@ -282,7 +282,7 @@ func TestServeDrainsHandlerObservingRequestContext(t *testing.T) {
 			t.Fatalf("run error = %v, want no drain error for a context-observing handler", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not drain a context-observing handler")
+		t.Fatal("server did not drain a context-observing handler")
 	}
 	select {
 	case <-handlerReturned:
@@ -385,7 +385,7 @@ func TestServeRejectsDispatchPausedBeforeAdmissionDuringShutdown(t *testing.T) {
 			t.Fatalf("run error = %v, want HTTP shutdown deadline", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemon cleanup waited for a dispatch that was never admitted")
+		t.Fatal("server cleanup waited for a dispatch that was never admitted")
 	}
 	select {
 	case <-runtimeClosed:
@@ -548,7 +548,7 @@ func TestServeGracefullyStopsHTTPBeforeRuntimeCleanup(t *testing.T) {
 			t.Fatalf("run returned an error during cancellation: %v", err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("daemon did not finish shutdown")
+		t.Fatal("server did not finish shutdown")
 	}
 	if err := <-responseResult; err != nil {
 		t.Fatalf("HTTP request failed: %v", err)

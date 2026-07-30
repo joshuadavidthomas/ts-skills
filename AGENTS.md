@@ -32,7 +32,7 @@ Run these after implementing changes:
 - `internal/protocol/` defines the private HTTP contract shared by the client and daemon
 - `internal/registry/` owns ts-skills namespaces, publication identity, tree hashing, and verification
 - `internal/tree/` validates, durably stages, encodes, and decodes bounded portable publication trees
-- `internal/server/` composes the daemon runtime and tsnet node
+- `internal/server/` composes the server runtime and tsnet node
 - `internal/server/catalog/` owns candidate identity, publication lifecycle, SQLite storage, and durable catalog trees
 - `internal/server/api/` serves the private machine-readable registry protocol
 - `internal/server/web/` owns browser upload, curation routes, templates, and static assets

@@ -1,4 +1,4 @@
-// Package catalog owns the daemon's persistent publication catalog, candidate
+// Package catalog owns the server's persistent publication catalog, candidate
 // workflow, and immutable tree storage.
 package catalog
 
