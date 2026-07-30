@@ -17,6 +17,7 @@ import (
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 type catalogFixture struct {
@@ -673,14 +674,9 @@ func TestSyncTreeStopsWhenContextIsCanceled(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := syncTree(ctx, root, func(step string) error {
-		if step == "sync tree file" {
-			cancel()
-		}
-		return nil
-	}); !errors.Is(err, context.Canceled) {
-		t.Fatalf("syncTree error = %v, want context cancellation", err)
+	cancel()
+	if err := tree.Sync(ctx, root); !errors.Is(err, context.Canceled) {
+		t.Fatalf("tree.Sync error = %v, want context cancellation", err)
 	}
 }
 
@@ -696,7 +692,7 @@ func TestMaterializationFailuresNeverCreateCandidateMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeCatalog(t, probe)
-	if len(steps) < 8 {
+	if len(steps) < 5 {
 		t.Fatalf("materialization exposed only %d failure steps: %v", len(steps), steps)
 	}
 

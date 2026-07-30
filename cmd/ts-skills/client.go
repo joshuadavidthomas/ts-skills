@@ -17,7 +17,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -25,6 +25,14 @@ import (
 const (
 	maxJSONResponseBytes int64 = 64 << 10
 	maxErrorMessageBytes       = 200
+)
+
+var (
+	errProtocol       = protocol.ErrInvalid
+	errNotFound       = errors.New("registry value not found")
+	errInvalidRequest = errors.New("invalid registry request")
+	errInternal       = errors.New("registry internal error")
+	errUnavailable    = errors.New("registry temporarily unavailable")
 )
 
 // origin is a validated registry base: HTTPS, or loopback HTTP; host only —
@@ -126,10 +134,7 @@ func (r *remote) fetch(ctx context.Context, requirement requirement) (fetchedSki
 }
 
 func (r *remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (registry.PublicationID, error) {
-	endpoint := r.endpoint(
-		"api", apiVersion, "skills", skill.Namespace().String(), skill.Name().String(), "current",
-	)
-	response, err := r.get(ctx, endpoint, "application/json")
+	response, err := r.get(ctx, r.baseURL.String()+protocol.CurrentPath(skill), protocol.JSONMediaType)
 	if err != nil {
 		return registry.PublicationID{}, fmt.Errorf("resolve current publication: %w", err)
 	}
@@ -137,46 +142,29 @@ func (r *remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (re
 	if response.StatusCode != http.StatusOK {
 		return registry.PublicationID{}, r.responseError(response)
 	}
-	if err := requireContentType(response.Header.Get("Content-Type"), "application/json", true); err != nil {
+	if err := requireContentType(response.Header.Get("Content-Type"), protocol.JSONMediaType, true); err != nil {
 		return registry.PublicationID{}, err
 	}
 	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
 	if err != nil {
 		return registry.PublicationID{}, fmt.Errorf("%w: read current response: %v", errProtocol, err)
 	}
-	var wire currentResponse
+	var wire protocol.CurrentResponse
 	if err := decodeStrictJSON(body, &wire); err != nil {
 		return registry.PublicationID{}, fmt.Errorf("%w: decode current response: %v", errProtocol, err)
 	}
-	namespace, err := registry.ParseNamespace(wire.Namespace)
-	if err != nil || namespace.String() != wire.Namespace {
-		return registry.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical namespace", errProtocol)
-	}
-	name, err := agentskill.ParseName(wire.Name)
-	if err != nil || name.String() != wire.Name {
-		return registry.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical Agent Skill name", errProtocol)
-	}
-	responseSkill, err := registry.NewSkillID(namespace, name)
+	publication, err := protocol.ParseCurrentResponse(wire)
 	if err != nil {
-		return registry.PublicationID{}, fmt.Errorf("%w: current response identity: %v", errProtocol, err)
+		return registry.PublicationID{}, err
 	}
-	if responseSkill != skill {
+	if publication.Skill() != skill {
 		return registry.PublicationID{}, fmt.Errorf("%w: current response names another skill", errIdentityMismatch)
 	}
-	digest, err := registry.ParseTreeDigest(wire.Digest)
-	if err != nil || digest.String() != wire.Digest {
-		return registry.PublicationID{}, fmt.Errorf("%w: current response has an invalid digest", errProtocol)
-	}
-	return registry.NewPublicationID(responseSkill, digest)
+	return publication, nil
 }
 
 func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID) (_ fetchedSkill, err error) {
-	requestedSkill := expected.Skill()
-	endpoint := r.endpoint(
-		"api", apiVersion, "skills", requestedSkill.Namespace().String(), requestedSkill.Name().String(),
-		"publications", expected.Tree().String(), "tree.zip",
-	)
-	response, err := r.get(ctx, endpoint, "application/zip")
+	response, err := r.get(ctx, r.baseURL.String()+protocol.TreePath(expected), protocol.ZIPMediaType)
 	if err != nil {
 		return fetchedSkill{}, fmt.Errorf("download publication tree: %w", err)
 	}
@@ -184,10 +172,10 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 	if response.StatusCode != http.StatusOK {
 		return fetchedSkill{}, r.responseError(response)
 	}
-	if err := requireContentType(response.Header.Get("Content-Type"), "application/zip", false); err != nil {
+	if err := requireContentType(response.Header.Get("Content-Type"), protocol.ZIPMediaType, false); err != nil {
 		return fetchedSkill{}, err
 	}
-	publication, err := parseTreePublication(response.Header)
+	publication, err := protocol.ParsePublicationHeaders(response.Header)
 	if err != nil {
 		return fetchedSkill{}, err
 	}
@@ -243,51 +231,6 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 	return fetchedSkill{publication: publication, tree: &fetchedTree{snapshot: snapshot}}, nil
 }
 
-func parseTreePublication(header http.Header) (registry.PublicationID, error) {
-	namespaceText, err := requiredTreeHeader(header, headerPublicationNamespace)
-	if err != nil {
-		return registry.PublicationID{}, err
-	}
-	nameText, err := requiredTreeHeader(header, headerPublicationName)
-	if err != nil {
-		return registry.PublicationID{}, err
-	}
-	digestText, err := requiredTreeHeader(header, headerPublicationDigest)
-	if err != nil {
-		return registry.PublicationID{}, err
-	}
-
-	namespace, err := registry.ParseNamespace(namespaceText)
-	if err != nil || namespace.String() != namespaceText {
-		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", errProtocol)
-	}
-	name, err := agentskill.ParseName(nameText)
-	if err != nil || name.String() != nameText {
-		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", errProtocol)
-	}
-	skill, err := registry.NewSkillID(namespace, name)
-	if err != nil {
-		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
-	}
-	digest, err := registry.ParseTreeDigest(digestText)
-	if err != nil || digest.String() != digestText {
-		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", errProtocol)
-	}
-	publication, err := registry.NewPublicationID(skill, digest)
-	if err != nil {
-		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
-	}
-	return publication, nil
-}
-
-func requiredTreeHeader(header http.Header, name string) (string, error) {
-	values := header.Values(name)
-	if len(values) != 1 || values[0] == "" {
-		return "", fmt.Errorf("%w: tree response requires exactly one %s header", errProtocol, name)
-	}
-	return values[0], nil
-}
-
 func (r *remote) get(ctx context.Context, endpoint, accept string) (*http.Response, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -302,30 +245,32 @@ func (r *remote) get(ctx context.Context, endpoint, accept string) (*http.Respon
 }
 
 func (r *remote) responseError(response *http.Response) error {
-	if err := requireContentType(response.Header.Get("Content-Type"), "application/json", true); err != nil {
+	if err := requireContentType(response.Header.Get("Content-Type"), protocol.JSONMediaType, true); err != nil {
 		return err
 	}
 	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
 	if err != nil {
 		return fmt.Errorf("%w: read error response: %v", errProtocol, err)
 	}
-	var wire errorResponse
+	var wire protocol.ErrorResponse
 	if err := decodeStrictJSON(body, &wire); err != nil {
 		return fmt.Errorf("%w: decode error response: %v", errProtocol, err)
 	}
-	expected, known := statusForCode(wire.Code)
+	expected, known := protocol.StatusForCode(wire.Code)
 	if !known || expected != response.StatusCode || wire.Message == "" {
 		return fmt.Errorf("%w: unknown error code or status", errProtocol)
 	}
 	switch wire.Code {
-	case codeNotFound:
+	case protocol.CodeNotFound:
 		return fmt.Errorf("%w: requested publication does not exist", errNotFound)
-	case codeInvalidRequest:
+	case protocol.CodeInvalidRequest:
 		return fmt.Errorf("%w: %s", errInvalidRequest, safeErrorMessage(wire.Message, "registry rejected the request"))
-	case codeTooLarge:
+	case protocol.CodeTooLarge:
 		return fmt.Errorf("%w: registry could not return the tree within its limit", tree.ErrLimitExceeded)
-	case codeInternal:
+	case protocol.CodeInternal:
 		return fmt.Errorf("%w: %s", errInternal, safeErrorMessage(wire.Message, "registry encountered an internal error"))
+	case protocol.CodeUnavailable:
+		return fmt.Errorf("%w: %s", errUnavailable, safeErrorMessage(wire.Message, "registry is temporarily unavailable"))
 	default:
 		return fmt.Errorf("%w: unknown registry error", errProtocol)
 	}
@@ -341,14 +286,6 @@ func safeErrorMessage(message, fallback string) string {
 		}
 	}
 	return message
-}
-
-func (r *remote) endpoint(parts ...string) string {
-	escaped := make([]string, len(parts))
-	for index, part := range parts {
-		escaped[index] = url.PathEscape(part)
-	}
-	return r.baseURL.String() + "/" + strings.Join(escaped, "/")
 }
 
 func requireContentType(header, expected string, allowUTF8Charset bool) error {

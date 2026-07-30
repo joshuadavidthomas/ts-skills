@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
@@ -22,9 +23,9 @@ func testInstaller(t *testing.T, body string) (*installer, project, requirement,
 	t.Helper()
 	digest, archive := clientTree(t, body)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
+		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
@@ -126,10 +127,10 @@ func TestInstallConvergesWhenAnotherInstallUpdatesTheLockDuringFetch(t *testing.
 	var mutationErr error
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/" + apiVersion + "/skills/team/sample/current":
+		case "/api/" + protocol.Version + "/skills/team/sample/current":
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
-		case "/api/" + apiVersion + "/skills/team/sample/publications/" + digest.String() + "/tree.zip":
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+		case "/api/" + protocol.Version + "/skills/team/sample/publications/" + digest.String() + "/tree.zip":
 			err := os.MkdirAll(filepath.Dir(project.lockPath()), 0o755)
 			if err == nil {
 				err = writeSyncedFile(project.lockPath(), concurrentBytes, 0o600)

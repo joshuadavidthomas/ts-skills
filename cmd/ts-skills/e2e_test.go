@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/server"
 )
@@ -143,8 +144,8 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 	if installed.String() != digest {
 		t.Fatalf("installed digest = %s, want %s", installed, digest)
 	}
-	var current currentResponse
-	response, err := client.Get(base + "/api/" + apiVersion + "/skills/team/sample/current")
+	var current protocol.CurrentResponse
+	response, err := client.Get(base + "/api/" + protocol.Version + "/skills/team/sample/current")
 	if err != nil {
 		t.Fatal(err)
 	}

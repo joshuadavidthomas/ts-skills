@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 )
 
 func syncDirectory(path string) error {
@@ -42,25 +40,4 @@ func writeSyncedFile(path string, contents []byte, mode fs.FileMode) error {
 		return fmt.Errorf("write file: %w", err)
 	}
 	return nil
-}
-
-func syncTree(ctx context.Context, root string) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return syncDirectory(path)
-		}
-		file, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		return errors.Join(syncErr, closeErr)
-	})
 }

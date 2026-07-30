@@ -392,7 +392,7 @@ func (d Directory) FS() fs.FS
 
 ### Registry and installation model
 
-`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/registry` builds on it with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/tree` validates, stages, encodes, and decodes bounded portable publication trees; ZIP is its private v1 transport representation. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
+`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/protocol` owns the private HTTP contract shared by the client and daemon: route shapes, media types, headers, wire bodies, canonical wire identity conversion, and error-code status mapping. `internal/registry` builds on Agent Skills with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/tree` validates, durably stages, encodes, and decodes bounded portable publication trees; ZIP is its private v1 transport representation. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and HTTP policy together. `cmd/ts-skills` keeps requirements, locked selections, HTTP transport policy, and installation together.
 
 The CLI validates every downloaded tree against its requested publication before replacing the managed destination and writing the lock. No project-defined remote or catalog interfaces remain.
 
@@ -405,8 +405,9 @@ The CLI validates every downloaded tree against its requested publication before
 │   └── ts-skillsd/   # thin daemon entry point
 ├── internal/
 │   ├── agentskill/   # portable Agent Skills format parsing and validation
+│   ├── protocol/     # private client/daemon HTTP contract
 │   ├── registry/     # ts-skills identity, hashing, and publication verification
-│   ├── tree/         # portable tree validation, staging, and transport
+│   ├── tree/         # portable tree validation, durable staging, and transport
 │   ├── server/       # daemon, catalog, candidate IDs, storage, HTTP, and UI
 │   └── version/      # release build version
 ├── docs/

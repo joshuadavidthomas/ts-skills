@@ -4,16 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func ensureStateDirectory(stateDir string) error {
@@ -85,46 +84,33 @@ func createDirectory(name string, mode fs.FileMode) (bool, error) {
 }
 
 func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
-	staging, err := os.MkdirTemp(c.tmpDir, ".tree-")
+	staged, err := tree.Stage(ctx, c.tmpDir, ".tree-", source)
 	if err != nil {
-		return fmt.Errorf("create tree staging directory: %w", err)
+		return err
 	}
+	staging := ""
 	defer func() {
+		err = errors.Join(err, staged.Close())
 		if staging != "" {
 			err = errors.Join(err, os.RemoveAll(staging))
 		}
 	}()
-	if err := c.step("create staging directory"); err != nil {
-		return err
-	}
-	if err := copyTree(ctx, source, staging, c.step); err != nil {
-		return err
-	}
-	if err := c.step("copy staged tree"); err != nil {
+	if err := c.step("stage durable tree"); err != nil {
 		return err
 	}
 
-	actual, err := registry.SumTree(ctx, os.DirFS(staging), ".")
+	inspection, err := registry.Inspect(ctx, staged.FS(), ".")
 	if err != nil {
-		return fmt.Errorf("hash staged tree: %w", err)
+		return fmt.Errorf("inspect staged Agent Skill: %w", err)
 	}
+	actual := inspection.Digest()
 	if actual != expected {
 		return fmt.Errorf("%w: candidate says %s, copied tree hashes to %s", errTreeMismatch, expected, actual)
 	}
-	directory, err := agentskill.Load(os.DirFS(staging), ".")
-	if err != nil {
-		return fmt.Errorf("load copied Agent Skill: %w", err)
-	}
-	if actualName := directory.Document().Name; actualName != expectedName {
+	if actualName := inspection.Document().Name; actualName != expectedName {
 		return fmt.Errorf("candidate names %s but SKILL.md names %s", expectedName, actualName)
 	}
 	if err := c.step("verify staged tree digest"); err != nil {
-		return err
-	}
-	if err := syncTree(ctx, staging, c.step); err != nil {
-		return fmt.Errorf("sync staged tree: %w", err)
-	}
-	if err := c.step("sync staged tree"); err != nil {
 		return err
 	}
 
@@ -157,7 +143,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 		if err := c.step("verify existing digest tree"); err != nil {
 			return err
 		}
-		if err := syncTree(ctx, final, c.step); err != nil {
+		if err := tree.Sync(ctx, final); err != nil {
 			return fmt.Errorf("sync existing digest tree: %w", err)
 		}
 		if err := c.syncDirectory(shard); err != nil {
@@ -172,6 +158,10 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 		return fmt.Errorf("inspect digest tree: %w", statErr)
 	}
 
+	staging, err = staged.TakePath()
+	if err != nil {
+		return fmt.Errorf("take staged tree path: %w", err)
+	}
 	if err := os.Rename(staging, final); err != nil {
 		return fmt.Errorf("install immutable digest tree: %w", err)
 	}
@@ -189,67 +179,6 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 	return nil
 }
 
-func copyTree(ctx context.Context, source fs.FS, destination string, step func(string) error) error {
-	if source == nil {
-		return fmt.Errorf("tree source must be provided")
-	}
-	return fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." {
-			if !entry.IsDir() {
-				return fmt.Errorf("tree source root is not a directory")
-			}
-			return nil
-		}
-		target := filepath.Join(destination, filepath.FromSlash(name))
-		info, err := entry.Info()
-		if err != nil {
-			return fmt.Errorf("inspect tree entry %q: %w", name, err)
-		}
-		if info.IsDir() {
-			if err := os.Mkdir(target, 0o755); err != nil {
-				return fmt.Errorf("create staged tree directory %q: %w", name, err)
-			}
-			return step("create staged tree directory")
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("tree entry %q is not a regular file", name)
-		}
-		input, err := source.Open(name)
-		if err != nil {
-			return fmt.Errorf("open tree entry %q: %w", name, err)
-		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			return fmt.Errorf("create staged tree file %q: %w", name, errors.Join(err, input.Close()))
-		}
-		_, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
-		closeOutputErr := output.Close()
-		closeInputErr := input.Close()
-		if err := errors.Join(copyErr, closeOutputErr, closeInputErr); err != nil {
-			return fmt.Errorf("copy tree entry %q: %w", name, err)
-		}
-		return step("copy staged tree file")
-	})
-}
-
-type contextReader struct {
-	ctx    context.Context
-	source io.Reader
-}
-
-func (r *contextReader) Read(buffer []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.source.Read(buffer)
-}
-
 func verifyTree(ctx context.Context, directory string, expected registry.TreeDigest) error {
 	actual, err := registry.SumTree(ctx, os.DirFS(directory), ".")
 	if err != nil {
@@ -257,65 +186,6 @@ func verifyTree(ctx context.Context, directory string, expected registry.TreeDig
 	}
 	if actual != expected {
 		return fmt.Errorf("%w: digest path says %s, tree hashes to %s", errTreeMismatch, expected, actual)
-	}
-	return nil
-}
-
-func syncTree(ctx context.Context, root string, step func(string) error) error {
-	var directories []string
-	err := filepath.WalkDir(root, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.Type()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("refuse to sync symbolic link %q", name)
-		}
-		if entry.IsDir() {
-			directories = append(directories, name)
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("refuse to sync non-regular file %q", name)
-		}
-		file, err := os.Open(name)
-		if err != nil {
-			return err
-		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		if err := errors.Join(syncErr, closeErr); err != nil {
-			return err
-		}
-		return step("sync tree file")
-	})
-	if err != nil {
-		return err
-	}
-	sort.Slice(directories, func(i, j int) bool {
-		leftDepth := strings.Count(filepath.Clean(directories[i]), string(filepath.Separator))
-		rightDepth := strings.Count(filepath.Clean(directories[j]), string(filepath.Separator))
-		if leftDepth == rightDepth {
-			return directories[i] > directories[j]
-		}
-		return leftDepth > rightDepth
-	})
-	for _, directory := range directories {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := syncDirectory(directory); err != nil {
-			return err
-		}
-		if err := step("sync tree directory"); err != nil {
-			return err
-		}
 	}
 	return nil
 }

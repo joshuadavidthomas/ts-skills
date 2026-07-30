@@ -28,8 +28,9 @@ Run these after implementing changes:
 - `cmd/ts-skills/` is the client CLI entry point
 - `cmd/ts-skillsd/` is the tsnet registry daemon entry point
 - `internal/agentskill/` parses and validates the open Agent Skills format
+- `internal/protocol/` defines the private HTTP contract shared by the client and daemon
 - `internal/registry/` owns ts-skills namespaces, publication identity, tree hashing, and verification
-- `internal/tree/` validates, stages, encodes, and decodes bounded portable publication trees
+- `internal/tree/` validates, durably stages, encodes, and decodes bounded portable publication trees
 - `internal/server/` owns the daemon, tsnet node, catalog, candidate identity, SQLite storage, browser upload, HTTP API, and server-rendered UI
 - `internal/version/` carries the build version injected into release binaries
 - `cmd/ts-skills/` owns the CLI, configuration, registry HTTP client, and installer

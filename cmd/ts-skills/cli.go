@@ -202,6 +202,8 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s because the registry rejected the request as invalid", operation)
 	case errors.Is(err, errInternal):
 		message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
+	case errors.Is(err, errUnavailable):
+		message = fmt.Sprintf("cannot %s because the registry is temporarily busy; try again", operation)
 	default:
 		message = fmt.Sprintf("%s failed", operation)
 	}

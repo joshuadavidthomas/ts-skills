@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/csrf"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -141,9 +142,8 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	mux.HandleFunc("GET /candidates/{candidate}", h.reviewCandidate)
 	mux.HandleFunc("POST /candidates/{candidate}/publish", h.publishCandidate)
 	mux.HandleFunc("POST /current", h.setCurrent)
-	apiPattern := "GET /api/" + apiVersion + "/skills/{namespace}/{name}"
-	mux.HandleFunc(apiPattern+"/current", h.currentPublication)
-	mux.HandleFunc(apiPattern+"/publications/{digest}/tree.zip", h.publicationTree)
+	mux.HandleFunc(protocol.CurrentPattern, h.currentPublication)
+	mux.HandleFunc(protocol.TreePattern, h.publicationTree)
 
 	csrfFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusForbidden, "Request could not be verified", "Reload the page and try again.")
@@ -180,9 +180,7 @@ func skillPagePath(skill registry.SkillID) string {
 }
 
 func publicationTreePath(publication registry.PublicationID) string {
-	skill := publication.Skill()
-	return "/api/" + apiVersion + "/skills/" + url.PathEscape(skill.Namespace().String()) +
-		"/" + url.PathEscape(skill.Name().String()) + "/publications/" + publication.Tree().String() + "/tree.zip"
+	return protocol.TreePath(publication)
 }
 
 func shortDigest(digest string) string {
@@ -479,7 +477,7 @@ func (h *handler) resolveCurator(w http.ResponseWriter, r *http.Request) (curato
 func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 	skill, err := parseAPISkill(r.PathValue("namespace"), r.PathValue("name"))
 	if err != nil {
-		h.writeAPIError(w, codeInvalidRequest)
+		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
 	publication, err := h.catalog.currentPublication(r.Context(), skill)
@@ -487,12 +485,8 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, r, err)
 		return
 	}
-	response := currentResponse{
-		Namespace: publication.ID.Skill().Namespace().String(),
-		Name:      publication.ID.Skill().Name().String(),
-		Digest:    publication.ID.Tree().String(),
-	}
-	w.Header().Set("Content-Type", "application/json")
+	response := protocol.NewCurrentResponse(publication.ID)
+	w.Header().Set("Content-Type", protocol.JSONMediaType)
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -500,17 +494,17 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	skill, err := parseAPISkill(r.PathValue("namespace"), r.PathValue("name"))
 	if err != nil {
-		h.writeAPIError(w, codeInvalidRequest)
+		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
 	digest, err := registry.ParseTreeDigest(r.PathValue("digest"))
 	if err != nil || digest.String() != r.PathValue("digest") {
-		h.writeAPIError(w, codeInvalidRequest)
+		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
 	requestedPublication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
-		h.writeAPIError(w, codeInvalidRequest)
+		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
 	}
 	publication, err := h.catalog.publication(r.Context(), requestedPublication)
@@ -552,25 +546,15 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resolvedSkill := resolvedPublication.Skill()
-	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Type", protocol.ZIPMediaType)
 	w.Header().Set("Content-Disposition", `attachment; filename="`+resolvedSkill.Name().String()+`.zip"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set(headerPublicationNamespace, resolvedSkill.Namespace().String())
-	w.Header().Set(headerPublicationName, resolvedSkill.Name().String())
-	w.Header().Set(headerPublicationDigest, resolvedPublication.Tree().String())
+	protocol.SetPublicationHeaders(w.Header(), resolvedPublication)
 	http.ServeContent(w, r, resolvedSkill.Name().String()+".zip", time.Time{}, archive)
 }
 
 func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
-	namespace, err := registry.ParseNamespace(namespaceText)
-	if err != nil || namespace.String() != namespaceText {
-		return registry.SkillID{}, fmt.Errorf("invalid namespace")
-	}
-	name, err := agentskill.ParseName(nameText)
-	if err != nil || name.String() != nameText {
-		return registry.SkillID{}, fmt.Errorf("invalid Agent Skill name")
-	}
-	return registry.NewSkillID(namespace, name)
+	return protocol.ParseSkill(namespaceText, nameText)
 }
 
 func (h *handler) rootlessZIP(ctx context.Context, source fs.FS) (_ *os.File, err error) {
@@ -608,30 +592,30 @@ func (h *handler) rootlessZIP(ctx context.Context, source fs.FS) (_ *os.File, er
 func (h *handler) writeAPIDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, errNotFound):
-		h.writeAPIError(w, codeNotFound)
+		h.writeAPIError(w, protocol.CodeNotFound)
 	case errors.Is(err, tree.ErrLimitExceeded):
-		h.writeAPIError(w, codeTooLarge)
+		h.writeAPIError(w, protocol.CodeTooLarge)
 	default:
 		h.options.Logger.Error("API request failed", "method", r.Method, "path", r.URL.Path, "error", err)
-		h.writeAPIError(w, codeInternal)
+		h.writeAPIError(w, protocol.CodeInternal)
 	}
 }
 
 func (h *handler) writeAPIError(w http.ResponseWriter, code string) {
-	status, known := statusForCode(code)
+	status, known := protocol.StatusForCode(code)
 	if !known {
-		code = codeInternal
-		status, _ = statusForCode(code)
+		code = protocol.CodeInternal
+		status, _ = protocol.StatusForCode(code)
 	}
 	message := map[string]string{
-		codeNotFound:       "Skill publication was not found.",
-		codeInvalidRequest: "Request path is invalid.",
-		codeTooLarge:       "Skill tree is too large to download.",
-		codeInternal:       "Registry request could not be completed.",
+		protocol.CodeNotFound:       "Skill publication was not found.",
+		protocol.CodeInvalidRequest: "Request path is invalid.",
+		protocol.CodeTooLarge:       "Skill tree is too large to download.",
+		protocol.CodeInternal:       "Registry request could not be completed.",
 	}[code]
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", protocol.JSONMediaType)
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{Code: code, Message: message})
+	_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: code, Message: message})
 }
 
 func nextTextPart(body *multipart.Reader, expected string, maximum int64) (string, error) {
@@ -766,9 +750,9 @@ func (h *handler) admitTreeWork(w http.ResponseWriter, api bool) bool {
 	default:
 		w.Header().Set("Retry-After", "1")
 		if api {
-			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Type", protocol.JSONMediaType)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(errorResponse{Code: "unavailable", Message: "Registry tree work is temporarily unavailable."})
+			_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: protocol.CodeUnavailable, Message: "Registry tree work is temporarily unavailable."})
 		} else {
 			h.renderError(w, http.StatusServiceUnavailable, "Registry is busy", "Try again in a moment.")
 		}

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -67,13 +68,13 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/current") {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
-		w.Header().Set(headerPublicationNamespace, "team")
-		w.Header().Set(headerPublicationName, "sample")
-		w.Header().Set(headerPublicationDigest, digest.String())
+		w.Header().Set(protocol.HeaderPublicationNamespace, "team")
+		w.Header().Set(protocol.HeaderPublicationName, "sample")
+		w.Header().Set(protocol.HeaderPublicationDigest, digest.String())
 		_, _ = w.Write(archive.Bytes())
 	}))
 	defer server.Close()
@@ -175,6 +176,7 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 		"protocol":          {errProtocol, "cannot install because the registry returned an invalid response"},
 		"invalid request":   {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
 		"internal error":    {errInternal, "cannot install because the registry could not complete the request"},
+		"unavailable":       {errUnavailable, "cannot install because the registry is temporarily busy; try again"},
 		"other":             {errors.New("other"), "install failed"},
 	}
 	for name, test := range tests {

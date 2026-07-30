@@ -5,13 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 var (
@@ -253,82 +253,15 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirem
 }
 
 func copyFetchedTree(ctx context.Context, parent string, source fs.FS) (string, error) {
-	staged, err := temporaryPath(parent, installStagingPrefix)
-	if err != nil {
-		return "", err
-	}
-	if err := os.Mkdir(staged, 0o700); err != nil {
-		return "", err
-	}
-	ok := false
-	defer func() {
-		if !ok {
-			_ = os.RemoveAll(staged)
-		}
-	}()
-	err = fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." {
-			if !entry.IsDir() {
-				return fmt.Errorf("fetched tree root is not a directory")
-			}
-			return nil
-		}
-		destination := filepath.Join(staged, filepath.FromSlash(name))
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return os.Mkdir(destination, 0o755)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("fetched tree contains unsupported path %q", name)
-		}
-		input, err := source.Open(name)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			return errors.Join(err, input.Close())
-		}
-		copied, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
-		closeOutputErr := output.Close()
-		closeInputErr := input.Close()
-		if err := errors.Join(copyErr, closeOutputErr, closeInputErr); err != nil {
-			return err
-		}
-		if copied != info.Size() {
-			return io.ErrUnexpectedEOF
-		}
-		return nil
-	})
+	snapshot, err := tree.Stage(ctx, parent, installStagingPrefix, source)
 	if err != nil {
 		return "", fmt.Errorf("copy verified install tree: %w", err)
 	}
-	if err := syncTree(ctx, staged); err != nil {
-		return "", err
+	staged, err := snapshot.TakePath()
+	if err != nil {
+		return "", errors.Join(err, snapshot.Close())
 	}
-	ok = true
 	return staged, nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	source io.Reader
-}
-
-func (r *contextReader) Read(buffer []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.source.Read(buffer)
 }
 
 func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, lock lock, writeLock bool) error {

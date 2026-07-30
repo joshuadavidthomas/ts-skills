@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -133,9 +134,9 @@ func TestOriginURLReturnsFreshCopy(t *testing.T) {
 }
 
 func setClientTreeHeaders(header http.Header, namespace, name, digest string) {
-	header.Set(headerPublicationNamespace, namespace)
-	header.Set(headerPublicationName, name)
-	header.Set(headerPublicationDigest, digest)
+	header.Set(protocol.HeaderPublicationNamespace, namespace)
+	header.Set(protocol.HeaderPublicationName, name)
+	header.Set(protocol.HeaderPublicationDigest, digest)
 }
 
 func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
@@ -179,21 +180,22 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 		code string
 		want error
 	}{
-		"not-found":       {codeNotFound, errNotFound},
-		"invalid-request": {codeInvalidRequest, errInvalidRequest},
-		"too-large":       {codeTooLarge, tree.ErrLimitExceeded},
-		"internal":        {codeInternal, errInternal},
+		"not-found":       {protocol.CodeNotFound, errNotFound},
+		"invalid-request": {protocol.CodeInvalidRequest, errInvalidRequest},
+		"too-large":       {protocol.CodeTooLarge, tree.ErrLimitExceeded},
+		"internal":        {protocol.CodeInternal, errInternal},
+		"unavailable":     {protocol.CodeUnavailable, errUnavailable},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			status, known := statusForCode(test.code)
+			status, known := protocol.StatusForCode(test.code)
 			if !known {
 				t.Fatalf("test code %q has no wire status", test.code)
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
-				_ = json.NewEncoder(w).Encode(errorResponse{Code: test.code, Message: "error mapping test"})
+				_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: test.code, Message: "error mapping test"})
 			}))
 			defer server.Close()
 			remote := remoteForServer(t, server)
@@ -212,11 +214,11 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 func TestResponseErrorSanitizesServerMessage(t *testing.T) {
 	messageError := func(t *testing.T, code, message string) error {
 		t.Helper()
-		status, ok := statusForCode(code)
+		status, ok := protocol.StatusForCode(code)
 		if !ok {
 			t.Fatalf("unknown code %q", code)
 		}
-		body, err := json.Marshal(errorResponse{Code: code, Message: message})
+		body, err := json.Marshal(protocol.ErrorResponse{Code: code, Message: message})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -231,9 +233,9 @@ func TestResponseErrorSanitizesServerMessage(t *testing.T) {
 	for name, test := range map[string]struct {
 		code, message, want string
 	}{
-		"control characters fall back":    {codeInvalidRequest, "bad\x1b]0;title", "registry rejected the request"},
-		"long message falls back":         {codeInternal, strings.Repeat("x", maxErrorMessageBytes+1), "registry encountered an internal error"},
-		"ordinary message passes through": {codeInvalidRequest, "manifest is invalid", "manifest is invalid"},
+		"control characters fall back":    {protocol.CodeInvalidRequest, "bad\x1b]0;title", "registry rejected the request"},
+		"long message falls back":         {protocol.CodeInternal, strings.Repeat("x", maxErrorMessageBytes+1), "registry encountered an internal error"},
+		"ordinary message passes through": {protocol.CodeInvalidRequest, "manifest is invalid", "manifest is invalid"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := messageError(t, test.code, test.message)
@@ -295,9 +297,9 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 	currentDigest := firstDigest
 	treeZIP := firstZIP
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
+		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: currentDigest.String()})
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "team", Name: "sample", Digest: currentDigest.String()})
 			return
 		}
 		w.Header().Set("Content-Type", "application/zip")
@@ -345,9 +347,9 @@ func TestTruncatedTreeUpdateLeavesInstalledDestinationAndLockUnchanged(t *testin
 	treeZIP := firstZIP
 	truncateTree := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
+		if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(currentResponse{
+			_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
 				Namespace: "team", Name: "sample", Digest: currentDigest.String(),
 			})
 			return
@@ -498,42 +500,42 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 		{
 			name: "missing namespace",
 			change: func(header http.Header) {
-				header.Del(headerPublicationNamespace)
+				header.Del(protocol.HeaderPublicationNamespace)
 			},
 			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong namespace",
 			change: func(header http.Header) {
-				header.Set(headerPublicationNamespace, "other")
+				header.Set(protocol.HeaderPublicationNamespace, "other")
 			},
 			expectedErr: errIdentityMismatch,
 		},
 		{
 			name: "missing name",
 			change: func(header http.Header) {
-				header.Del(headerPublicationName)
+				header.Del(protocol.HeaderPublicationName)
 			},
 			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong name",
 			change: func(header http.Header) {
-				header.Set(headerPublicationName, "other")
+				header.Set(protocol.HeaderPublicationName, "other")
 			},
 			expectedErr: errIdentityMismatch,
 		},
 		{
 			name: "missing digest",
 			change: func(header http.Header) {
-				header.Del(headerPublicationDigest)
+				header.Del(protocol.HeaderPublicationDigest)
 			},
 			expectedErr: errProtocol,
 		},
 		{
 			name: "wrong digest",
 			change: func(header http.Header) {
-				header.Set(headerPublicationDigest, otherDigest.String())
+				header.Set(protocol.HeaderPublicationDigest, otherDigest.String())
 			},
 			expectedErr: errIdentityMismatch,
 		},
@@ -543,9 +545,9 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 		for _, test := range tests {
 			t.Run(mode+"/"+test.name, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/api/"+apiVersion+"/skills/team/sample/current" {
+					if r.URL.Path == "/api/"+protocol.Version+"/skills/team/sample/current" {
 						w.Header().Set("Content-Type", "application/json")
-						_ = json.NewEncoder(w).Encode(currentResponse{
+						_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{
 							Namespace: "team", Name: "sample", Digest: digest.String(),
 						})
 						return
@@ -597,7 +599,7 @@ func TestRemoteRejectsCurrentResponseForAnotherSkill(t *testing.T) {
 	digest, _ := clientTree(t, "valid")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "other", Name: "sample", Digest: digest.String()})
+		_ = json.NewEncoder(w).Encode(protocol.CurrentResponse{Namespace: "other", Name: "sample", Digest: digest.String()})
 	}))
 	defer server.Close()
 	requirement, _ := current(clientSkill(t))

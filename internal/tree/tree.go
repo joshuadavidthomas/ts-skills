@@ -264,6 +264,18 @@ func (s *Snapshot) FS() fs.FS {
 	return os.DirFS(s.path)
 }
 
+// TakePath transfers ownership of the staged directory to the caller. After a
+// successful transfer, FS reports fs.ErrClosed and Close does nothing.
+func (s *Snapshot) TakePath() (string, error) {
+	if s == nil || s.closed || s.path == "" {
+		return "", fmt.Errorf("tree snapshot is closed")
+	}
+	path := s.path
+	s.path = ""
+	s.closed = true
+	return path, nil
+}
+
 // closedFS is the filesystem view of a snapshot with no tree behind it.
 // Every open fails with fs.ErrClosed so callers get a matchable error class
 // instead of ambient access to unrelated process files.

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -470,13 +471,13 @@ func TestSetCurrentValidatesRequestAndLeavesCurrentUnchanged(t *testing.T) {
 		})
 	}
 
-	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/current", nil), false)
+	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/current", nil), false)
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("current publication status = %d, want 200: %s", response.StatusCode, body)
 	}
-	var current currentResponse
+	var current protocol.CurrentResponse
 	if err := json.NewDecoder(response.Body).Decode(&current); err != nil {
 		t.Fatal(err)
 	}
@@ -488,8 +489,8 @@ func TestSetCurrentValidatesRequestAndLeavesCurrentUnchanged(t *testing.T) {
 func TestAPIReportsNotFoundAndTooLargeDomainErrors(t *testing.T) {
 	t.Run("not found", func(t *testing.T) {
 		fixture := newWebFixture(t)
-		response := fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/missing/current", nil), false)
-		assertAPIError(t, response, http.StatusNotFound, codeNotFound)
+		response := fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+protocol.Version+"/skills/team/missing/current", nil), false)
+		assertAPIError(t, response, http.StatusNotFound, protocol.CodeNotFound)
 	})
 
 	t.Run("too large", func(t *testing.T) {
@@ -502,8 +503,8 @@ func TestAPIReportsNotFoundAndTooLargeDomainErrors(t *testing.T) {
 			t.Fatalf("publish status = %d", response.StatusCode)
 		}
 
-		response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
-		assertAPIError(t, response, http.StatusRequestEntityTooLarge, codeTooLarge)
+		response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
+		assertAPIError(t, response, http.StatusRequestEntityTooLarge, protocol.CodeTooLarge)
 	})
 }
 
@@ -514,7 +515,7 @@ func assertAPIError(t *testing.T, response *http.Response, wantStatus int, wantC
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("API status = %d, want %d: %s", response.StatusCode, wantStatus, body)
 	}
-	var body errorResponse
+	var body protocol.ErrorResponse
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
@@ -537,8 +538,8 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	fixture.resolver.err = errCurationDenied
 	readPaths := []string{
 		"/",
-		"/api/" + apiVersion + "/skills/team/sample/current",
-		"/api/" + apiVersion + "/skills/team/sample/publications/" + digest + "/tree.zip",
+		"/api/" + protocol.Version + "/skills/team/sample/current",
+		"/api/" + protocol.Version + "/skills/team/sample/publications/" + digest + "/tree.zip",
 	}
 	for _, path := range readPaths {
 		fixture.get(path)
@@ -601,7 +602,7 @@ func TestResponsesSetDefensiveHeaders(t *testing.T) {
 	if response.StatusCode != http.StatusSeeOther {
 		t.Fatalf("publish status = %d", response.StatusCode)
 	}
-	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
+	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
 	_ = response.Body.Close()
 	if got := response.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("ZIP X-Content-Type-Options = %q, want nosniff", got)
@@ -638,7 +639,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 
 	request, err := http.NewRequest(
 		http.MethodGet,
-		fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip",
+		fixture.server.URL+"/api/"+protocol.Version+"/skills/team/sample/publications/"+digest+"/tree.zip",
 		nil,
 	)
 	if err != nil {
@@ -654,9 +655,9 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 		t.Fatalf("tree status = %d: %s", response.StatusCode, body)
 	}
 	for header, want := range map[string]string{
-		headerPublicationNamespace: "team",
-		headerPublicationName:      "sample",
-		headerPublicationDigest:    digest,
+		protocol.HeaderPublicationNamespace: "team",
+		protocol.HeaderPublicationName:      "sample",
+		protocol.HeaderPublicationDigest:    digest,
 	} {
 		if got := response.Header.Get(header); got != want {
 			t.Fatalf("%s = %q, want %q", header, got, want)
@@ -844,7 +845,7 @@ func TestSkillLinksEscapeNamespaceSegments(t *testing.T) {
 		t.Fatalf("review link = %s", review)
 	}
 	detail := fixture.get(skillPath)
-	if !strings.Contains(detail, "/api/"+apiVersion+"/skills/team%3Fx/sample/publications/") {
+	if !strings.Contains(detail, "/api/"+protocol.Version+"/skills/team%3Fx/sample/publications/") {
 		t.Fatalf("download link = %s", detail)
 	}
 }
@@ -988,7 +989,7 @@ func TestReadRoutesRejectWhenTreeWorkIsSaturated(t *testing.T) {
 
 	for name, path := range map[string]string{
 		"preview":  candidatePath,
-		"download": "/api/" + apiVersion + "/skills/team/sample/publications/" + digest + "/tree.zip",
+		"download": "/api/" + protocol.Version + "/skills/team/sample/publications/" + digest + "/tree.zip",
 	} {
 		t.Run(name, func(t *testing.T) {
 			request, err := http.NewRequest(http.MethodGet, fixture.server.URL+path, nil)
@@ -1217,7 +1218,7 @@ func TestWriteAPIDomainErrorLogsUnexpectedFailure(t *testing.T) {
 	captured := &recordSlogHandler{}
 	h := &handler{options: handlerOptions{Logger: slog.New(captured)}}
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/"+apiVersion+"/skills/team/sample/current", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/"+protocol.Version+"/skills/team/sample/current", nil)
 
 	h.writeAPIDomainError(recorder, request, errors.New("catalog storage unavailable"))
 
