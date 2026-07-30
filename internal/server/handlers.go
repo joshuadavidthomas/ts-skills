@@ -478,6 +478,16 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	archive, err := h.rootlessZIP(r.Context(), tree)
+	if archive != nil {
+		defer func() {
+			// Cleanup runs after the ZIP response is committed, so a failure is
+			// operator-only diagnostics.
+			name := archive.Name()
+			if err := errors.Join(archive.Close(), os.Remove(name)); err != nil {
+				h.options.Logger.Warn("web archive cleanup failed", "archive", name, "error", err)
+			}
+		}()
+	}
 	// The archive holds everything the response needs, so the tree closes
 	// before any bytes are written and its close failure is still reportable.
 	if closeErr := tree.Close(); closeErr != nil {
@@ -487,14 +497,6 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, r, err)
 		return
 	}
-	defer func() {
-		// Cleanup runs after the ZIP response is committed, so a failure is
-		// operator-only diagnostics.
-		name := archive.Name()
-		if err := errors.Join(archive.Close(), os.Remove(name)); err != nil {
-			h.options.Logger.Warn("web archive cleanup failed", "archive", name, "error", err)
-		}
-	}()
 	resolvedSkill := resolvedPublication.Skill()
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+resolvedSkill.Name().String()+`.zip"`)

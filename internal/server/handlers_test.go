@@ -507,6 +507,13 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	if fmt.Sprint(names) != fmt.Sprint(wantNames) {
 		t.Fatalf("tree ZIP entries = %v, want %v", names, wantNames)
 	}
+	entries, err := os.ReadDir(fixture.staging)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("staging entries after tree download = %v, want none", entries)
+	}
 }
 
 type cancelAfterReadTree struct {

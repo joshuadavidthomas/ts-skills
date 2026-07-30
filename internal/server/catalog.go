@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -103,6 +104,9 @@ func openCatalog(ctx context.Context, stateDir string) (_ *catalog, err error) {
 	if err := ensureStorageDirectories(absolute, treesDir, tmpDir); err != nil {
 		return nil, err
 	}
+	if err := sweepTemporaryDirectory(ctx, tmpDir); err != nil {
+		return nil, fmt.Errorf("sweep registry temporary files: %w", err)
+	}
 
 	db, err := openDatabase(ctx, filepath.Join(absolute, "registry.sqlite"))
 	if err != nil {
@@ -127,6 +131,27 @@ func openCatalog(ctx context.Context, stateDir string) (_ *catalog, err error) {
 		rollbackTx:    (*sql.Tx).Rollback,
 	}
 	return catalog, nil
+}
+
+func sweepTemporaryDirectory(ctx context.Context, temporaryDirectory string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(temporaryDirectory)
+	if err != nil {
+		return fmt.Errorf("read registry temporary directory: %w", err)
+	}
+	var sweepErr error
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(sweepErr, err)
+		}
+		path := filepath.Join(temporaryDirectory, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			sweepErr = errors.Join(sweepErr, fmt.Errorf("remove registry temporary entry %q: %w", path, err))
+		}
+	}
+	return sweepErr
 }
 
 func (c *catalog) close() error {

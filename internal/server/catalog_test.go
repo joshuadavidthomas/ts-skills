@@ -243,6 +243,57 @@ func TestCatalogLifetimeLockAndTreeOwnership(t *testing.T) {
 	closeCatalog(t, reopened)
 }
 
+func TestOpenCatalogSweepsTemporaryDirectory(t *testing.T) {
+	state := t.TempDir()
+	temporaryDirectory := filepath.Join(state, "tmp")
+	for name, contents := range map[string]string{
+		".ts-skills-download-orphan.zip": "archive",
+		".ts-skills-tree-orphan/file":    "staged upload",
+		".tree-orphan/file":              "materialized tree",
+	} {
+		path := filepath.Join(temporaryDirectory, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	untouchedTree := filepath.Join(state, "trees", "sha256", "unchanged")
+	if err := os.MkdirAll(filepath.Dir(untouchedTree), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(untouchedTree, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog := openTestCatalog(t, state)
+	entries, err := os.ReadDir(temporaryDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary entries after first open = %v, want none", entries)
+	}
+	if contents, err := os.ReadFile(untouchedTree); err != nil || string(contents) != "keep" {
+		t.Fatalf("tree contents after sweep = %q, %v", contents, err)
+	}
+	closeCatalog(t, catalog)
+
+	if err := os.WriteFile(filepath.Join(temporaryDirectory, ".tree-after-restart"), []byte("litter"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog = openTestCatalog(t, state)
+	defer closeCatalog(t, catalog)
+	entries, err = os.ReadDir(temporaryDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary entries after reopen = %v, want none", entries)
+	}
+}
+
 func TestCatalogCloseRetriesEachOwnedResource(t *testing.T) {
 	state := t.TempDir()
 	catalog := openTestCatalog(t, state)
