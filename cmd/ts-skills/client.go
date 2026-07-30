@@ -16,12 +16,17 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-const maxJSONResponseBytes int64 = 64 << 10
+const (
+	maxJSONResponseBytes int64 = 64 << 10
+	maxErrorMessageBytes       = 200
+)
 
 // origin is a validated registry base: HTTPS, or loopback HTTP; host only —
 // no path, credentials, query, or fragment.
@@ -373,14 +378,26 @@ func (r *remote) responseError(response *http.Response) error {
 	case codeNotFound:
 		return fmt.Errorf("%w: requested publication does not exist", errNotFound)
 	case codeInvalidRequest:
-		return fmt.Errorf("%w: %s", errInvalidRequest, wire.Message)
+		return fmt.Errorf("%w: %s", errInvalidRequest, safeErrorMessage(wire.Message, "registry rejected the request"))
 	case codeTooLarge:
 		return fmt.Errorf("%w: registry could not return the tree within its limit", safetree.ErrLimitExceeded)
 	case codeInternal:
-		return fmt.Errorf("%w: %s", errInternal, wire.Message)
+		return fmt.Errorf("%w: %s", errInternal, safeErrorMessage(wire.Message, "registry encountered an internal error"))
 	default:
 		return fmt.Errorf("%w: unknown registry error", errProtocol)
 	}
+}
+
+func safeErrorMessage(message, fallback string) string {
+	if len(message) > maxErrorMessageBytes || !utf8.ValidString(message) {
+		return fallback
+	}
+	for _, r := range message {
+		if unicode.IsControl(r) {
+			return fallback
+		}
+	}
+	return message
 }
 
 func (r *remote) endpoint(parts ...string) string {

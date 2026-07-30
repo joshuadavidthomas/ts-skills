@@ -347,6 +347,9 @@ type reviewPageData struct {
 }
 
 func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.resolveCurator(w, r); !ok {
+		return
+	}
 	id, err := agentskill.ParseCandidateID(r.PathValue("candidate"))
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
@@ -545,6 +548,7 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	resolvedSkill := resolvedPublication.Skill()
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+resolvedSkill.Name().String()+`.zip"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set(headerPublicationNamespace, resolvedSkill.Namespace().String())
 	w.Header().Set(headerPublicationName, resolvedSkill.Name().String())
 	w.Header().Set(headerPublicationDigest, resolvedPublication.Tree().String())
@@ -902,6 +906,9 @@ func (h *handler) renderError(w http.ResponseWriter, status int, title, action s
 // after the status is committed, so it is log-only.
 func (h *handler) writePage(w http.ResponseWriter, status int, page []byte) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if _, err := w.Write(page); err != nil {
 		h.options.Logger.Warn("web response write failed", "error", err)

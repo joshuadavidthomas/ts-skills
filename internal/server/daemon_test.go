@@ -939,6 +939,15 @@ func TestRunDevRejectsInvalidConfigBeforeRuntimeConstruction(t *testing.T) {
 	}
 }
 
+func TestRunDevRefusesEnrolledRegistryStateDirectory(t *testing.T) {
+	stateDir := t.TempDir()
+	writeEnrolledTSNetState(t, stateDir)
+	err := RunDev(context.Background(), DevConfig{StateDir: stateDir, Listen: "127.0.0.1:0"})
+	if err == nil || !strings.Contains(err.Error(), "TS_SKILLSD_DEV") || !strings.Contains(err.Error(), "TS_SKILLSD_STATE_DIR") {
+		t.Fatalf("RunDev error = %v, want enrolled-state refusal naming both environment variables", err)
+	}
+}
+
 func TestNormalizeDevConfigChecksListenAddress(t *testing.T) {
 	for _, listen := range []string{"", "127.0.0.1", "127.0.0.1:", "0.0.0.0:8080", "example.com:8080", "[::]:8080", "192.168.1.10:8080"} {
 		if _, err := normalizeDevConfig(DevConfig{StateDir: t.TempDir(), Listen: listen}); err == nil {

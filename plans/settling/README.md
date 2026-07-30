@@ -28,7 +28,7 @@ are never reused or renumbered.)
 | [002](002-derive-body-cap-from-tree-limits.md) | Derive HTTP body cap from tree limits | S | — | DONE |
 | [004](004-installer-concurrency-and-convergence.md) | Concurrent installs succeed; trash recovery converges | M | — | DONE |
 | [003](003-bound-read-route-cost.md) | Bound read-route cost: verify once, cap concurrency, cap previews | M | 001 | DONE — concurrent first opens may both verify |
-| [005](005-close-small-hardening-gaps.md) | Review-page gating, dev state guard, headers, client message hygiene | M | — (after 003) | TODO |
+| [005](005-close-small-hardening-gaps.md) | Review-page gating, dev state guard, headers, client message hygiene | M | — (after 003) | DONE |
 | [006](006-close-test-and-ci-trigger-gaps.md) | Cover untested error surfaces; widen CI path triggers | S | — (run last) | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) |
@@ -54,6 +54,9 @@ deviations, next executable plan.
   snapshot check, made pending-trash recovery converge or report retained
   data, and routed the last replacement failure through rollback. Next:
   005.
+- **2026-07-29**: Completed 005 — restricted candidate reviews to
+  curators, rejected dev startup on enrolled state, added defensive
+  response headers, and sanitized registry error messages. Next: 006.
 - **2026-07-29**: Completed 003 — cached verified tree digests per
   process (concurrent first opens may both verify), bounded concurrent
   preview/ZIP work, and limited rendered previews to 256 KiB. Next: 004.

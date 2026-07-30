@@ -18,6 +18,7 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+	"unicode"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
@@ -226,6 +227,46 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 			}
 			if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, test.want) {
 				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestResponseErrorSanitizesServerMessage(t *testing.T) {
+	messageError := func(t *testing.T, code, message string) error {
+		t.Helper()
+		status, ok := statusForCode(code)
+		if !ok {
+			t.Fatalf("unknown code %q", code)
+		}
+		body, err := json.Marshal(errorResponse{Code: code, Message: message})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return (&remote{}).responseError(&http.Response{
+			StatusCode:    status,
+			Header:        http.Header{"Content-Type": {"application/json"}},
+			Body:          io.NopCloser(bytes.NewReader(body)),
+			ContentLength: int64(len(body)),
+		})
+	}
+
+	for name, test := range map[string]struct {
+		code, message, want string
+	}{
+		"control characters fall back":    {codeInvalidRequest, "bad\x1b]0;title", "registry rejected the request"},
+		"long message falls back":         {codeInternal, strings.Repeat("x", maxErrorMessageBytes+1), "registry encountered an internal error"},
+		"ordinary message passes through": {codeInvalidRequest, "manifest is invalid", "manifest is invalid"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := messageError(t, test.code, test.message)
+			if !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("response error = %q, want %q", err, test.want)
+			}
+			for _, r := range err.Error() {
+				if unicode.IsControl(r) {
+					t.Fatalf("response error contains control character: %q", err)
+				}
 			}
 		})
 	}

@@ -654,6 +654,13 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 
 // buildDevRuntime constructs the loopback runtime from normalized config.
 func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err error) {
+	hasState, err := tsnetStateHasNodeKey(filepath.Join(config.StateDir, "tsnet", "tailscaled.state"))
+	if err != nil {
+		return runtime{}, fmt.Errorf("check dev state directory for enrolled registry: %w", err)
+	}
+	if hasState {
+		return runtime{}, fmt.Errorf("TS_SKILLSD_DEV=1 will not open enrolled registry state directory %q; use a separate TS_SKILLSD_STATE_DIR", config.StateDir)
+	}
 	catalog, csrfKey, err := openRegistryCore(ctx, config.StateDir)
 	if err != nil {
 		return runtime{}, err

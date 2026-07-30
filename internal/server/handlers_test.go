@@ -246,6 +246,15 @@ func (f *webFixture) do(request *http.Request, csrf bool) *http.Response {
 	return response
 }
 
+func mustNewRequest(t *testing.T, method, target string, body io.Reader) *http.Request {
+	t.Helper()
+	request, err := http.NewRequest(method, target, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
+}
+
 func (f *webFixture) uploadDirectory(instructions string) string {
 	f.t.Helper()
 	request := multipartRequest(f.t, f.server.URL+"/candidates", skillDirectoryParts(instructions))
@@ -433,12 +442,20 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 	fixture.resolver.err = errCurationDenied
 	readPaths := []string{
 		"/",
-		unpublishedPath,
 		"/api/" + apiVersion + "/skills/team/sample/current",
 		"/api/" + apiVersion + "/skills/team/sample/publications/" + digest + "/tree.zip",
 	}
 	for _, path := range readPaths {
 		fixture.get(path)
+	}
+	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+unpublishedPath, nil), false)
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("candidate review status = %d, want 403: %s", response.StatusCode, body)
 	}
 
 	uploadRequest := multipartRequest(t, fixture.server.URL+"/candidates", skillDirectoryParts("Denied upload.\n"))
@@ -465,6 +482,34 @@ func TestNonCuratingIdentityCanReadButCannotMutate(t *testing.T) {
 				t.Fatalf("permission error is missing guidance: %s", body)
 			}
 		})
+	}
+}
+
+func TestResponsesSetDefensiveHeaders(t *testing.T) {
+	fixture := newWebFixture(t)
+	response := fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/upload", nil), false)
+	_ = response.Body.Close()
+	for header, want := range map[string]string{
+		"Content-Security-Policy": "default-src 'self'",
+		"Referrer-Policy":         "no-referrer",
+		"X-Content-Type-Options":  "nosniff",
+	} {
+		if got := response.Header.Get(header); got != want {
+			t.Errorf("upload %s = %q, want %q", header, got, want)
+		}
+	}
+
+	candidatePath := fixture.uploadDirectory("Header test.\n")
+	digest := digestPattern.FindString(fixture.get(candidatePath))
+	response = postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+	response = fixture.do(mustNewRequest(t, http.MethodGet, fixture.server.URL+"/api/"+apiVersion+"/skills/team/sample/publications/"+digest+"/tree.zip", nil), false)
+	_ = response.Body.Close()
+	if got := response.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("ZIP X-Content-Type-Options = %q, want nosniff", got)
 	}
 }
 
