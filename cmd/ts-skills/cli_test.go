@@ -166,18 +166,17 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 		err  error
 		want string
 	}{
-		"busy":              {errBusy, "cannot install while another ts-skills process is changing this project; wait and try again"},
-		"local changes":     {errLocalChanges, "cannot install because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again"},
-		"project changed":   {errProjectChanged, "cannot install because this project changed while the registry was being read; try again"},
-		"identity mismatch": {errIdentityMismatch, "cannot install because the registry response did not match the requested skill"},
-		"digest mismatch":   {errDigestMismatch, "cannot install because the registry response did not match the requested skill"},
-		"not found":         {errNotFound, "cannot install because the requested skill publication was not found"},
-		"tree limit":        {tree.ErrLimitExceeded, "cannot install because the downloaded skill exceeds the configured safety limits"},
-		"protocol":          {errProtocol, "cannot install because the registry returned an invalid response"},
-		"invalid request":   {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
-		"internal error":    {errInternal, "cannot install because the registry could not complete the request"},
-		"unavailable":       {errUnavailable, "cannot install because the registry is temporarily busy; try again"},
-		"other":             {errors.New("other"), "install failed"},
+		"busy":             {errBusy, "cannot install while another ts-skills process is changing this project; wait and try again"},
+		"local changes":    {errLocalChanges, "cannot install because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again"},
+		"project changed":  {errProjectChanged, "cannot install because this project changed while the registry was being read; try again"},
+		"invalid response": {protocol.ErrInvalidResponse, "cannot install because the registry returned an invalid response"},
+		"not found":        {&protocol.Failure{Code: protocol.CodeNotFound, Message: "missing"}, "cannot install because the requested skill publication was not found"},
+		"remote too large": {&protocol.Failure{Code: protocol.CodeTooLarge, Message: "large"}, "cannot install because the registry could not return the skill within its response limit"},
+		"tree limit":       {tree.ErrLimitExceeded, "cannot install because the downloaded skill exceeds the configured safety limits"},
+		"invalid request":  {&protocol.Failure{Code: protocol.CodeInvalidRequest, Message: "invalid"}, "cannot install because the registry rejected the request as invalid"},
+		"internal error":   {&protocol.Failure{Code: protocol.CodeInternal, Message: "internal"}, "cannot install because the registry could not complete the request"},
+		"unavailable":      {&protocol.Failure{Code: protocol.CodeUnavailable, Message: "busy"}, "cannot install because the registry is temporarily busy; try again"},
+		"other":            {errors.New("other"), "install failed"},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {

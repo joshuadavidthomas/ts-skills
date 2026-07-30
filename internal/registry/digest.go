@@ -9,11 +9,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 var ErrInvalidTreeDigest = errors.New("invalid tree digest")
@@ -51,67 +50,34 @@ func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 	if fsys == nil || !fs.ValidPath(dir) {
 		return TreeDigest{}, invalidTree("directory", "must name a tree in a filesystem")
 	}
-	var entries []treeEntry
-	err := fs.WalkDir(fsys, dir, func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == dir {
-			if !entry.IsDir() {
-				return invalidTree("directory", "tree root must be a directory")
-			}
-			return nil
-		}
-		relative := name
-		if dir != "." {
-			prefix := dir + "/"
-			if !strings.HasPrefix(name, prefix) {
-				return invalidTree("path", fmt.Sprintf("%q is outside the tree root", name))
-			}
-			relative = strings.TrimPrefix(name, prefix)
-		}
-		if !validTreePath(relative) {
-			return invalidTree("path", fmt.Sprintf("%q is unsafe", name))
-		}
-		info, err := entry.Info()
+	source, err := tree.NewSource(ctx, fsys, dir, tree.PrototypeLimits())
+	if err != nil {
+		return TreeDigest{}, fmt.Errorf("%w: tree: %w", agentskill.ErrInvalidTree, err)
+	}
+	manifest := source.Files()
+	entries := make([]treeEntry, 0, len(manifest))
+	for _, entry := range manifest {
+		file, err := source.Open(entry)
 		if err != nil {
-			return err
-		}
-		if info.IsDir() {
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return invalidTree("path", fmt.Sprintf("%q is not a regular file", relative))
-		}
-		file, err := fsys.Open(name)
-		if err != nil {
-			return err
+			return TreeDigest{}, fmt.Errorf("hash Agent Skill tree %q: %w", dir, err)
 		}
 		leaf := sha256.New()
 		_, _ = leaf.Write([]byte("file\x00"))
-		writeUint64(leaf, uint64(len(relative)))
-		_, _ = leaf.Write([]byte(relative))
-		writeUint64(leaf, uint64(info.Size()))
+		writeUint64(leaf, uint64(len(entry.Path)))
+		_, _ = leaf.Write([]byte(entry.Path))
+		writeUint64(leaf, uint64(entry.Size))
 		copied, copyErr := io.Copy(leaf, &contextReader{ctx: ctx, source: file})
 		closeErr := file.Close()
 		if err := errors.Join(copyErr, closeErr); err != nil {
-			return err
+			return TreeDigest{}, fmt.Errorf("hash Agent Skill tree %q: %w", dir, err)
 		}
-		if copied != info.Size() {
-			return fmt.Errorf("file %q changed while hashing", name)
+		if copied != entry.Size {
+			return TreeDigest{}, fmt.Errorf("file %q changed while hashing", entry.Path)
 		}
 		var sum [sha256.Size]byte
 		copy(sum[:], leaf.Sum(nil))
-		entries = append(entries, treeEntry{path: relative, digest: sum})
-		return nil
-	})
-	if err != nil {
-		return TreeDigest{}, fmt.Errorf("hash Agent Skill tree %q: %w", dir, err)
+		entries = append(entries, treeEntry{path: entry.Path, digest: sum})
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
 	tree := sha256.New()
 	_, _ = tree.Write([]byte("ts-skills-tree-v1\x00"))
 	for _, entry := range entries {
@@ -139,10 +105,6 @@ func writeUint64(dst io.Writer, value uint64) {
 	var encoded [8]byte
 	binary.BigEndian.PutUint64(encoded[:], value)
 	_, _ = dst.Write(encoded[:])
-}
-
-func validTreePath(name string) bool {
-	return name != "." && fs.ValidPath(name) && utf8.ValidString(name) && !strings.Contains(name, "\\")
 }
 
 func invalidTreeDigest(problem string) error {

@@ -65,6 +65,15 @@ func mustUploadBodyCap(t *testing.T, limits tree.Limits) int64 {
 	return cap
 }
 
+func mustArchiveCap(t *testing.T, limits tree.Limits) int64 {
+	t.Helper()
+	cap, err := tree.MaxArchiveBytes(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cap
+}
+
 func newWebFixture(t *testing.T) *webFixture {
 	return newWebFixtureWithLimits(t, tree.PrototypeLimits(), nil)
 }
@@ -508,7 +517,7 @@ func TestAPIReportsNotFoundAndTooLargeDomainErrors(t *testing.T) {
 	})
 }
 
-func assertAPIError(t *testing.T, response *http.Response, wantStatus int, wantCode string) {
+func assertAPIError(t *testing.T, response *http.Response, wantStatus int, wantCode protocol.Code) {
 	t.Helper()
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != wantStatus {
@@ -663,7 +672,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
-	ceiling := tree.MaxBytes
+	ceiling := mustArchiveCap(t, tree.PrototypeLimits())
 	if int64(len(body)) > ceiling {
 		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", len(body), ceiling)
 	}
@@ -726,7 +735,7 @@ func (t *cancelAfterReadTreeFile) Read(buffer []byte) (int, error) {
 func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	staging := t.TempDir()
-	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: tree.MaxBytes}
+	h := &handler{options: handlerOptions{StagingParent: staging, Limits: tree.PrototypeLimits()}, maxArchiveBytes: mustArchiveCap(t, tree.PrototypeLimits())}
 	tree := cancelAfterReadTree{
 		files:  fstest.MapFS{"large": {Data: bytes.Repeat([]byte("x"), 128<<10)}},
 		cancel: cancel,
@@ -744,8 +753,8 @@ func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 }
 
 func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
-	ceiling := tree.MaxBytes
-	h := &handler{options: handlerOptions{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
+	ceiling := mustArchiveCap(t, tree.PrototypeLimits())
+	h := &handler{options: handlerOptions{StagingParent: t.TempDir(), Limits: tree.PrototypeLimits()}, maxArchiveBytes: ceiling}
 	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
 		"SKILL.md":        {Data: []byte("s")},
 		"assets/data.txt": {Data: []byte("a")},
@@ -753,15 +762,12 @@ func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := archive.Name()
-	info, err := archive.Stat()
-	closeErr := archive.Close()
-	removeErr := os.Remove(name)
-	if err := errors.Join(err, closeErr, removeErr); err != nil {
+	size := archive.Size()
+	if err := archive.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() > ceiling {
-		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", info.Size(), ceiling)
+	if size > ceiling {
+		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", size, ceiling)
 	}
 }
 

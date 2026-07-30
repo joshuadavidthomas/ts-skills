@@ -60,14 +60,13 @@ func (e *LimitError) Error() string {
 func (e *LimitError) Unwrap() error { return ErrLimitExceeded }
 
 type Builder struct {
-	path        string
-	limits      Limits
-	files       map[string]string
-	directories map[string]string
-	bytes       int64
-	finished    bool
-	closed      bool
-	removeAll   func(string) error
+	path      string
+	limits    Limits
+	paths     pathIndex
+	bytes     int64
+	finished  bool
+	closed    bool
+	removeAll func(string) error
 }
 
 func NewBuilder(parent string, limits Limits) (*Builder, error) {
@@ -86,7 +85,7 @@ func NewBuilder(parent string, limits Limits) (*Builder, error) {
 		return nil, fmt.Errorf("create tree staging: %w", err)
 	}
 	return &Builder{
-		path: staging, limits: limits, files: make(map[string]string), directories: make(map[string]string), removeAll: os.RemoveAll,
+		path: staging, limits: limits, paths: newPathIndex(), removeAll: os.RemoveAll,
 	}, nil
 }
 
@@ -97,35 +96,14 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 	if source == nil {
 		return fmt.Errorf("add tree file %q: reader is nil", name)
 	}
-	if err := validatePath(name, b.limits); err != nil {
+	if err := validateFile(File{Path: name, Size: declaredSize}, b.limits); err != nil {
 		return err
 	}
-	if declaredSize < 0 {
-		return fmt.Errorf("%w: declared size must be nonnegative", ErrInvalidPath)
+	if len(b.paths.files)+1 > b.limits.MaxFiles {
+		return &LimitError{Limit: "files", Max: int64(b.limits.MaxFiles), Actual: int64(len(b.paths.files) + 1)}
 	}
-	if declaredSize > b.limits.MaxFileBytes {
-		return &LimitError{Limit: "file bytes", Max: b.limits.MaxFileBytes, Actual: declaredSize}
-	}
-	if len(b.files)+1 > b.limits.MaxFiles {
-		return &LimitError{Limit: "files", Max: int64(b.limits.MaxFiles), Actual: int64(len(b.files) + 1)}
-	}
-	key := canonicalPath(name)
-	if existing, exists := b.files[key]; exists {
-		return fmt.Errorf("%w: duplicate files %q and %q", ErrInvalidPath, existing, name)
-	}
-	if descendant, exists := b.directories[key]; exists {
-		return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, descendant)
-	}
-	var ancestor string
-	visitPathParents(key, func(parent string) bool {
-		if existing, exists := b.files[parent]; exists {
-			ancestor = existing
-			return false
-		}
-		return true
-	})
-	if ancestor != "" {
-		return fmt.Errorf("%w: file and directory prefix collision between %q and %q", ErrInvalidPath, name, ancestor)
+	if err := b.paths.check(name); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -162,13 +140,10 @@ func (b *Builder) AddFile(ctx context.Context, name string, declaredSize int64, 
 		_ = os.Remove(destination)
 		return fmt.Errorf("normalize staged file %q: %w", name, err)
 	}
-	b.files[key] = name
-	visitPathParents(key, func(parent string) bool {
-		if _, exists := b.directories[parent]; !exists {
-			b.directories[parent] = name
-		}
-		return true
-	})
+	if err := b.paths.add(name); err != nil {
+		_ = os.Remove(destination)
+		return err
+	}
 	b.bytes += written
 	return nil
 }
@@ -250,6 +225,11 @@ type Snapshot struct {
 	path      string
 	closed    bool
 	removeAll func(string) error
+}
+
+// Open implements fs.FS for the staged tree.
+func (s *Snapshot) Open(name string) (fs.File, error) {
+	return s.FS().Open(name)
 }
 
 // FS returns the staged tree as an fs.FS rooted at the snapshot's staging

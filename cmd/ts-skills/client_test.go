@@ -144,7 +144,10 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 		MaxFiles: 2, MaxPathBytes: 16, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
 	}
 	digest, archive := clientTree(t, "archive ceiling")
-	maximum := tree.MaxBytes
+	maximum, err := tree.MaxArchiveBytes(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
 	responseBody := archive
 	oversized := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -175,16 +178,15 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	}
 }
 
-func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
+func TestRemoteReturnsProtocolFailures(t *testing.T) {
 	tests := map[string]struct {
-		code string
-		want error
+		code protocol.Code
 	}{
-		"not-found":       {protocol.CodeNotFound, errNotFound},
-		"invalid-request": {protocol.CodeInvalidRequest, errInvalidRequest},
-		"too-large":       {protocol.CodeTooLarge, tree.ErrLimitExceeded},
-		"internal":        {protocol.CodeInternal, errInternal},
-		"unavailable":     {protocol.CodeUnavailable, errUnavailable},
+		"not-found":       {protocol.CodeNotFound},
+		"invalid-request": {protocol.CodeInvalidRequest},
+		"too-large":       {protocol.CodeTooLarge},
+		"internal":        {protocol.CodeInternal},
+		"unavailable":     {protocol.CodeUnavailable},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -204,15 +206,20 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, test.want) {
-				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
+			_, err = remote.fetch(context.Background(), requirement)
+			var failure *protocol.Failure
+			if !errors.As(err, &failure) || failure.Code != test.code {
+				t.Fatalf("Fetch error = %v, want protocol failure %q", err, test.code)
+			}
+			if test.code == protocol.CodeTooLarge && errors.Is(err, tree.ErrLimitExceeded) {
+				t.Fatalf("remote too-large error = %v, must not be a local tree limit", err)
 			}
 		})
 	}
 }
 
 func TestResponseErrorSanitizesServerMessage(t *testing.T) {
-	messageError := func(t *testing.T, code, message string) error {
+	messageError := func(t *testing.T, code protocol.Code, message string) error {
 		t.Helper()
 		status, ok := protocol.StatusForCode(code)
 		if !ok {
@@ -222,7 +229,7 @@ func TestResponseErrorSanitizesServerMessage(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return (&remote{}).responseError(&http.Response{
+		return protocol.ReadFailure(&http.Response{
 			StatusCode:    status,
 			Header:        http.Header{"Content-Type": {"application/json"}},
 			Body:          io.NopCloser(bytes.NewReader(body)),
@@ -231,10 +238,11 @@ func TestResponseErrorSanitizesServerMessage(t *testing.T) {
 	}
 
 	for name, test := range map[string]struct {
-		code, message, want string
+		code          protocol.Code
+		message, want string
 	}{
 		"control characters fall back":    {protocol.CodeInvalidRequest, "bad\x1b]0;title", "registry rejected the request"},
-		"long message falls back":         {protocol.CodeInternal, strings.Repeat("x", maxErrorMessageBytes+1), "registry encountered an internal error"},
+		"long message falls back":         {protocol.CodeInternal, strings.Repeat("x", 201), "registry encountered an internal error"},
 		"ordinary message passes through": {protocol.CodeInvalidRequest, "manifest is invalid", "manifest is invalid"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -282,8 +290,8 @@ func TestRemoteFetchMapsInvalidTreeArchiveToProtocolError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = remoteForServer(t, server).fetch(context.Background(), requirement)
-	if !errors.Is(err, errProtocol) {
-		t.Fatalf("Fetch error = %v, want errors.Is %v", err, errProtocol)
+	if !errors.Is(err, protocol.ErrInvalidResponse) {
+		t.Fatalf("Fetch error = %v, want errors.Is %v", err, protocol.ErrInvalidResponse)
 	}
 	if errors.Is(err, tree.ErrLimitExceeded) {
 		t.Fatalf("Fetch error = %v, want format rejection", err)
@@ -323,7 +331,7 @@ func TestMismatchedTreeLeavesInstalledDestinationAndLockUnchanged(t *testing.T) 
 	}
 
 	currentDigest = secondDigest
-	if _, err := installer.install(context.Background(), project, requirement); !errors.Is(err, errDigestMismatch) {
+	if _, err := installer.install(context.Background(), project, requirement); !errors.Is(err, protocol.ErrInvalidResponse) {
 		t.Fatalf("mismatched install error = %v", err)
 	}
 	afterTree, err := os.ReadFile(filepath.Join(project.skillsDir(), "sample", "SKILL.md"))
@@ -449,7 +457,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(validZIP)
 			}),
-			expectedErr: errProtocol,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "declared size",
@@ -468,7 +476,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				_, _ = w.Write(unsafe.Bytes())
 			}),
-			expectedErr: errProtocol,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 	}
 	for _, test := range tests {
@@ -502,42 +510,42 @@ func TestRemoteBindsExactAndCurrentFetchesToTreeResponseIdentity(t *testing.T) {
 			change: func(header http.Header) {
 				header.Del(protocol.HeaderPublicationNamespace)
 			},
-			expectedErr: errProtocol,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "wrong namespace",
 			change: func(header http.Header) {
 				header.Set(protocol.HeaderPublicationNamespace, "other")
 			},
-			expectedErr: errIdentityMismatch,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "missing name",
 			change: func(header http.Header) {
 				header.Del(protocol.HeaderPublicationName)
 			},
-			expectedErr: errProtocol,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "wrong name",
 			change: func(header http.Header) {
 				header.Set(protocol.HeaderPublicationName, "other")
 			},
-			expectedErr: errIdentityMismatch,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "missing digest",
 			change: func(header http.Header) {
 				header.Del(protocol.HeaderPublicationDigest)
 			},
-			expectedErr: errProtocol,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 		{
 			name: "wrong digest",
 			change: func(header http.Header) {
 				header.Set(protocol.HeaderPublicationDigest, otherDigest.String())
 			},
-			expectedErr: errIdentityMismatch,
+			expectedErr: protocol.ErrInvalidResponse,
 		},
 	}
 
@@ -604,40 +612,7 @@ func TestRemoteRejectsCurrentResponseForAnotherSkill(t *testing.T) {
 	defer server.Close()
 	requirement, _ := current(clientSkill(t))
 	_, err := remoteForServer(t, server).fetch(context.Background(), requirement)
-	if !errors.Is(err, errIdentityMismatch) {
+	if !errors.Is(err, protocol.ErrInvalidResponse) {
 		t.Fatalf("identity mismatch error = %v", err)
-	}
-}
-
-func TestFetchedTreeCloseRetainsSnapshotAfterFailure(t *testing.T) {
-	builder, err := tree.NewBuilder(t.TempDir(), tree.PrototypeLimits())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := builder.AddFile(context.Background(), "SKILL.md", 4, bytes.NewReader([]byte("data"))); err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := builder.Finish()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fetched := &fetchedTree{snapshot: snapshot}
-	injected := errors.New("injected snapshot close failure")
-	fetched.closeSnapshot = func(*tree.Snapshot) error { return injected }
-	if err := fetched.Close(); !errors.Is(err, injected) {
-		t.Fatalf("first Close error = %v, want injected failure", err)
-	}
-	if fetched.snapshot == nil {
-		t.Fatal("failed Close released fetched snapshot ownership")
-	}
-	if _, err := fs.ReadFile(fetched, "SKILL.md"); err != nil {
-		t.Fatalf("fetched tree after failed Close: %v", err)
-	}
-	fetched.closeSnapshot = nil
-	if err := fetched.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if fetched.snapshot != nil {
-		t.Fatal("successful Close retained fetched snapshot ownership")
 	}
 }

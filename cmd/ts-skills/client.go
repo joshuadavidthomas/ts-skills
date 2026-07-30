@@ -1,38 +1,18 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
-)
-
-const (
-	maxJSONResponseBytes int64 = 64 << 10
-	maxErrorMessageBytes       = 200
-)
-
-var (
-	errProtocol       = protocol.ErrInvalid
-	errNotFound       = errors.New("registry value not found")
-	errInvalidRequest = errors.New("invalid registry request")
-	errInternal       = errors.New("registry internal error")
-	errUnavailable    = errors.New("registry temporarily unavailable")
 )
 
 // origin is a validated registry base: HTTPS, or loopback HTTP; host only —
@@ -97,7 +77,10 @@ func newRemote(origin origin, httpClient *http.Client, stagingParent string, lim
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	maxZIPBytes := tree.MaxBytes
+	maxZIPBytes, err := tree.MaxArchiveBytes(limits)
+	if err != nil {
+		return nil, fmt.Errorf("derive registry archive limit: %w", err)
+	}
 
 	privateClient := *httpClient
 	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -139,28 +122,7 @@ func (r *remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (re
 		return registry.PublicationID{}, fmt.Errorf("resolve current publication: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return registry.PublicationID{}, r.responseError(response)
-	}
-	if err := requireContentType(response.Header.Get("Content-Type"), protocol.JSONMediaType, true); err != nil {
-		return registry.PublicationID{}, err
-	}
-	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
-	if err != nil {
-		return registry.PublicationID{}, fmt.Errorf("%w: read current response: %v", errProtocol, err)
-	}
-	var wire protocol.CurrentResponse
-	if err := decodeStrictJSON(body, &wire); err != nil {
-		return registry.PublicationID{}, fmt.Errorf("%w: decode current response: %v", errProtocol, err)
-	}
-	publication, err := protocol.ParseCurrentResponse(wire)
-	if err != nil {
-		return registry.PublicationID{}, err
-	}
-	if publication.Skill() != skill {
-		return registry.PublicationID{}, fmt.Errorf("%w: current response names another skill", errIdentityMismatch)
-	}
-	return publication, nil
+	return protocol.ReadCurrent(response, skill)
 }
 
 func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID) (_ fetchedSkill, err error) {
@@ -169,45 +131,22 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 		return fetchedSkill{}, fmt.Errorf("download publication tree: %w", err)
 	}
 	defer func() { err = errors.Join(err, response.Body.Close()) }()
-	if response.StatusCode != http.StatusOK {
-		return fetchedSkill{}, r.responseError(response)
-	}
-	if err := requireContentType(response.Header.Get("Content-Type"), protocol.ZIPMediaType, false); err != nil {
+	if err := protocol.ReadTree(response, expected); err != nil {
 		return fetchedSkill{}, err
 	}
-	publication, err := protocol.ParsePublicationHeaders(response.Header)
-	if err != nil {
-		return fetchedSkill{}, err
-	}
-	if publication != expected {
-		return fetchedSkill{}, fmt.Errorf("%w: tree response identifies another publication", errIdentityMismatch)
-	}
-	if response.ContentLength > r.maxZIPBytes {
-		return fetchedSkill{}, &tree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
-	}
-
-	spool, err := os.CreateTemp(r.stagingParent, ".ts-skills-download-*.zip")
-	if err != nil {
-		return fetchedSkill{}, fmt.Errorf("create download staging file: %w", err)
-	}
-	spoolName := spool.Name()
-	defer func() { _ = os.Remove(spoolName) }()
-	written, copyErr := io.Copy(spool, io.LimitReader(response.Body, r.maxZIPBytes+1))
-	closeErr := spool.Close()
-	if err := errors.Join(copyErr, closeErr); err != nil {
-		return fetchedSkill{}, fmt.Errorf("stage publication archive: %w", err)
-	}
-	if written > r.maxZIPBytes {
-		return fetchedSkill{}, &tree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: written}
-	}
-	if response.ContentLength >= 0 && written != response.ContentLength {
-		return fetchedSkill{}, fmt.Errorf("%w: tree response was truncated", errProtocol)
-	}
-
-	snapshot, err := tree.Decode(ctx, spoolName, r.stagingParent, r.limits)
+	archive, err := tree.ReceiveArchive(ctx, r.stagingParent, response.Body, response.ContentLength, r.maxZIPBytes)
 	if err != nil {
 		if errors.Is(err, tree.ErrInvalid) {
-			return fetchedSkill{}, fmt.Errorf("%w: %v", errProtocol, err)
+			return fetchedSkill{}, fmt.Errorf("%w: %v", protocol.ErrInvalidResponse, err)
+		}
+		return fetchedSkill{}, err
+	}
+	defer func() { err = errors.Join(err, archive.Close()) }()
+
+	snapshot, err := tree.DecodeArchive(ctx, archive, r.stagingParent, r.limits)
+	if err != nil {
+		if errors.Is(err, tree.ErrInvalid) {
+			return fetchedSkill{}, fmt.Errorf("%w: %v", protocol.ErrInvalidResponse, err)
 		}
 		return fetchedSkill{}, err
 	}
@@ -219,16 +158,13 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 	}()
 	inspection, err := registry.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
-		return fetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", errProtocol, err)
+		return fetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", protocol.ErrInvalidResponse, err)
 	}
-	if err := inspection.RequireName(publication.Skill().Name()); err != nil {
-		return fetchedSkill{}, fmt.Errorf("%w: downloaded SKILL.md names another skill", errIdentityMismatch)
-	}
-	if inspection.Digest() != publication.Tree() {
-		return fetchedSkill{}, fmt.Errorf("%w: expected %s, got %s", errDigestMismatch, publication.Tree().String(), inspection.Digest().String())
+	if err := inspection.Verify(expected); err != nil {
+		return fetchedSkill{}, fmt.Errorf("%w: downloaded tree: %v", protocol.ErrInvalidResponse, err)
 	}
 	owned = false
-	return fetchedSkill{publication: publication, tree: &fetchedTree{snapshot: snapshot}}, nil
+	return fetchedSkill{publication: expected, tree: snapshot}, nil
 }
 
 func (r *remote) get(ctx context.Context, endpoint, accept string) (*http.Response, error) {
@@ -242,118 +178,6 @@ func (r *remote) get(ctx context.Context, endpoint, accept string) (*http.Respon
 		return nil, err
 	}
 	return response, nil
-}
-
-func (r *remote) responseError(response *http.Response) error {
-	if err := requireContentType(response.Header.Get("Content-Type"), protocol.JSONMediaType, true); err != nil {
-		return err
-	}
-	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
-	if err != nil {
-		return fmt.Errorf("%w: read error response: %v", errProtocol, err)
-	}
-	var wire protocol.ErrorResponse
-	if err := decodeStrictJSON(body, &wire); err != nil {
-		return fmt.Errorf("%w: decode error response: %v", errProtocol, err)
-	}
-	expected, known := protocol.StatusForCode(wire.Code)
-	if !known || expected != response.StatusCode || wire.Message == "" {
-		return fmt.Errorf("%w: unknown error code or status", errProtocol)
-	}
-	switch wire.Code {
-	case protocol.CodeNotFound:
-		return fmt.Errorf("%w: requested publication does not exist", errNotFound)
-	case protocol.CodeInvalidRequest:
-		return fmt.Errorf("%w: %s", errInvalidRequest, safeErrorMessage(wire.Message, "registry rejected the request"))
-	case protocol.CodeTooLarge:
-		return fmt.Errorf("%w: registry could not return the tree within its limit", tree.ErrLimitExceeded)
-	case protocol.CodeInternal:
-		return fmt.Errorf("%w: %s", errInternal, safeErrorMessage(wire.Message, "registry encountered an internal error"))
-	case protocol.CodeUnavailable:
-		return fmt.Errorf("%w: %s", errUnavailable, safeErrorMessage(wire.Message, "registry is temporarily unavailable"))
-	default:
-		return fmt.Errorf("%w: unknown registry error", errProtocol)
-	}
-}
-
-func safeErrorMessage(message, fallback string) string {
-	if len(message) > maxErrorMessageBytes || !utf8.ValidString(message) {
-		return fallback
-	}
-	for _, r := range message {
-		if unicode.IsControl(r) {
-			return fallback
-		}
-	}
-	return message
-}
-
-func requireContentType(header, expected string, allowUTF8Charset bool) error {
-	mediaType, parameters, err := mime.ParseMediaType(header)
-	if err != nil || mediaType != expected {
-		return fmt.Errorf("%w: expected Content-Type %s", errProtocol, expected)
-	}
-	if len(parameters) == 0 {
-		return nil
-	}
-	if allowUTF8Charset && len(parameters) == 1 && strings.EqualFold(parameters["charset"], "utf-8") {
-		return nil
-	}
-	return fmt.Errorf("%w: unexpected Content-Type parameters", errProtocol)
-}
-
-func readBounded(source io.Reader, contentLength, maximum int64) ([]byte, error) {
-	if contentLength > maximum {
-		return nil, fmt.Errorf("response exceeds %d bytes", maximum)
-	}
-	contents, err := io.ReadAll(io.LimitReader(source, maximum+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(contents)) > maximum {
-		return nil, fmt.Errorf("response exceeds %d bytes", maximum)
-	}
-	if contentLength >= 0 && int64(len(contents)) != contentLength {
-		return nil, io.ErrUnexpectedEOF
-	}
-	return contents, nil
-}
-
-func decodeStrictJSON(source []byte, destination any) error {
-	decoder := json.NewDecoder(bytes.NewReader(source))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return fmt.Errorf("response contains trailing JSON data")
-	}
-	return nil
-}
-
-type fetchedTree struct {
-	snapshot      *tree.Snapshot
-	closeSnapshot func(*tree.Snapshot) error
-}
-
-func (t *fetchedTree) Open(name string) (fs.File, error) {
-	return t.snapshot.FS().Open(name)
-}
-
-func (t *fetchedTree) Close() error {
-	if t == nil || t.snapshot == nil {
-		return nil
-	}
-	closeSnapshot := t.closeSnapshot
-	if closeSnapshot == nil {
-		closeSnapshot = (*tree.Snapshot).Close
-	}
-	if err := closeSnapshot(t.snapshot); err != nil {
-		return err
-	}
-	t.snapshot = nil
-	return nil
 }
 
 func isLoopbackHost(host string) bool {

@@ -2,11 +2,14 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
+
+var ErrPublicationMismatch = errors.New("agent skill tree does not match publication")
 
 // Inspection is a loaded Agent Skill tree with its identity facts bound: the
 // parsed SKILL.md and the digest of the whole tree. Inspect verifies both in
@@ -42,12 +45,19 @@ func (i Inspection) Document() agentskill.Document { return i.directory.Document
 // Digest returns the tree digest computed during Inspect.
 func (i Inspection) Digest() TreeDigest { return i.digest }
 
-// RequireName fails when the tree's SKILL.md names a skill other than
-// expected.
-func (i Inspection) RequireName(expected agentskill.Name) error {
-	actual := i.directory.Document().Name
-	if actual != expected {
-		return fmt.Errorf("%w: %s: names %q, want %q", agentskill.ErrInvalidTree, agentskill.Filename, actual.String(), expected.String())
+// Verify fails unless the inspected SKILL.md name and computed tree digest
+// match the expected publication.
+func (i Inspection) Verify(expected PublicationID) error {
+	if expected.Skill().String() == "" {
+		return fmt.Errorf("%w: expected publication is invalid", ErrPublicationMismatch)
+	}
+	actualName := i.directory.Document().Name
+	expectedName := expected.Skill().Name()
+	if actualName != expectedName {
+		return fmt.Errorf("%w: %s names %q, want %q", ErrPublicationMismatch, agentskill.Filename, actualName.String(), expectedName.String())
+	}
+	if i.digest != expected.Tree() {
+		return fmt.Errorf("%w: tree hashes to %s, want %s", ErrPublicationMismatch, i.digest.String(), expected.Tree().String())
 	}
 	return nil
 }

@@ -7,10 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"mime/multipart"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -163,6 +161,7 @@ func decodeManifest(src []byte, limits tree.Limits) ([]manifestEntry, string, er
 		return nil, "", &tree.LimitError{Limit: "files", Max: int64(limits.MaxFiles), Actual: int64(len(entries))}
 	}
 	root := ""
+	files := make([]tree.File, 0, len(entries))
 	for position, entry := range entries {
 		if entry.Index != position {
 			return nil, "", malformed("manifest indexes must be unique, ordered, and contiguous from zero", nil)
@@ -173,14 +172,8 @@ func decodeManifest(src []byte, limits tree.Limits) ([]manifestEntry, string, er
 		if entry.Size > limits.MaxFileBytes {
 			return nil, "", &tree.LimitError{Limit: "file bytes", Max: limits.MaxFileBytes, Actual: entry.Size}
 		}
-		if err := validateUploadPath(entry.Path, limits); err != nil {
-			if errors.Is(err, tree.ErrLimitExceeded) {
-				return nil, "", err
-			}
-			return nil, "", malformed("directory manifest contains an unsafe path", err)
-		}
 		selectedRoot, _, found := strings.Cut(entry.Path, "/")
-		if !found {
+		if !found || selectedRoot == "" {
 			return nil, "", malformed("every directory path must begin with the selected root", nil)
 		}
 		if root == "" {
@@ -188,26 +181,15 @@ func decodeManifest(src []byte, limits tree.Limits) ([]manifestEntry, string, er
 		} else if selectedRoot != root {
 			return nil, "", malformed("directory manifest contains more than one selected root", nil)
 		}
+		files = append(files, tree.File{Path: entry.Path, Size: entry.Size})
+	}
+	if _, err := tree.NewManifest(files, limits); err != nil {
+		if errors.Is(err, tree.ErrLimitExceeded) {
+			return nil, "", err
+		}
+		return nil, "", malformed("directory manifest contains an unsafe path or collision", err)
 	}
 	return entries, root, nil
-}
-
-func validateUploadPath(name string, limits tree.Limits) error {
-	if name == "." || !fs.ValidPath(name) || !utf8.ValidString(name) || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") || isWindowsAbsolute(name) {
-		return fmt.Errorf("%w: %q", tree.ErrInvalidPath, name)
-	}
-	if len(name) > limits.MaxPathBytes {
-		return &tree.LimitError{Limit: "path bytes", Max: int64(limits.MaxPathBytes), Actual: int64(len(name))}
-	}
-	depth := strings.Count(name, "/") + 1
-	if depth > limits.MaxDepth {
-		return &tree.LimitError{Limit: "path depth", Max: int64(limits.MaxDepth), Actual: int64(depth)}
-	}
-	return nil
-}
-
-func isWindowsAbsolute(name string) bool {
-	return len(name) >= 3 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')) && name[1] == ':' && name[2] == '/'
 }
 
 func malformed(problem string, cause error) error {

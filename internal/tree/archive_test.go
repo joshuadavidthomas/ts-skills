@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,13 +15,48 @@ import (
 	"testing/fstest"
 )
 
-func TestMaxBytesCoversPrototypeLimits(t *testing.T) {
+func TestMaxArchiveBytesCoversPrototypeLimits(t *testing.T) {
 	const payload = 128 << 20
 	const entries = 2048
 	const names = 1024
 	want := int64(payload + entries*(256+2*names) + 22)
-	if MaxBytes != want {
-		t.Fatalf("MaxBytes = %d, want %d", MaxBytes, want)
+	got, err := MaxArchiveBytes(PrototypeLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("MaxArchiveBytes = %d, want %d", got, want)
+	}
+}
+
+func TestEncodeArchiveOwnsTemporaryArtifact(t *testing.T) {
+	parent := t.TempDir()
+	limits := PrototypeLimits()
+	maximum, err := MaxArchiveBytes(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := EncodeArchive(context.Background(), parent, fstest.MapFS{
+		"SKILL.md": {Data: []byte("skill")},
+	}, limits, maximum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archive.Size() <= 0 {
+		t.Fatalf("archive size = %d, want positive", archive.Size())
+	}
+	if _, err := io.ReadAll(archive); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("closed archive left temporary files: %v", entries)
 	}
 }
 

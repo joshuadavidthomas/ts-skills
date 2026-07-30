@@ -19,8 +19,9 @@ func Stage(ctx context.Context, parent, pattern string, source fs.FS) (_ *Snapsh
 	if ctx == nil {
 		return nil, fmt.Errorf("stage tree context must be provided")
 	}
-	if source == nil {
-		return nil, fmt.Errorf("stage tree source must be provided")
+	validated, err := NewSource(ctx, source, ".", PrototypeLimits())
+	if err != nil {
+		return nil, fmt.Errorf("stage tree source: %w", err)
 	}
 	staging, err := os.MkdirTemp(parent, pattern)
 	if err != nil {
@@ -32,7 +33,7 @@ func Stage(ctx context.Context, parent, pattern string, source fs.FS) (_ *Snapsh
 			err = errors.Join(err, snapshot.Close())
 		}
 	}()
-	if err := copyInto(ctx, source, staging); err != nil {
+	if err := copyInto(ctx, validated, staging); err != nil {
 		return nil, err
 	}
 	if err := Sync(ctx, staging); err != nil {
@@ -41,55 +42,32 @@ func Stage(ctx context.Context, parent, pattern string, source fs.FS) (_ *Snapsh
 	return snapshot, nil
 }
 
-func copyInto(ctx context.Context, source fs.FS, destination string) error {
-	err := fs.WalkDir(source, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
+func copyInto(ctx context.Context, source Source, destination string) error {
+	for _, file := range source.Files() {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if name == "." {
-			if !entry.IsDir() {
-				return fmt.Errorf("tree source root is not a directory")
-			}
-			return nil
+		target := filepath.Join(destination, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return fmt.Errorf("create staged tree directories for %q: %w", file.Path, err)
 		}
-		target := filepath.Join(destination, filepath.FromSlash(name))
-		info, err := entry.Info()
+		input, err := source.Open(file)
 		if err != nil {
-			return fmt.Errorf("inspect tree entry %q: %w", name, err)
-		}
-		if info.IsDir() {
-			if err := os.Mkdir(target, 0o755); err != nil {
-				return fmt.Errorf("create staged tree directory %q: %w", name, err)
-			}
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("tree entry %q is not a regular file", name)
-		}
-		input, err := source.Open(name)
-		if err != nil {
-			return fmt.Errorf("open tree entry %q: %w", name, err)
+			return fmt.Errorf("open tree entry %q: %w", file.Path, err)
 		}
 		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err != nil {
-			return fmt.Errorf("create staged tree file %q: %w", name, errors.Join(err, input.Close()))
+			return fmt.Errorf("create staged tree file %q: %w", file.Path, errors.Join(err, input.Close()))
 		}
 		copied, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
 		closeOutputErr := output.Close()
 		closeInputErr := input.Close()
 		if err := errors.Join(copyErr, closeOutputErr, closeInputErr); err != nil {
-			return fmt.Errorf("copy tree entry %q: %w", name, err)
+			return fmt.Errorf("copy tree entry %q: %w", file.Path, err)
 		}
-		if copied != info.Size() {
-			return fmt.Errorf("copy tree entry %q: %w", name, io.ErrUnexpectedEOF)
+		if copied != file.Size {
+			return fmt.Errorf("copy tree entry %q: %w", file.Path, io.ErrUnexpectedEOF)
 		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("copy staged tree: %w", err)
 	}
 	return nil
 }

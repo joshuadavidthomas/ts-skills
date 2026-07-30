@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"sort"
 	"time"
 )
 
@@ -23,52 +22,37 @@ func Encode(ctx context.Context, dst io.Writer, tree fs.FS) (err error) {
 		return fmt.Errorf("tree archive filesystem must be provided")
 	}
 
-	files := make([]string, 0)
-	err = fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." || entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("tree contains unsupported path %q", name)
-		}
-		files = append(files, name)
-		return nil
-	})
+	source, err := NewSource(ctx, tree, ".", PrototypeLimits())
 	if err != nil {
-		return fmt.Errorf("list tree archive files: %w", err)
+		return fmt.Errorf("validate tree archive source: %w", err)
 	}
-	sort.Strings(files)
+	return encodeSource(ctx, dst, source)
+}
 
+func encodeSource(ctx context.Context, dst io.Writer, source Source) (err error) {
 	writer := zip.NewWriter(dst)
-	for _, name := range files {
+	for _, file := range source.Files() {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(err, writer.Close())
 		}
-		header := &zip.FileHeader{Name: name, Method: zipMethodStore}
+		header := &zip.FileHeader{Name: file.Path, Method: zipMethodStore}
 		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 		header.SetMode(0o644)
 		output, err := writer.CreateHeader(header)
 		if err != nil {
 			return errors.Join(fmt.Errorf("create tree archive entry: %w", err), writer.Close())
 		}
-		input, err := tree.Open(name)
+		input, err := source.Open(file)
 		if err != nil {
-			return errors.Join(fmt.Errorf("open tree archive source %q: %w", name, err), writer.Close())
+			return errors.Join(fmt.Errorf("open tree archive source %q: %w", file.Path, err), writer.Close())
 		}
-		_, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
+		written, copyErr := io.Copy(output, &contextReader{ctx: ctx, source: input})
 		closeInputErr := input.Close()
 		if err := errors.Join(copyErr, closeInputErr); err != nil {
-			return errors.Join(fmt.Errorf("write tree archive entry %q: %w", name, err), writer.Close())
+			return errors.Join(fmt.Errorf("write tree archive entry %q: %w", file.Path, err), writer.Close())
+		}
+		if written != file.Size {
+			return errors.Join(fmt.Errorf("write tree archive entry %q: %w", file.Path, io.ErrUnexpectedEOF), writer.Close())
 		}
 	}
 	if err := writer.Close(); err != nil {

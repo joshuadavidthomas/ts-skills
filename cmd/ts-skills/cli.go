@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
@@ -183,6 +184,24 @@ func commandInstaller(configPath, projectPath string) (*installer, project, func
 
 func commandError(operation string, err error) error {
 	var message string
+	var failure *protocol.Failure
+	if errors.As(err, &failure) {
+		switch failure.Code {
+		case protocol.CodeNotFound:
+			message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
+		case protocol.CodeInvalidRequest:
+			message = fmt.Sprintf("cannot %s because the registry rejected the request as invalid", operation)
+		case protocol.CodeTooLarge:
+			message = fmt.Sprintf("cannot %s because the registry could not return the skill within its response limit", operation)
+		case protocol.CodeInternal:
+			message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
+		case protocol.CodeUnavailable:
+			message = fmt.Sprintf("cannot %s because the registry is temporarily busy; try again", operation)
+		default:
+			message = fmt.Sprintf("cannot %s because the registry returned an invalid response", operation)
+		}
+		return fmt.Errorf("%s: %w", message, err)
+	}
 	switch {
 	case errors.Is(err, errBusy):
 		message = fmt.Sprintf("cannot %s while another ts-skills process is changing this project; wait and try again", operation)
@@ -190,20 +209,10 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s because the installed skill differs from ts-skills.lock; restore it or move it aside, then try again", operation)
 	case errors.Is(err, errProjectChanged):
 		message = fmt.Sprintf("cannot %s because this project changed while the registry was being read; try again", operation)
-	case errors.Is(err, errIdentityMismatch), errors.Is(err, errDigestMismatch):
-		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
-	case errors.Is(err, errNotFound):
-		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
 	case errors.Is(err, tree.ErrLimitExceeded):
 		message = fmt.Sprintf("cannot %s because the downloaded skill exceeds the configured safety limits", operation)
-	case errors.Is(err, errProtocol):
+	case errors.Is(err, protocol.ErrInvalidResponse):
 		message = fmt.Sprintf("cannot %s because the registry returned an invalid response", operation)
-	case errors.Is(err, errInvalidRequest):
-		message = fmt.Sprintf("cannot %s because the registry rejected the request as invalid", operation)
-	case errors.Is(err, errInternal):
-		message = fmt.Sprintf("cannot %s because the registry could not complete the request", operation)
-	case errors.Is(err, errUnavailable):
-		message = fmt.Sprintf("cannot %s because the registry is temporarily busy; try again", operation)
 	default:
 		message = fmt.Sprintf("%s failed", operation)
 	}

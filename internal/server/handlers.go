@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"embed"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -108,7 +107,10 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	}
 	maxArchiveBytes := options.maxArchiveBytes
 	if maxArchiveBytes == 0 {
-		maxArchiveBytes = tree.MaxBytes
+		maxArchiveBytes, err = tree.MaxArchiveBytes(options.Limits)
+		if err != nil {
+			return nil, fmt.Errorf("derive web archive limit: %w", err)
+		}
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -485,24 +487,13 @@ func (h *handler) currentPublication(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, r, err)
 		return
 	}
-	response := protocol.NewCurrentResponse(publication.ID)
-	w.Header().Set("Content-Type", protocol.JSONMediaType)
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(response)
+	if err := protocol.WriteCurrent(w, publication.ID); err != nil {
+		h.options.Logger.Warn("write current publication response failed", "error", err)
+	}
 }
 
 func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
-	skill, err := parseAPISkill(r.PathValue("namespace"), r.PathValue("name"))
-	if err != nil {
-		h.writeAPIError(w, protocol.CodeInvalidRequest)
-		return
-	}
-	digest, err := registry.ParseTreeDigest(r.PathValue("digest"))
-	if err != nil || digest.String() != r.PathValue("digest") {
-		h.writeAPIError(w, protocol.CodeInvalidRequest)
-		return
-	}
-	requestedPublication, err := registry.NewPublicationID(skill, digest)
+	requestedPublication, err := protocol.ParsePublication(r.PathValue("namespace"), r.PathValue("name"), r.PathValue("digest"))
 	if err != nil {
 		h.writeAPIError(w, protocol.CodeInvalidRequest)
 		return
@@ -528,11 +519,8 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	archive, err := h.rootlessZIP(r.Context(), tree)
 	if archive != nil {
 		defer func() {
-			// Cleanup runs after the ZIP response is committed, so a failure is
-			// operator-only diagnostics.
-			name := archive.Name()
-			if err := errors.Join(archive.Close(), os.Remove(name)); err != nil {
-				h.options.Logger.Warn("web archive cleanup failed", "archive", name, "error", err)
+			if err := archive.Close(); err != nil {
+				h.options.Logger.Warn("web archive cleanup failed", "error", err)
 			}
 		}()
 	}
@@ -557,36 +545,8 @@ func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
 	return protocol.ParseSkill(namespaceText, nameText)
 }
 
-func (h *handler) rootlessZIP(ctx context.Context, source fs.FS) (_ *os.File, err error) {
-	archive, err := os.CreateTemp(h.options.StagingParent, ".ts-skills-download-*.zip")
-	if err != nil {
-		return nil, fmt.Errorf("create tree archive: %w", err)
-	}
-	owned := true
-	defer func() {
-		if owned {
-			name := archive.Name()
-			err = errors.Join(err, archive.Close(), os.Remove(name))
-		}
-	}()
-	if err := tree.Encode(ctx, archive, source); err != nil {
-		return nil, err
-	}
-	info, err := archive.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat tree archive: %w", err)
-	}
-	if info.Size() > h.maxArchiveBytes {
-		return nil, &tree.LimitError{Limit: "archive bytes", Max: h.maxArchiveBytes, Actual: info.Size()}
-	}
-	if err := archive.Sync(); err != nil {
-		return nil, fmt.Errorf("sync tree archive: %w", err)
-	}
-	if _, err := archive.Seek(0, io.SeekStart); err != nil {
-		return nil, fmt.Errorf("rewind tree archive: %w", err)
-	}
-	owned = false
-	return archive, nil
+func (h *handler) rootlessZIP(ctx context.Context, source fs.FS) (*tree.Archive, error) {
+	return tree.EncodeArchive(ctx, h.options.StagingParent, source, h.options.Limits, h.maxArchiveBytes)
 }
 
 func (h *handler) writeAPIDomainError(w http.ResponseWriter, r *http.Request, err error) {
@@ -601,21 +561,16 @@ func (h *handler) writeAPIDomainError(w http.ResponseWriter, r *http.Request, er
 	}
 }
 
-func (h *handler) writeAPIError(w http.ResponseWriter, code string) {
-	status, known := protocol.StatusForCode(code)
-	if !known {
-		code = protocol.CodeInternal
-		status, _ = protocol.StatusForCode(code)
-	}
-	message := map[string]string{
+func (h *handler) writeAPIError(w http.ResponseWriter, code protocol.Code) {
+	message := map[protocol.Code]string{
 		protocol.CodeNotFound:       "Skill publication was not found.",
 		protocol.CodeInvalidRequest: "Request path is invalid.",
 		protocol.CodeTooLarge:       "Skill tree is too large to download.",
 		protocol.CodeInternal:       "Registry request could not be completed.",
 	}[code]
-	w.Header().Set("Content-Type", protocol.JSONMediaType)
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: code, Message: message})
+	if err := protocol.WriteFailure(w, code, message); err != nil {
+		h.options.Logger.Warn("write API error response failed", "error", err)
+	}
 }
 
 func nextTextPart(body *multipart.Reader, expected string, maximum int64) (string, error) {
@@ -750,9 +705,9 @@ func (h *handler) admitTreeWork(w http.ResponseWriter, api bool) bool {
 	default:
 		w.Header().Set("Retry-After", "1")
 		if api {
-			w.Header().Set("Content-Type", protocol.JSONMediaType)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Code: protocol.CodeUnavailable, Message: "Registry tree work is temporarily unavailable."})
+			if err := protocol.WriteFailure(w, protocol.CodeUnavailable, "Registry tree work is temporarily unavailable."); err != nil {
+				h.options.Logger.Warn("write API unavailable response failed", "error", err)
+			}
 		} else {
 			h.renderError(w, http.StatusServiceUnavailable, "Registry is busy", "Try again in a moment.")
 		}

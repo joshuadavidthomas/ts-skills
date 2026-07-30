@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
@@ -83,7 +82,7 @@ func createDirectory(name string, mode fs.FileMode) (bool, error) {
 	return false, nil
 }
 
-func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
+func (c *catalog) materializeTree(ctx context.Context, expected registry.PublicationID, source fs.FS) (err error) {
 	staged, err := tree.Stage(ctx, c.tmpDir, ".tree-", source)
 	if err != nil {
 		return err
@@ -103,18 +102,15 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 	if err != nil {
 		return fmt.Errorf("inspect staged Agent Skill: %w", err)
 	}
-	actual := inspection.Digest()
-	if actual != expected {
-		return fmt.Errorf("%w: candidate says %s, copied tree hashes to %s", errTreeMismatch, expected, actual)
-	}
-	if actualName := inspection.Document().Name; actualName != expectedName {
-		return fmt.Errorf("candidate names %s but SKILL.md names %s", expectedName, actualName)
+	if err := inspection.Verify(expected); err != nil {
+		return fmt.Errorf("%w: %v", errTreeMismatch, err)
 	}
 	if err := c.step("verify staged tree digest"); err != nil {
 		return err
 	}
 
-	shard, final := c.treePaths(expected)
+	digest := expected.Tree()
+	shard, final := c.treePaths(digest)
 	if _, err := createDirectory(shard, 0o700); err != nil {
 		return fmt.Errorf("create tree digest shard: %w", err)
 	}
@@ -137,7 +133,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("%w: digest path is not a real directory", errTreeMismatch)
 		}
-		if err := verifyTree(ctx, final, expected); err != nil {
+		if err := verifyTree(ctx, final, digest); err != nil {
 			return err
 		}
 		if err := c.step("verify existing digest tree"); err != nil {
@@ -152,7 +148,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 		if err := c.step("sync existing digest tree"); err != nil {
 			return err
 		}
-		c.markTreeVerified(expected)
+		c.markTreeVerified(digest)
 		return nil
 	case !errors.Is(statErr, fs.ErrNotExist):
 		return fmt.Errorf("inspect digest tree: %w", statErr)
@@ -175,7 +171,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDig
 	if err := c.step("sync installed digest tree parent"); err != nil {
 		return err
 	}
-	c.markTreeVerified(expected)
+	c.markTreeVerified(digest)
 	return nil
 }
 

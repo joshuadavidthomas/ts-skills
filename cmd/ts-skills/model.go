@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 type requirement struct {
@@ -37,5 +38,5 @@ type lockedSkill struct {
 
 type fetchedSkill struct {
 	publication registry.PublicationID
-	tree        *fetchedTree
+	tree        *tree.Snapshot
 }

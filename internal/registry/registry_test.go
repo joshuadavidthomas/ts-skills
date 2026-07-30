@@ -80,15 +80,27 @@ func TestInspectBindsDocumentAndDigest(t *testing.T) {
 	if _, err := inspection.Directory().FS().Open("scripts/run.sh"); err != nil {
 		t.Fatalf("Inspect directory FS open tree file: %v", err)
 	}
-	if err := inspection.RequireName(inspection.Document().Name); err != nil {
-		t.Fatalf("RequireName(tree's own name) = %v", err)
-	}
-	other, err := agentskill.ParseName("other")
+	skill, err := ParseSkillID("team/right")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := inspection.RequireName(other); !errors.Is(err, agentskill.ErrInvalidTree) {
-		t.Fatalf("RequireName(other) error = %v, want ErrInvalidTree", err)
+	publication, err := NewPublicationID(skill, inspection.Digest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inspection.Verify(publication); err != nil {
+		t.Fatalf("Verify(tree's publication) = %v", err)
+	}
+	other, err := ParseSkillID("team/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatch, err := NewPublicationID(other, inspection.Digest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inspection.Verify(mismatch); !errors.Is(err, ErrPublicationMismatch) {
+		t.Fatalf("Verify(other publication) error = %v, want ErrPublicationMismatch", err)
 	}
 }
 
@@ -103,6 +115,16 @@ func TestInspectRejectsLoadAndTreeFailures(t *testing.T) {
 	}
 	if _, err := Inspect(context.Background(), unsafe, "root"); !errors.Is(err, agentskill.ErrInvalidTree) {
 		t.Fatalf("Inspect with unsafe entry error = %v, want ErrInvalidTree", err)
+	}
+}
+
+func TestSumTreeUsesPortableTreeValidation(t *testing.T) {
+	files := fstest.MapFS{
+		"root/A.txt": &fstest.MapFile{Data: []byte("first")},
+		"root/a.txt": &fstest.MapFile{Data: []byte("second")},
+	}
+	if _, err := SumTree(context.Background(), files, "root"); !errors.Is(err, agentskill.ErrInvalidTree) {
+		t.Fatalf("SumTree portable-path collision error = %v, want ErrInvalidTree", err)
 	}
 }
 

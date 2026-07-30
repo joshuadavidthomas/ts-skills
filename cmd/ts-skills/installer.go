@@ -10,16 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 var (
-	errBusy             = errors.New("project is being modified by another ts-skills process")
-	errIdentityMismatch = errors.New("registry returned another publication")
-	errDigestMismatch   = errors.New("fetched tree digest does not match publication")
-	errLocalChanges     = errors.New("installed skill differs from the project lock")
-	errProjectChanged   = errors.New("project changed during restore")
+	errBusy           = errors.New("project is being modified by another ts-skills process")
+	errLocalChanges   = errors.New("installed skill differs from the project lock")
+	errProjectChanged = errors.New("project changed during restore")
 )
 
 type installer struct{ remote *remote }
@@ -222,14 +221,14 @@ func (w *projectWriter) assertUnchanged(ctx context.Context, skill registry.Skil
 
 func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirement, fetched fetchedSkill) (verified *verifiedTree, err error) {
 	if fetched.tree == nil {
-		return nil, fmt.Errorf("%w: fetched tree is missing", errIdentityMismatch)
+		return nil, fmt.Errorf("%w: fetched tree is missing", protocol.ErrInvalidResponse)
 	}
 	publication := fetched.publication
 	if publication.Skill() != requirement.skillID() {
-		return nil, fmt.Errorf("%w: requested %s, received %s", errIdentityMismatch, requirement.skillID(), publication.Skill())
+		return nil, fmt.Errorf("%w: requested %s, received %s", protocol.ErrInvalidResponse, requirement.skillID(), publication.Skill())
 	}
 	if digest, exact := requirement.exactDigest(); exact && publication.Tree() != digest {
-		return nil, fmt.Errorf("%w: registry returned a different exact digest", errIdentityMismatch)
+		return nil, fmt.Errorf("%w: registry returned a different exact digest", protocol.ErrInvalidResponse)
 	}
 	staged, err := copyFetchedTree(ctx, w.project.skillsDir(), fetched.tree)
 	if err != nil {
@@ -240,13 +239,9 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirem
 		_ = os.RemoveAll(staged)
 		return nil, fmt.Errorf("validate staged Agent Skill: %w", err)
 	}
-	if err := inspection.RequireName(requirement.skillID().Name()); err != nil {
+	if err := inspection.Verify(publication); err != nil {
 		_ = os.RemoveAll(staged)
-		return nil, fmt.Errorf("%w: SKILL.md names %s", errIdentityMismatch, inspection.Document().Name)
-	}
-	if inspection.Digest() != publication.Tree() {
-		_ = os.RemoveAll(staged)
-		return nil, fmt.Errorf("%w: expected %s, got %s", errDigestMismatch, publication.Tree(), inspection.Digest())
+		return nil, fmt.Errorf("%w: staged tree: %v", protocol.ErrInvalidResponse, err)
 	}
 	w.staging[staged] = struct{}{}
 	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, nil

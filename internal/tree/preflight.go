@@ -20,9 +20,9 @@ const (
 // preflight bounds classic ZIP entry metadata before archive/zip allocates
 // and decodes the central directory. Registry downloads do not accept ZIP64 or
 // multi-disk archives.
-func preflight(archivePath string, maximumEntries int64) (err error) {
-	if maximumEntries <= 0 {
-		return fmt.Errorf("ZIP entry maximum must be positive")
+func preflight(archivePath string, maximumEntries, maximumBytes int64) (err error) {
+	if maximumEntries <= 0 || maximumBytes <= 0 {
+		return fmt.Errorf("ZIP entry and byte maxima must be positive")
 	}
 	archive, err := os.Open(archivePath)
 	if err != nil {
@@ -36,8 +36,8 @@ func preflight(archivePath string, maximumEntries int64) (err error) {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("ZIP spool is not a regular file")
 	}
-	if info.Size() > MaxBytes {
-		return &LimitError{Limit: "archive bytes", Max: MaxBytes, Actual: info.Size()}
+	if info.Size() > maximumBytes {
+		return &LimitError{Limit: "archive bytes", Max: maximumBytes, Actual: info.Size()}
 	}
 	return preflightDirectory(archive, info.Size(), maximumEntries)
 }

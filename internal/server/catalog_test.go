@@ -605,7 +605,7 @@ func TestRecordCandidateRejectsDigestMismatchAndConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	mismatchedName := testCandidate(otherID, otherSkill, fixture.digest, fixture.provenance)
-	if err := catalog.recordCandidate(context.Background(), mismatchedName, fixture.directory); err == nil || !strings.Contains(err.Error(), "candidate names other but SKILL.md names sample") {
+	if err := catalog.recordCandidate(context.Background(), mismatchedName, fixture.directory); !errors.Is(err, errTreeMismatch) || !strings.Contains(err.Error(), `SKILL.md names "sample", want "other"`) {
 		t.Fatalf("mismatched candidate name error = %v", err)
 	}
 	if _, err := catalog.candidate(context.Background(), mismatchedName.ID); !errors.Is(err, errNotFound) {

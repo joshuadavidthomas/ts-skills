@@ -17,7 +17,11 @@ func Decode(ctx context.Context, archivePath, stagingParent string, limits Limit
 		return nil, fmt.Errorf("tree archive limits: %w", err)
 	}
 	maximumEntries := int64(limits.MaxFiles)
-	if err := preflight(archivePath, maximumEntries); err != nil {
+	maximumBytes, err := MaxArchiveBytes(limits)
+	if err != nil {
+		return nil, fmt.Errorf("derive tree archive limit: %w", err)
+	}
+	if err := preflight(archivePath, maximumEntries, maximumBytes); err != nil {
 		if errors.Is(err, ErrLimitExceeded) {
 			return nil, err
 		}
@@ -72,6 +76,18 @@ func Decode(ctx context.Context, archivePath, stagingParent string, limits Limit
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+// DecodeArchive validates and stages a received Archive.
+func DecodeArchive(ctx context.Context, archive *Archive, stagingParent string, limits Limits) (*Snapshot, error) {
+	if archive == nil || archive.file == nil || archive.path == "" {
+		return nil, fmt.Errorf("tree archive is closed")
+	}
+	if err := archive.file.Close(); err != nil {
+		return nil, fmt.Errorf("close received tree archive: %w", err)
+	}
+	archive.file = nil
+	return Decode(ctx, archive.path, stagingParent, limits)
 }
 
 func invalid(operation string, err error) error {
