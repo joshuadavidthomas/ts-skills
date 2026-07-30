@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 const (
@@ -28,7 +28,7 @@ const (
 )
 
 type verifiedTree struct {
-	publication agentskill.PublicationID
+	publication registry.PublicationID
 	path        string
 	owned       bool
 	writer      *projectWriter
@@ -228,7 +228,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if err != nil || !record.HadDestination {
 		return false, nil
 	}
-	inFlight, err := agentskill.ParseTreeDigest(record.Tree)
+	inFlight, err := registry.ParseTreeDigest(record.Tree)
 	if err != nil {
 		return false, nil
 	}
@@ -247,7 +247,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if state.exists && state.digest != inFlight {
 		return false, nil
 	}
-	digest, err := agentskill.SumTree(ctx, os.DirFS(filepath.Join(path, trashTreeName)), ".")
+	digest, err := registry.SumTree(ctx, os.DirFS(filepath.Join(path, trashTreeName)), ".")
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, err
@@ -281,7 +281,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 }
 
 type staleTrash struct {
-	skill             agentskill.SkillID
+	skill             registry.SkillID
 	removeDestination bool
 }
 
@@ -328,40 +328,40 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 	if record.HadDestination {
 		return nil, nil
 	}
-	tree, err := agentskill.ParseTreeDigest(record.Tree)
+	tree, err := registry.ParseTreeDigest(record.Tree)
 	if err != nil || state.digest != tree {
 		return nil, nil
 	}
 	return &staleTrash{skill: skill, removeDestination: true}, nil
 }
 
-func readTrashRecord(path string) (trashRecord, agentskill.SkillID, error) {
+func readTrashRecord(path string) (trashRecord, registry.SkillID, error) {
 	recordPath := filepath.Join(path, trashRecordName)
 	if err := rejectLink(recordPath, false); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return trashRecord{}, agentskill.SkillID{}, err
+			return trashRecord{}, registry.SkillID{}, err
 		}
-		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
+		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	contents, err := os.ReadFile(recordPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return trashRecord{}, agentskill.SkillID{}, err
+			return trashRecord{}, registry.SkillID{}, err
 		}
-		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
+		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	var record trashRecord
 	if err := json.Unmarshal(contents, &record); err != nil {
-		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
+		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
-	skill, err := agentskill.ParseSkillID(record.Skill)
+	skill, err := registry.ParseSkillID(record.Skill)
 	if err != nil {
-		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
+		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	return record, skill, nil
 }
 
-func (w *projectWriter) createTrash(publication agentskill.PublicationID, hadDestination bool) (string, error) {
+func (w *projectWriter) createTrash(publication registry.PublicationID, hadDestination bool) (string, error) {
 	path, err := temporaryPath(w.project.skillsDir(), installTrashPendingPrefix)
 	if err != nil {
 		return "", err
@@ -420,16 +420,16 @@ func (w *projectWriter) readLock() (lock, []byte, bool, error) {
 
 type destinationState struct {
 	exists bool
-	digest agentskill.TreeDigest
+	digest registry.TreeDigest
 }
 
-func (w *projectWriter) destinationState(ctx context.Context, skill agentskill.SkillID) (destinationState, error) {
+func (w *projectWriter) destinationState(ctx context.Context, skill registry.SkillID) (destinationState, error) {
 	destination := w.project.destination(skill.Name().String())
 	exists, err := inspectDestination(destination)
 	if err != nil || !exists {
 		return destinationState{exists: exists}, err
 	}
-	digest, err := agentskill.SumTree(ctx, os.DirFS(destination), ".")
+	digest, err := registry.SumTree(ctx, os.DirFS(destination), ".")
 	if err != nil {
 		return destinationState{}, fmt.Errorf("verify installed skill %s: %w", skill.String(), err)
 	}

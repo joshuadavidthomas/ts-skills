@@ -5,10 +5,11 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func TestFlatEntitiesCarryCatalogFacts(t *testing.T) {
-	namespace, err := agentskill.ParseNamespace("team")
+	namespace, err := registry.ParseNamespace("team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -16,21 +17,21 @@ func TestFlatEntitiesCarryCatalogFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	skill, err := agentskill.NewSkillID(namespace, name)
+	skill, err := registry.NewSkillID(namespace, name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	candidate, err := agentskill.NewCandidateID()
+	candidate, err := newCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	publication, err := agentskill.NewPublicationID(skill, agentskill.TreeDigest{})
+	publication, err := registry.NewPublicationID(skill, registry.TreeDigest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	actor := actor{ID: "user:1", Display: "Person"}
 	provenance := provenance{Source: "sample", SubmittedBy: actor, SubmittedAt: time.Now()}
-	got := testCandidate(candidate, skill, agentskill.TreeDigest{}, provenance)
+	got := testCandidate(candidate, skill, registry.TreeDigest{}, provenance)
 	if got.Skill != skill || got.Provenance != provenance {
 		t.Fatalf("candidate = %#v", got)
 	}

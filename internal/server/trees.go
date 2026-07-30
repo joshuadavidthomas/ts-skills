@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func ensureStateDirectory(stateDir string) error {
@@ -83,7 +84,7 @@ func createDirectory(name string, mode fs.FileMode) (bool, error) {
 	return false, nil
 }
 
-func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
+func (c *catalog) materializeTree(ctx context.Context, expected registry.TreeDigest, expectedName agentskill.Name, source fs.FS) (err error) {
 	staging, err := os.MkdirTemp(c.tmpDir, ".tree-")
 	if err != nil {
 		return fmt.Errorf("create tree staging directory: %w", err)
@@ -103,7 +104,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		return err
 	}
 
-	actual, err := agentskill.SumTree(ctx, os.DirFS(staging), ".")
+	actual, err := registry.SumTree(ctx, os.DirFS(staging), ".")
 	if err != nil {
 		return fmt.Errorf("hash staged tree: %w", err)
 	}
@@ -249,8 +250,8 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 	return r.source.Read(buffer)
 }
 
-func verifyTree(ctx context.Context, directory string, expected agentskill.TreeDigest) error {
-	actual, err := agentskill.SumTree(ctx, os.DirFS(directory), ".")
+func verifyTree(ctx context.Context, directory string, expected registry.TreeDigest) error {
+	actual, err := registry.SumTree(ctx, os.DirFS(directory), ".")
 	if err != nil {
 		return fmt.Errorf("%w: verify digest tree: %v", errTreeMismatch, err)
 	}
@@ -339,13 +340,13 @@ func (c *catalog) step(name string) error {
 	return nil
 }
 
-func (c *catalog) treePaths(digest agentskill.TreeDigest) (string, string) {
+func (c *catalog) treePaths(digest registry.TreeDigest) (string, string) {
 	hexDigest := strings.TrimPrefix(digest.String(), "sha256:")
 	shard := filepath.Join(c.treesDir, hexDigest[:2])
 	return shard, filepath.Join(shard, hexDigest[2:])
 }
 
-func (c *catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (*treeView, error) {
+func (c *catalog) openTree(ctx context.Context, digest registry.TreeDigest) (*treeView, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return nil, err
@@ -364,14 +365,14 @@ func (c *catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (*
 	return &treeView{files: os.DirFS(final), release: c.releaseTree}, nil
 }
 
-func (c *catalog) treeVerified(digest agentskill.TreeDigest) bool {
+func (c *catalog) treeVerified(digest registry.TreeDigest) bool {
 	c.verifiedMu.Lock()
 	defer c.verifiedMu.Unlock()
 	_, ok := c.verified[digest]
 	return ok
 }
 
-func (c *catalog) markTreeVerified(digest agentskill.TreeDigest) {
+func (c *catalog) markTreeVerified(digest registry.TreeDigest) {
 	c.verifiedMu.Lock()
 	defer c.verifiedMu.Unlock()
 	c.verified[digest] = struct{}{}

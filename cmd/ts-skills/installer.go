@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 var (
@@ -129,8 +129,8 @@ type restorePlan struct {
 	lock    lock
 	bytes   []byte
 	hadLock bool
-	states  map[agentskill.SkillID]destinationState
-	missing []agentskill.PublicationID
+	states  map[registry.SkillID]destinationState
+	missing []registry.PublicationID
 }
 type fetchedRepair struct {
 	requirement requirement
@@ -142,7 +142,7 @@ func makeRestorePlan(ctx context.Context, writer *projectWriter) (restorePlan, e
 	if err != nil {
 		return restorePlan{}, err
 	}
-	plan := restorePlan{lock: lock, bytes: contents, hadLock: hadLock, states: make(map[agentskill.SkillID]destinationState)}
+	plan := restorePlan{lock: lock, bytes: contents, hadLock: hadLock, states: make(map[registry.SkillID]destinationState)}
 	for _, locked := range lock.skills() {
 		publication := locked.publication
 		state, stateErr := writer.destinationState(ctx, publication.Skill())
@@ -188,7 +188,7 @@ func closeFetchedTree(fetched fetchedSkill) error {
 	return fetched.tree.Close()
 }
 
-func assertManagedDestination(lock lock, skill agentskill.SkillID, state destinationState) error {
+func assertManagedDestination(lock lock, skill registry.SkillID, state destinationState) error {
 	if !state.exists {
 		return nil
 	}
@@ -202,7 +202,7 @@ func assertManagedDestination(lock lock, skill agentskill.SkillID, state destina
 	return nil
 }
 
-func (w *projectWriter) assertUnchanged(ctx context.Context, skill agentskill.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
+func (w *projectWriter) assertUnchanged(ctx context.Context, skill registry.SkillID, oldBytes []byte, hadLock bool, before destinationState) error {
 	_, currentBytes, currentHadLock, err := w.readLock()
 	if err != nil {
 		return projectChanged("reread project lock", err)
@@ -235,7 +235,7 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirem
 	if err != nil {
 		return nil, err
 	}
-	inspection, err := agentskill.Inspect(ctx, os.DirFS(staged), ".")
+	inspection, err := registry.Inspect(ctx, os.DirFS(staged), ".")
 	if err != nil {
 		_ = os.RemoveAll(staged)
 		return nil, fmt.Errorf("validate staged Agent Skill: %w", err)

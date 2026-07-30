@@ -20,26 +20,27 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
 )
 
-func clientSkill(t *testing.T) agentskill.SkillID {
+func clientSkill(t *testing.T) registry.SkillID {
 	t.Helper()
-	skill, err := agentskill.ParseSkillID("team/sample")
+	skill, err := registry.ParseSkillID("team/sample")
 	if err != nil {
 		t.Fatal(err)
 	}
 	return skill
 }
 
-func clientTree(t *testing.T, body string) (agentskill.TreeDigest, []byte) {
+func clientTree(t *testing.T, body string) (registry.TreeDigest, []byte) {
 	t.Helper()
 	files := fstest.MapFS{
 		"SKILL.md":        {Data: []byte("---\nname: sample\ndescription: Client test\n---\n" + body)},
 		"assets/data.txt": {Data: []byte("asset")},
 	}
-	digest, err := agentskill.SumTree(context.Background(), files, ".")
+	digest, err := registry.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +145,7 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 		MaxFiles: 2, MaxPathBytes: 16, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
 	}
 	digest, archive := clientTree(t, "archive ceiling")
-	maximum := agentskill.TreeArchiveMaxBytes
+	maximum := treearchive.MaxBytes
 	responseBody := archive
 	oversized := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

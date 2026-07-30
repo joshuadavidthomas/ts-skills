@@ -3,39 +3,39 @@ package main
 import (
 	"fmt"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 type requirement struct {
-	skill  agentskill.SkillID
-	digest agentskill.TreeDigest
+	skill  registry.SkillID
+	digest registry.TreeDigest
 	exact  bool
 }
 
-func current(skill agentskill.SkillID) (requirement, error) {
+func current(skill registry.SkillID) (requirement, error) {
 	if skill.String() == "" {
 		return requirement{}, fmt.Errorf("current requirement needs a valid skill")
 	}
 	return requirement{skill: skill}, nil
 }
 
-func exact(skill agentskill.SkillID, digest agentskill.TreeDigest) (requirement, error) {
+func exact(skill registry.SkillID, digest registry.TreeDigest) (requirement, error) {
 	if skill.String() == "" {
 		return requirement{}, fmt.Errorf("exact requirement needs a valid skill")
 	}
 	return requirement{skill: skill, digest: digest, exact: true}, nil
 }
 
-func (r requirement) skillID() agentskill.SkillID { return r.skill }
-func (r requirement) exactDigest() (agentskill.TreeDigest, bool) {
+func (r requirement) skillID() registry.SkillID { return r.skill }
+func (r requirement) exactDigest() (registry.TreeDigest, bool) {
 	return r.digest, r.exact
 }
 
 type lockedSkill struct {
-	publication agentskill.PublicationID
+	publication registry.PublicationID
 }
 
 type fetchedSkill struct {
-	publication agentskill.PublicationID
+	publication registry.PublicationID
 	tree        *fetchedTree
 }

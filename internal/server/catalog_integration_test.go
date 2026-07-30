@@ -10,11 +10,11 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
-func newCatalogFixture(t *testing.T) (*catalog, agentskill.Namespace, curator, string, time.Time) {
+func newCatalogFixture(t *testing.T) (*catalog, registry.Namespace, curator, string, time.Time) {
 	t.Helper()
 	store, err := openCatalog(context.Background(), t.TempDir())
 	if err != nil {
@@ -25,7 +25,7 @@ func newCatalogFixture(t *testing.T) (*catalog, agentskill.Namespace, curator, s
 			t.Error(err)
 		}
 	})
-	namespace, err := agentskill.ParseNamespace("team")
+	namespace, err := registry.ParseNamespace("team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func stageTree(t *testing.T, source fs.FS) *safetree.Snapshot {
 	return snapshot
 }
 
-func capture(t *testing.T, catalog *catalog, namespace agentskill.Namespace, curator curator, source string, submittedAt time.Time, tree fs.FS) candidate {
+func capture(t *testing.T, catalog *catalog, namespace registry.Namespace, curator curator, source string, submittedAt time.Time, tree fs.FS) candidate {
 	t.Helper()
 	snapshot := stageTree(t, tree)
 	defer func() {
@@ -206,7 +206,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 			t.Error(err)
 		}
 	})
-	namespace, err := agentskill.ParseNamespace("team")
+	namespace, err := registry.ParseNamespace("team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +220,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	inspection, err := agentskill.Inspect(context.Background(), snapshot.FS(), "sample")
+	inspection, err := registry.Inspect(context.Background(), snapshot.FS(), "sample")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +244,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 	catalog, namespace, curator, source, submittedAt := newCatalogFixture(t)
 	ctx := context.Background()
-	missingCandidate, err := agentskill.NewCandidateID()
+	missingCandidate, err := newCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,11 +350,11 @@ func TestCatalogCapturePublishAndCurrentTransitions(t *testing.T) {
 		t.Fatalf("published tree asset = %q", publishedAsset)
 	}
 
-	unknownDigest, err := agentskill.ParseTreeDigest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	unknownDigest, err := registry.ParseTreeDigest("sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 	if err != nil {
 		t.Fatal(err)
 	}
-	unknownPublication, err := agentskill.NewPublicationID(firstCandidate.Skill, unknownDigest)
+	unknownPublication, err := registry.NewPublicationID(firstCandidate.Skill, unknownDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

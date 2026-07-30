@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
@@ -58,7 +58,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if flags.NArg() != 1 {
 		return fmt.Errorf("install requires one <namespace>/<name> argument")
 	}
-	skill, err := agentskill.ParseSkillID(flags.Arg(0))
+	skill, err := registry.ParseSkillID(flags.Arg(0))
 	if err != nil {
 		return fmt.Errorf("parse skill %q: %w", flags.Arg(0), err)
 	}
@@ -66,7 +66,7 @@ func runInstall(ctx context.Context, args []string, stdout, stderr io.Writer) (e
 	if *digestText == "" {
 		requirement, err = current(skill)
 	} else {
-		digest, parseErr := agentskill.ParseTreeDigest(*digestText)
+		digest, parseErr := registry.ParseTreeDigest(*digestText)
 		if parseErr != nil {
 			return fmt.Errorf("parse --digest: %w", parseErr)
 		}

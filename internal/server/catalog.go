@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 var errTreesOpen = errors.New("registry trees remain open")
@@ -50,9 +51,9 @@ type catalog struct {
 	refsMu      sync.Mutex
 	openTrees   int
 	verifiedMu  sync.Mutex
-	verified    map[agentskill.TreeDigest]struct{}
+	verified    map[registry.TreeDigest]struct{}
 	digestMu    sync.Mutex
-	digestLocks map[agentskill.TreeDigest]*digestMutex
+	digestLocks map[registry.TreeDigest]*digestMutex
 
 	// Package-private failure and synchronization seams used by tests.
 	afterFilesystemStep       func(string) error
@@ -126,8 +127,8 @@ func openCatalog(ctx context.Context, stateDir string) (_ *catalog, err error) {
 		stateDir:      absolute,
 		treesDir:      treesDir,
 		tmpDir:        tmpDir,
-		digestLocks:   make(map[agentskill.TreeDigest]*digestMutex),
-		verified:      make(map[agentskill.TreeDigest]struct{}),
+		digestLocks:   make(map[registry.TreeDigest]*digestMutex),
+		verified:      make(map[registry.TreeDigest]struct{}),
 		syncDirectory: syncDirectory,
 		closeDB:       (*sql.DB).Close,
 		closeLock:     (*flock.Flock).Close,
@@ -210,7 +211,7 @@ func (c *catalog) withOpenState() (func(), error) {
 	return c.stateMu.RUnlock, nil
 }
 
-func (c *catalog) lockDigest(digest agentskill.TreeDigest) func() {
+func (c *catalog) lockDigest(digest registry.TreeDigest) func() {
 	c.digestMu.Lock()
 	entry := c.digestLocks[digest]
 	if entry == nil {
@@ -282,7 +283,7 @@ func (c *catalog) recordCandidate(ctx context.Context, candidate candidate, dire
 	return nil
 }
 
-func (c *catalog) candidate(ctx context.Context, id agentskill.CandidateID) (candidate, error) {
+func (c *catalog) candidate(ctx context.Context, id candidateID) (candidate, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return candidate{}, err

@@ -23,8 +23,9 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
 )
 
 type fixedCuratorResolver struct {
@@ -311,7 +312,7 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 	fixture := newWebFixture(t)
 	instructions := "# Submitted once\n"
 	location := fixture.uploadDirectory(instructions)
-	id, err := agentskill.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
+	id, err := parseCandidateID(strings.TrimPrefix(location, "/candidates/"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestUploadCarriesStagedTreeDigestIntoCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	skill := "---\nname: sample\ndescription: Web test\n---\n" + instructions
-	expected, err := agentskill.SumTree(context.Background(), fstest.MapFS{
+	expected, err := registry.SumTree(context.Background(), fstest.MapFS{
 		"sample/SKILL.md":         {Data: []byte(skill)},
 		"sample/assets/inert.txt": {Data: []byte("inert asset")},
 	}, "sample")
@@ -349,7 +350,7 @@ func TestUploadRedirectsWhenPostCommitCleanupFails(t *testing.T) {
 	}()
 
 	location := fixture.uploadDirectory("Cleanup error must not hide the candidate.\n")
-	id, err := agentskill.ParseCandidateID(strings.TrimPrefix(location, "/candidates/"))
+	id, err := parseCandidateID(strings.TrimPrefix(location, "/candidates/"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +663,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
-	ceiling := agentskill.TreeArchiveMaxBytes
+	ceiling := treearchive.MaxBytes
 	if int64(len(body)) > ceiling {
 		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", len(body), ceiling)
 	}
@@ -672,8 +673,8 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	}
 	var names []string
 	for _, file := range archive.File {
-		if file.Method != agentskill.TreeArchiveZIPMethod {
-			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, agentskill.TreeArchiveZIPMethod)
+		if file.Method != treearchive.ZIPMethod {
+			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, treearchive.ZIPMethod)
 		}
 		names = append(names, file.Name)
 	}
@@ -725,7 +726,7 @@ func (t *cancelAfterReadTreeFile) Read(buffer []byte) (int, error) {
 func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	staging := t.TempDir()
-	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: agentskill.TreeArchiveMaxBytes}
+	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: treearchive.MaxBytes}
 	tree := cancelAfterReadTree{
 		files:  fstest.MapFS{"large": {Data: bytes.Repeat([]byte("x"), 128<<10)}},
 		cancel: cancel,
@@ -743,7 +744,7 @@ func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 }
 
 func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
-	ceiling := agentskill.TreeArchiveMaxBytes
+	ceiling := treearchive.MaxBytes
 	h := &handler{options: handlerOptions{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
 	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
 		"SKILL.md":        {Data: []byte("s")},

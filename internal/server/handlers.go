@@ -24,7 +24,9 @@ import (
 
 	"github.com/gorilla/csrf"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
 )
 
 //go:embed templates
@@ -107,7 +109,7 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	}
 	maxArchiveBytes := options.maxArchiveBytes
 	if maxArchiveBytes == 0 {
-		maxArchiveBytes = agentskill.TreeArchiveMaxBytes
+		maxArchiveBytes = treearchive.MaxBytes
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -175,11 +177,11 @@ type skillView struct {
 	ShortDigest string
 }
 
-func skillPagePath(skill agentskill.SkillID) string {
+func skillPagePath(skill registry.SkillID) string {
 	return "/skills/" + url.PathEscape(skill.Namespace().String()) + "/" + url.PathEscape(skill.Name().String())
 }
 
-func publicationTreePath(publication agentskill.PublicationID) string {
+func publicationTreePath(publication registry.PublicationID) string {
 	skill := publication.Skill()
 	return "/api/" + apiVersion + "/skills/" + url.PathEscape(skill.Namespace().String()) +
 		"/" + url.PathEscape(skill.Name().String()) + "/publications/" + publication.Tree().String() + "/tree.zip"
@@ -293,7 +295,7 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	namespace, err := agentskill.ParseNamespace(namespaceText)
+	namespace, err := registry.ParseNamespace(namespaceText)
 	if err != nil {
 		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
 		return
@@ -356,7 +358,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.resolveCurator(w, r); !ok {
 		return
 	}
-	id, err := agentskill.ParseCandidateID(r.PathValue("candidate"))
+	id, err := parseCandidateID(r.PathValue("candidate"))
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
@@ -389,7 +391,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, err)
 		return
 	}
-	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	publicationID, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -412,7 +414,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) publishCandidate(w http.ResponseWriter, r *http.Request) {
-	id, err := agentskill.ParseCandidateID(r.PathValue("candidate"))
+	id, err := parseCandidateID(r.PathValue("candidate"))
 	if err != nil {
 		h.renderError(w, http.StatusNotFound, "Candidate was not found", "Return to the catalog and choose another candidate.")
 		return
@@ -441,17 +443,17 @@ func (h *handler) setCurrent(w http.ResponseWriter, r *http.Request) {
 		h.handleError(w, r, malformedRequest("current publication form must contain one skill and digest", nil))
 		return
 	}
-	skill, err := agentskill.ParseSkillID(r.Form.Get("skill"))
+	skill, err := registry.ParseSkillID(r.Form.Get("skill"))
 	if err != nil {
 		h.handleError(w, r, malformedRequest("current skill identity is invalid", err))
 		return
 	}
-	digest, err := agentskill.ParseTreeDigest(r.Form.Get("digest"))
+	digest, err := registry.ParseTreeDigest(r.Form.Get("digest"))
 	if err != nil {
 		h.handleError(w, r, malformedRequest("current tree digest is invalid", err))
 		return
 	}
-	publication, err := agentskill.NewPublicationID(skill, digest)
+	publication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
 		h.handleError(w, r, err)
 		return
@@ -503,12 +505,12 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIError(w, codeInvalidRequest)
 		return
 	}
-	digest, err := agentskill.ParseTreeDigest(r.PathValue("digest"))
+	digest, err := registry.ParseTreeDigest(r.PathValue("digest"))
 	if err != nil || digest.String() != r.PathValue("digest") {
 		h.writeAPIError(w, codeInvalidRequest)
 		return
 	}
-	requestedPublication, err := agentskill.NewPublicationID(skill, digest)
+	requestedPublication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
 		h.writeAPIError(w, codeInvalidRequest)
 		return
@@ -561,16 +563,16 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, resolvedSkill.Name().String()+".zip", time.Time{}, archive)
 }
 
-func parseAPISkill(namespaceText, nameText string) (agentskill.SkillID, error) {
-	namespace, err := agentskill.ParseNamespace(namespaceText)
+func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
+	namespace, err := registry.ParseNamespace(namespaceText)
 	if err != nil || namespace.String() != namespaceText {
-		return agentskill.SkillID{}, fmt.Errorf("invalid namespace")
+		return registry.SkillID{}, fmt.Errorf("invalid namespace")
 	}
 	name, err := agentskill.ParseName(nameText)
 	if err != nil || name.String() != nameText {
-		return agentskill.SkillID{}, fmt.Errorf("invalid Agent Skill name")
+		return registry.SkillID{}, fmt.Errorf("invalid Agent Skill name")
 	}
-	return agentskill.NewSkillID(namespace, name)
+	return registry.NewSkillID(namespace, name)
 }
 
 func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err error) {
@@ -616,8 +618,8 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 		if err := ctx.Err(); err != nil {
 			return nil, errors.Join(err, writer.Close())
 		}
-		// V1 tree archives use agentskill.TreeArchiveZIPMethod for every entry.
-		header := &zip.FileHeader{Name: name, Method: agentskill.TreeArchiveZIPMethod}
+		// V1 tree archives use treearchive.ZIPMethod for every entry.
+		header := &zip.FileHeader{Name: name, Method: treearchive.ZIPMethod}
 		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
 		header.SetMode(0o644)
 		output, err := writer.CreateHeader(header)

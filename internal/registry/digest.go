@@ -1,4 +1,4 @@
-package agentskill
+package registry
 
 import (
 	"context"
@@ -12,23 +12,27 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
+
+var ErrInvalidTreeDigest = errors.New("invalid tree digest")
 
 type TreeDigest [sha256.Size]byte
 
 func ParseTreeDigest(src string) (TreeDigest, error) {
 	var digest TreeDigest
 	if len(src) != len("sha256:")+sha256.Size*2 || !strings.HasPrefix(src, "sha256:") {
-		return digest, newValidationError(ErrInvalidTreeDigest, "digest", "must use sha256 followed by 64 lowercase hexadecimal digits")
+		return digest, invalidTreeDigest("must use sha256 followed by 64 lowercase hexadecimal digits")
 	}
 	hexPart := src[len("sha256:"):]
 	for _, ch := range hexPart {
 		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
-			return digest, newValidationError(ErrInvalidTreeDigest, "digest", "must use lowercase hexadecimal digits")
+			return digest, invalidTreeDigest("must use lowercase hexadecimal digits")
 		}
 	}
 	if _, err := hex.Decode(digest[:], []byte(hexPart)); err != nil {
-		return TreeDigest{}, newValidationError(ErrInvalidTreeDigest, "digest", err.Error())
+		return TreeDigest{}, invalidTreeDigest(err.Error())
 	}
 	return digest, nil
 }
@@ -45,7 +49,7 @@ type treeEntry struct {
 // contribute to the hash input, so digests are stable.
 func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 	if fsys == nil || !fs.ValidPath(dir) {
-		return TreeDigest{}, newValidationError(ErrInvalidTree, "directory", "must name a tree in a filesystem")
+		return TreeDigest{}, invalidTree("directory", "must name a tree in a filesystem")
 	}
 	var entries []treeEntry
 	err := fs.WalkDir(fsys, dir, func(name string, entry fs.DirEntry, walkErr error) error {
@@ -57,7 +61,7 @@ func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 		}
 		if name == dir {
 			if !entry.IsDir() {
-				return newValidationError(ErrInvalidTree, "directory", "tree root must be a directory")
+				return invalidTree("directory", "tree root must be a directory")
 			}
 			return nil
 		}
@@ -65,12 +69,12 @@ func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 		if dir != "." {
 			prefix := dir + "/"
 			if !strings.HasPrefix(name, prefix) {
-				return newValidationError(ErrInvalidTree, "path", fmt.Sprintf("%q is outside the tree root", name))
+				return invalidTree("path", fmt.Sprintf("%q is outside the tree root", name))
 			}
 			relative = strings.TrimPrefix(name, prefix)
 		}
 		if !validTreePath(relative) {
-			return newValidationError(ErrInvalidTree, "path", fmt.Sprintf("%q is unsafe", name))
+			return invalidTree("path", fmt.Sprintf("%q is unsafe", name))
 		}
 		info, err := entry.Info()
 		if err != nil {
@@ -80,7 +84,7 @@ func SumTree(ctx context.Context, fsys fs.FS, dir string) (TreeDigest, error) {
 			return nil
 		}
 		if !info.Mode().IsRegular() {
-			return newValidationError(ErrInvalidTree, "path", fmt.Sprintf("%q is not a regular file", relative))
+			return invalidTree("path", fmt.Sprintf("%q is not a regular file", relative))
 		}
 		file, err := fsys.Open(name)
 		if err != nil {
@@ -139,4 +143,12 @@ func writeUint64(dst io.Writer, value uint64) {
 
 func validTreePath(name string) bool {
 	return name != "." && fs.ValidPath(name) && utf8.ValidString(name) && !strings.Contains(name, "\\")
+}
+
+func invalidTreeDigest(problem string) error {
+	return fmt.Errorf("%w: digest: %s", ErrInvalidTreeDigest, problem)
+}
+
+func invalidTree(field, problem string) error {
+	return fmt.Errorf("%w: %s: %s", agentskill.ErrInvalidTree, field, problem)
 }

@@ -7,17 +7,17 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
 
 type lock struct {
-	entries map[agentskill.SkillID]lockedSkill
+	entries map[registry.SkillID]lockedSkill
 }
 
 func newLock(skills []lockedSkill) (lock, error) {
-	result := lock{entries: make(map[agentskill.SkillID]lockedSkill, len(skills))}
-	names := make(map[string]agentskill.SkillID, len(skills))
+	result := lock{entries: make(map[registry.SkillID]lockedSkill, len(skills))}
+	names := make(map[string]registry.SkillID, len(skills))
 	for _, skill := range skills {
 		publication := skill.publication
 		identity := publication.Skill()
@@ -48,7 +48,7 @@ func (l lock) skills() []lockedSkill {
 	return skills
 }
 
-func (l lock) lookup(skill agentskill.SkillID) (lockedSkill, bool) {
+func (l lock) lookup(skill registry.SkillID) (lockedSkill, bool) {
 	locked, found := l.entries[skill]
 	return locked, found
 }
@@ -100,7 +100,7 @@ func decodeLock(source io.Reader) (lock, error) {
 	skills := make([]lockedSkill, 0, len(document.Skills))
 	previousSkill := ""
 	for index, entry := range document.Skills {
-		identity, err := agentskill.ParseSkillID(entry.Skill)
+		identity, err := registry.ParseSkillID(entry.Skill)
 		if err != nil {
 			return lock{}, fmt.Errorf("decode project lock skill %d: %w", index+1, err)
 		}
@@ -109,11 +109,11 @@ func decodeLock(source io.Reader) (lock, error) {
 			return lock{}, fmt.Errorf("decode project lock: skills must be sorted by canonical identity")
 		}
 		previousSkill = canonicalSkill
-		digest, err := agentskill.ParseTreeDigest(entry.Digest)
+		digest, err := registry.ParseTreeDigest(entry.Digest)
 		if err != nil {
 			return lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
 		}
-		publication, err := agentskill.NewPublicationID(identity, digest)
+		publication, err := registry.NewPublicationID(identity, digest)
 		if err != nil {
 			return lock{}, fmt.Errorf("decode project lock skill %s: %w", entry.Skill, err)
 		}

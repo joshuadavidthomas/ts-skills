@@ -10,10 +10,9 @@ import (
 )
 
 var (
-	ErrInvalidName       = errors.New("invalid Agent Skill name")
-	ErrInvalidDocument   = errors.New("invalid SKILL.md")
-	ErrInvalidTree       = errors.New("invalid Agent Skill tree")
-	ErrInvalidTreeDigest = errors.New("invalid tree digest")
+	ErrInvalidName     = errors.New("invalid Agent Skill name")
+	ErrInvalidDocument = errors.New("invalid SKILL.md")
+	ErrInvalidTree     = errors.New("invalid Agent Skill tree")
 )
 
 // ValidationError identifies one invalid field while preserving its validation class.
@@ -25,7 +24,7 @@ type ValidationError struct {
 
 func newValidationError(cause error, field, problem string) *ValidationError {
 	switch cause {
-	case ErrInvalidName, ErrInvalidDocument, ErrInvalidTree, ErrInvalidTreeDigest:
+	case ErrInvalidName, ErrInvalidDocument, ErrInvalidTree:
 	default:
 		panic("agentskill: undeclared validation cause")
 	}

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/server"
 )
 
@@ -136,7 +136,7 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 	if err := run(context.Background(), []string{"install", "--project", project, "--config", config, "team/sample"}, &stdout, &stderr); err != nil {
 		t.Fatalf("install: %v; stderr=%s", err, stderr.String())
 	}
-	installed, err := agentskill.SumTree(context.Background(), os.DirFS(filepath.Join(project, ".agents", "skills", "sample")), ".")
+	installed, err := registry.SumTree(context.Background(), os.DirFS(filepath.Join(project, ".agents", "skills", "sample")), ".")
 	if err != nil {
 		t.Fatal(err)
 	}

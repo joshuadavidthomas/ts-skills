@@ -20,7 +20,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
 )
 
 const (
@@ -90,7 +92,7 @@ func newRemote(origin origin, httpClient *http.Client, stagingParent string, lim
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	maxZIPBytes := agentskill.TreeArchiveMaxBytes
+	maxZIPBytes := treearchive.MaxBytes
 
 	privateClient := *httpClient
 	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -109,10 +111,10 @@ func (r *remote) fetch(ctx context.Context, requirement requirement) (fetchedSki
 		return fetchedSkill{}, fmt.Errorf("fetch context must be provided")
 	}
 
-	var publication agentskill.PublicationID
+	var publication registry.PublicationID
 	if digest, exact := requirement.exactDigest(); exact {
 		var err error
-		publication, err = agentskill.NewPublicationID(requirement.skillID(), digest)
+		publication, err = registry.NewPublicationID(requirement.skillID(), digest)
 		if err != nil {
 			return fetchedSkill{}, err
 		}
@@ -126,52 +128,52 @@ func (r *remote) fetch(ctx context.Context, requirement requirement) (fetchedSki
 	return r.fetchTree(ctx, publication)
 }
 
-func (r *remote) resolveCurrent(ctx context.Context, skill agentskill.SkillID) (agentskill.PublicationID, error) {
+func (r *remote) resolveCurrent(ctx context.Context, skill registry.SkillID) (registry.PublicationID, error) {
 	endpoint := r.endpoint(
 		"api", apiVersion, "skills", skill.Namespace().String(), skill.Name().String(), "current",
 	)
 	response, err := r.get(ctx, endpoint, "application/json")
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("resolve current publication: %w", err)
+		return registry.PublicationID{}, fmt.Errorf("resolve current publication: %w", err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return agentskill.PublicationID{}, r.responseError(response)
+		return registry.PublicationID{}, r.responseError(response)
 	}
 	if err := requireContentType(response.Header.Get("Content-Type"), "application/json", true); err != nil {
-		return agentskill.PublicationID{}, err
+		return registry.PublicationID{}, err
 	}
 	body, err := readBounded(response.Body, response.ContentLength, maxJSONResponseBytes)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: read current response: %v", errProtocol, err)
+		return registry.PublicationID{}, fmt.Errorf("%w: read current response: %v", errProtocol, err)
 	}
 	var wire currentResponse
 	if err := decodeStrictJSON(body, &wire); err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: decode current response: %v", errProtocol, err)
+		return registry.PublicationID{}, fmt.Errorf("%w: decode current response: %v", errProtocol, err)
 	}
-	namespace, err := agentskill.ParseNamespace(wire.Namespace)
+	namespace, err := registry.ParseNamespace(wire.Namespace)
 	if err != nil || namespace.String() != wire.Namespace {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical namespace", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical namespace", errProtocol)
 	}
 	name, err := agentskill.ParseName(wire.Name)
 	if err != nil || name.String() != wire.Name {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical Agent Skill name", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: current response has a noncanonical Agent Skill name", errProtocol)
 	}
-	responseSkill, err := agentskill.NewSkillID(namespace, name)
+	responseSkill, err := registry.NewSkillID(namespace, name)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response identity: %v", errProtocol, err)
+		return registry.PublicationID{}, fmt.Errorf("%w: current response identity: %v", errProtocol, err)
 	}
 	if responseSkill != skill {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response names another skill", errIdentityMismatch)
+		return registry.PublicationID{}, fmt.Errorf("%w: current response names another skill", errIdentityMismatch)
 	}
-	digest, err := agentskill.ParseTreeDigest(wire.Digest)
+	digest, err := registry.ParseTreeDigest(wire.Digest)
 	if err != nil || digest.String() != wire.Digest {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: current response has an invalid digest", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: current response has an invalid digest", errProtocol)
 	}
-	return agentskill.NewPublicationID(responseSkill, digest)
+	return registry.NewPublicationID(responseSkill, digest)
 }
 
-func (r *remote) fetchTree(ctx context.Context, expected agentskill.PublicationID) (_ fetchedSkill, err error) {
+func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID) (_ fetchedSkill, err error) {
 	requestedSkill := expected.Skill()
 	endpoint := r.endpoint(
 		"api", apiVersion, "skills", requestedSkill.Namespace().String(), requestedSkill.Name().String(),
@@ -227,7 +229,7 @@ func (r *remote) fetchTree(ctx context.Context, expected agentskill.PublicationI
 			err = errors.Join(err, snapshot.Close())
 		}
 	}()
-	inspection, err := agentskill.Inspect(ctx, snapshot.FS(), ".")
+	inspection, err := registry.Inspect(ctx, snapshot.FS(), ".")
 	if err != nil {
 		return fetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", errProtocol, err)
 	}
@@ -241,39 +243,39 @@ func (r *remote) fetchTree(ctx context.Context, expected agentskill.PublicationI
 	return fetchedSkill{publication: publication, tree: &fetchedTree{snapshot: snapshot}}, nil
 }
 
-func parseTreePublication(header http.Header) (agentskill.PublicationID, error) {
+func parseTreePublication(header http.Header) (registry.PublicationID, error) {
 	namespaceText, err := requiredTreeHeader(header, headerPublicationNamespace)
 	if err != nil {
-		return agentskill.PublicationID{}, err
+		return registry.PublicationID{}, err
 	}
 	nameText, err := requiredTreeHeader(header, headerPublicationName)
 	if err != nil {
-		return agentskill.PublicationID{}, err
+		return registry.PublicationID{}, err
 	}
 	digestText, err := requiredTreeHeader(header, headerPublicationDigest)
 	if err != nil {
-		return agentskill.PublicationID{}, err
+		return registry.PublicationID{}, err
 	}
 
-	namespace, err := agentskill.ParseNamespace(namespaceText)
+	namespace, err := registry.ParseNamespace(namespaceText)
 	if err != nil || namespace.String() != namespaceText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication namespace", errProtocol)
 	}
 	name, err := agentskill.ParseName(nameText)
 	if err != nil || name.String() != nameText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication name", errProtocol)
 	}
-	skill, err := agentskill.NewSkillID(namespace, name)
+	skill, err := registry.NewSkillID(namespace, name)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
 	}
-	digest, err := agentskill.ParseTreeDigest(digestText)
+	digest, err := registry.ParseTreeDigest(digestText)
 	if err != nil || digest.String() != digestText {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", errProtocol)
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response has a noncanonical publication digest", errProtocol)
 	}
-	publication, err := agentskill.NewPublicationID(skill, digest)
+	publication, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
-		return agentskill.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
+		return registry.PublicationID{}, fmt.Errorf("%w: tree response publication identity: %v", errProtocol, err)
 	}
 	return publication, nil
 }
@@ -312,7 +314,7 @@ func (r *remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree
 		}
 	}()
 	for _, entry := range archive.File {
-		if entry.Method != agentskill.TreeArchiveZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
+		if entry.Method != treearchive.ZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
 			return nil, fmt.Errorf("%w: tree archive contains an unsupported entry", errProtocol)
 		}
 		if entry.UncompressedSize64 > math.MaxInt64 {

@@ -15,7 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 func testInstaller(t *testing.T, body string) (*installer, project, requirement, func(string)) {
@@ -106,11 +106,11 @@ func TestInstallConvergesWhenAnotherInstallUpdatesTheLockDuringFetch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	other, err := agentskill.ParseSkillID("team/other")
+	other, err := registry.ParseSkillID("team/other")
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherPublication, err := agentskill.NewPublicationID(other, digest)
+	otherPublication, err := registry.NewPublicationID(other, digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestInstallConvergesWhenAnotherInstallUpdatesTheLockDuringFetch(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, skill := range []agentskill.SkillID{clientSkill(t), other} {
+	for _, skill := range []registry.SkillID{clientSkill(t), other} {
 		if _, found := installed.lookup(skill); !found {
 			t.Fatalf("final lock is missing %s", skill.String())
 		}

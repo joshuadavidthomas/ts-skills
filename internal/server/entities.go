@@ -3,7 +3,7 @@ package server
 import (
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 type actor struct {
@@ -21,15 +21,15 @@ type provenance struct {
 }
 
 type candidate struct {
-	ID         agentskill.CandidateID
-	Skill      agentskill.SkillID
-	Tree       agentskill.TreeDigest
+	ID         candidateID
+	Skill      registry.SkillID
+	Tree       registry.TreeDigest
 	Provenance provenance
 }
 
 type publication struct {
-	ID          agentskill.PublicationID
-	Candidate   agentskill.CandidateID
+	ID          registry.PublicationID
+	Candidate   candidateID
 	PublishedBy actor
 	PublishedAt time.Time
 }
@@ -38,14 +38,14 @@ type publication struct {
 // the current pointer and when. Transitions persist it but do not return
 // it; a "who selected this" read model would be a deliberate registry read.
 type currentPublication struct {
-	Publication agentskill.PublicationID
+	Publication registry.PublicationID
 	SelectedBy  actor
 	SelectedAt  time.Time
 }
 
 type skillSummary struct {
-	Skill   agentskill.SkillID
-	Current agentskill.PublicationID
+	Skill   registry.SkillID
+	Current registry.PublicationID
 }
 
 func canonicalTime(src time.Time) time.Time { return time.Unix(0, src.UnixNano()).UTC() }

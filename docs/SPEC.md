@@ -350,18 +350,13 @@ The following values and one remote seam guide the first scaffold. They do not d
 ```go
 package agentskill
 
-import (
-    "crypto/sha256"
-    "io/fs"
-)
+import "io/fs"
 
 const Filename = "SKILL.md"
 
 type Name struct {
     canonical string
 }
-
-type TreeDigest [sha256.Size]byte
 
 type Frontmatter struct {
     Name          Name
@@ -387,21 +382,17 @@ func (n Name) String() string
 func Parse(src []byte) (Document, error)
 func Load(fsys fs.FS, dir string) (Directory, error)
 
-func ParseTreeDigest(src string) (TreeDigest, error)
-func (d TreeDigest) String() string
-func SumTree(fsys fs.FS, dir string) (TreeDigest, error)
-
 func (d Directory) Document() Document
 func (d Directory) FS() fs.FS
 ```
 
-`Directory` is a validated parser view over an `fs.FS`; it is not an immutable candidate snapshot. Capture first copies an upload into owned staging storage, then loads and hashes that staged tree.
+`Directory` is a validated parser view over an `fs.FS`; it is not an immutable candidate snapshot. Capture first copies an upload into owned staging storage, then the product-specific registry package loads and hashes that staged tree.
 
 `Document()` returns an independent value. Callers cannot mutate maps or pointer-backed values held inside `Directory`.
 
 ### Registry and installation model
 
-`internal/agentskill` owns validated namespaces, skill IDs, publication IDs, candidate IDs, and tree digests. `internal/server` keeps catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
+`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/registry` builds on it with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/treearchive` owns the shared v1 ZIP transport contract. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
 
 The CLI validates every downloaded tree against its requested publication before replacing the managed destination and writing the lock. No project-defined remote or catalog interfaces remain.
 
@@ -413,9 +404,11 @@ The CLI validates every downloaded tree against its requested publication before
 │   ├── ts-skills/    # CLI, config, HTTP client, and installer
 │   └── ts-skillsd/   # thin daemon entry point
 ├── internal/
-│   ├── agentskill/   # Agent Skill parsing, hashing, and identity
+│   ├── agentskill/   # portable Agent Skills format parsing and validation
+│   ├── registry/     # ts-skills identity, hashing, and publication verification
 │   ├── safetree/     # portable bounded tree staging
-│   ├── server/       # daemon, tsnet, catalog, SQLite, upload, HTTP, and UI
+│   ├── server/       # daemon, catalog, candidate IDs, storage, HTTP, and UI
+│   ├── treearchive/  # shared publication ZIP transport contract
 │   └── version/      # release build version
 ├── docs/
 │   ├── research/

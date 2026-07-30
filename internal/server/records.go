@@ -12,9 +12,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
-func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.CandidateID) (candidate, error) {
+func queryCandidate(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id candidateID) (candidate, error) {
 	row := queryRow(ctx, `
 		SELECT id, namespace, name, tree_digest, source_label,
 		       submitted_actor_id, submitted_actor_display, submitted_at_ns
@@ -67,7 +68,7 @@ func scanCandidate(row *sql.Row) (candidate, error) {
 	}, nil
 }
 
-func queryPublication(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id agentskill.PublicationID) (publication, error) {
+func queryPublication(ctx context.Context, queryRow func(context.Context, string, ...any) *sql.Row, id registry.PublicationID) (publication, error) {
 	row := queryRow(ctx, `
 		SELECT namespace, name, tree_digest, candidate_id,
 		       published_actor_id, published_actor_display, published_at_ns
@@ -104,7 +105,7 @@ func scanPublication(row *sql.Row) (publication, error) {
 	if err != nil {
 		return publication{}, err
 	}
-	id, err := agentskill.NewPublicationID(skill, digest)
+	id, err := registry.NewPublicationID(skill, digest)
 	if err != nil {
 		return publication{}, fmt.Errorf("decode publication identity: %w", err)
 	}
@@ -119,7 +120,7 @@ func scanPublication(row *sql.Row) (publication, error) {
 	return publication{ID: id, Candidate: candidate, PublishedBy: actor, PublishedAt: time.Unix(0, publishedAtNanoseconds).UTC()}, nil
 }
 
-func (c *catalog) publication(ctx context.Context, id agentskill.PublicationID) (publication, error) {
+func (c *catalog) publication(ctx context.Context, id registry.PublicationID) (publication, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return publication{}, err
@@ -128,7 +129,7 @@ func (c *catalog) publication(ctx context.Context, id agentskill.PublicationID) 
 	return queryPublication(ctx, c.db.QueryRowContext, id)
 }
 
-func (c *catalog) currentPublication(ctx context.Context, skill agentskill.SkillID) (publication, error) {
+func (c *catalog) currentPublication(ctx context.Context, skill registry.SkillID) (publication, error) {
 	done, err := c.withOpenState()
 	if err != nil {
 		return publication{}, err
@@ -183,7 +184,7 @@ func (c *catalog) listPublishedSkills(ctx context.Context) (summaries []skillSum
 		if err != nil {
 			return nil, err
 		}
-		publication, err := agentskill.NewPublicationID(skill, digest)
+		publication, err := registry.NewPublicationID(skill, digest)
 		if err != nil {
 			return nil, fmt.Errorf("decode current publication: %w", err)
 		}
@@ -200,23 +201,23 @@ func (c *catalog) listPublishedSkills(ctx context.Context) (summaries []skillSum
 	return summaries, nil
 }
 
-func skillFromText(namespaceText, nameText string) (agentskill.SkillID, error) {
-	namespace, err := agentskill.ParseNamespace(namespaceText)
+func skillFromText(namespaceText, nameText string) (registry.SkillID, error) {
+	namespace, err := registry.ParseNamespace(namespaceText)
 	if err != nil {
-		return agentskill.SkillID{}, fmt.Errorf("decode namespace: %w", err)
+		return registry.SkillID{}, fmt.Errorf("decode namespace: %w", err)
 	}
 	name, err := agentskill.ParseName(nameText)
 	if err != nil {
-		return agentskill.SkillID{}, fmt.Errorf("decode Agent Skill name: %w", err)
+		return registry.SkillID{}, fmt.Errorf("decode Agent Skill name: %w", err)
 	}
-	skill, err := agentskill.NewSkillID(namespace, name)
+	skill, err := registry.NewSkillID(namespace, name)
 	if err != nil {
-		return agentskill.SkillID{}, fmt.Errorf("decode skill identity: %w", err)
+		return registry.SkillID{}, fmt.Errorf("decode skill identity: %w", err)
 	}
 	return skill, nil
 }
 
-func candidateIDBlob(id agentskill.CandidateID) []byte {
+func candidateIDBlob(id candidateID) []byte {
 	raw := id.Bytes()
 	return raw[:]
 }
@@ -240,30 +241,30 @@ func validateActor(actor actor) error {
 	return validateRecordText("actor display", actor.Display)
 }
 
-func candidateIDFromBlob(blob []byte) (agentskill.CandidateID, error) {
+func candidateIDFromBlob(blob []byte) (candidateID, error) {
 	if len(blob) != 16 {
-		return agentskill.CandidateID{}, fmt.Errorf("stored candidate identity has %d bytes, want 16", len(blob))
+		return candidateID{}, fmt.Errorf("stored candidate identity has %d bytes, want 16", len(blob))
 	}
-	id, err := agentskill.CandidateIDFromBytes([16]byte(blob))
+	id, err := candidateIDFromBytes([16]byte(blob))
 	if err != nil {
-		return agentskill.CandidateID{}, fmt.Errorf("decode candidate identity: %w", err)
+		return candidateID{}, fmt.Errorf("decode candidate identity: %w", err)
 	}
 	return id, nil
 }
 
-func digestBlob(digest agentskill.TreeDigest) []byte {
+func digestBlob(digest registry.TreeDigest) []byte {
 	blob := make([]byte, len(digest))
 	copy(blob, digest[:])
 	return blob
 }
 
-func digestFromBlob(blob []byte) (agentskill.TreeDigest, error) {
+func digestFromBlob(blob []byte) (registry.TreeDigest, error) {
 	if len(blob) != 32 {
-		return agentskill.TreeDigest{}, fmt.Errorf("stored tree digest has %d bytes, want 32", len(blob))
+		return registry.TreeDigest{}, fmt.Errorf("stored tree digest has %d bytes, want 32", len(blob))
 	}
-	digest, err := agentskill.ParseTreeDigest("sha256:" + hex.EncodeToString(blob))
+	digest, err := registry.ParseTreeDigest("sha256:" + hex.EncodeToString(blob))
 	if err != nil {
-		return agentskill.TreeDigest{}, fmt.Errorf("decode tree digest: %w", err)
+		return registry.TreeDigest{}, fmt.Errorf("decode tree digest: %w", err)
 	}
 	return digest, nil
 }

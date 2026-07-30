@@ -16,12 +16,13 @@ import (
 
 	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
 type catalogFixture struct {
 	directory  agentskill.Directory
-	digest     agentskill.TreeDigest
-	namespace  agentskill.Namespace
+	digest     registry.TreeDigest
+	namespace  registry.Namespace
 	actor      actor
 	provenance provenance
 }
@@ -37,11 +38,11 @@ func newFixture(t *testing.T, instructions, asset string) catalogFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := agentskill.SumTree(context.Background(), directory.FS(), ".")
+	digest, err := registry.SumTree(context.Background(), directory.FS(), ".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	namespace, err := agentskill.ParseNamespace("team")
+	namespace, err := registry.ParseNamespace("team")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,11 +56,11 @@ func newFixture(t *testing.T, instructions, asset string) catalogFixture {
 
 func (f catalogFixture) candidate(t *testing.T) candidate {
 	t.Helper()
-	id, err := agentskill.NewCandidateID()
+	id, err := newCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	skill, err := agentskill.NewSkillID(f.namespace, f.directory.Document().Name)
+	skill, err := registry.NewSkillID(f.namespace, f.directory.Document().Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	}
 
 	publishedAt := time.Unix(0, time.Date(2026, 2, 4, 5, 6, 7, 8, time.FixedZone("offset", 3600)).UnixNano()).UTC()
-	firstID, err := agentskill.NewPublicationID(first.Skill, first.Tree)
+	firstID, err := registry.NewPublicationID(first.Skill, first.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +139,7 @@ func TestCatalogPersistsFactsAndTreesAcrossRestart(t *testing.T) {
 	if err := catalog.recordCandidate(ctx, second, secondFixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	secondID, err := agentskill.NewPublicationID(second.Skill, second.Tree)
+	secondID, err := registry.NewPublicationID(second.Skill, second.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -594,11 +595,11 @@ func TestRecordCandidateRejectsDigestMismatchAndConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherSkill, err := agentskill.NewSkillID(fixture.namespace, otherName)
+	otherSkill, err := registry.NewSkillID(fixture.namespace, otherName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherID, err := agentskill.NewCandidateID()
+	otherID, err := newCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -746,7 +747,7 @@ func TestSameShardMaterializationWaitsForItsOwnParentBarrier(t *testing.T) {
 			break
 		}
 	}
-	if secondFixture.digest == (agentskill.TreeDigest{}) {
+	if secondFixture.digest == (registry.TreeDigest{}) {
 		t.Fatal("could not construct two distinct digests in one shard")
 	}
 
@@ -862,7 +863,7 @@ func TestCatalogNotFoundAndCanceledOperations(t *testing.T) {
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Missing\n", "asset")
 	candidate := fixture.candidate(t)
-	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	publicationID, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -889,7 +890,7 @@ func TestPersistPublicationReportsRollbackFailure(t *testing.T) {
 	defer closeCatalog(t, catalog)
 	fixture := newFixture(t, "# Missing\n", "asset")
 	candidate := fixture.candidate(t)
-	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	id, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -907,7 +908,7 @@ func TestPersistPublicationReportsRollbackFailure(t *testing.T) {
 }
 
 func TestCandidateIDBlobRoundTrip(t *testing.T) {
-	id, err := agentskill.NewCandidateID()
+	id, err := newCandidateID()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +932,7 @@ func TestPersistPublicationRollsBackWhenInitialCurrentFails(t *testing.T) {
 	if err := catalog.recordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	id, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -965,7 +966,7 @@ func TestPersistPublicationIgnoresPostCommitRollbackError(t *testing.T) {
 	if err := catalog.recordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
-	id, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	id, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		t.Fatal(err)
 	}

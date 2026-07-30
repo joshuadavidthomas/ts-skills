@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 type captureRequest struct {
-	Namespace   agentskill.Namespace
+	Namespace   registry.Namespace
 	Staged      *safetree.Snapshot
 	Root        string
 	Source      string
@@ -29,15 +29,15 @@ func (c *catalog) capture(ctx context.Context, curator curator, request captureR
 		return candidate{}, fmt.Errorf("validate capture: %w", err)
 	}
 	provenance := provenance{Source: request.Source, SubmittedBy: curator.Actor, SubmittedAt: canonicalTime(request.SubmittedAt)}
-	inspection, err := agentskill.Inspect(ctx, request.Staged.FS(), request.Root)
+	inspection, err := registry.Inspect(ctx, request.Staged.FS(), request.Root)
 	if err != nil {
 		return candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}
-	skill, err := agentskill.NewSkillID(request.Namespace, inspection.Document().Name)
+	skill, err := registry.NewSkillID(request.Namespace, inspection.Document().Name)
 	if err != nil {
 		return candidate{}, err
 	}
-	id, err := agentskill.NewCandidateID()
+	id, err := newCandidateID()
 	if err != nil {
 		return candidate{}, err
 	}
@@ -48,7 +48,7 @@ func (c *catalog) capture(ctx context.Context, curator curator, request captureR
 	return captured, nil
 }
 
-func (c *catalog) publish(ctx context.Context, id agentskill.CandidateID, curator curator, at time.Time) (publication, error) {
+func (c *catalog) publish(ctx context.Context, id candidateID, curator curator, at time.Time) (publication, error) {
 	if err := validateActor(curator.Actor); err != nil {
 		return publication{}, fmt.Errorf("validate curator: %w", err)
 	}
@@ -56,7 +56,7 @@ func (c *catalog) publish(ctx context.Context, id agentskill.CandidateID, curato
 	if err != nil {
 		return publication{}, err
 	}
-	publicationID, err := agentskill.NewPublicationID(candidate.Skill, candidate.Tree)
+	publicationID, err := registry.NewPublicationID(candidate.Skill, candidate.Tree)
 	if err != nil {
 		return publication{}, err
 	}
@@ -82,7 +82,7 @@ func (c *catalog) publish(ctx context.Context, id agentskill.CandidateID, curato
 	return c.publication(ctx, publicationID)
 }
 
-func (c *catalog) setCurrent(ctx context.Context, id agentskill.PublicationID, curator curator, at time.Time) error {
+func (c *catalog) setCurrent(ctx context.Context, id registry.PublicationID, curator curator, at time.Time) error {
 	if err := validateActor(curator.Actor); err != nil {
 		return fmt.Errorf("validate curator: %w", err)
 	}

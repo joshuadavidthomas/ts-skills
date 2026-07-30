@@ -1,12 +1,12 @@
 package server
 
-import "github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+import "github.com/joshuadavidthomas/ts-skills/internal/registry"
 
 func testCurator(owner actor) curator {
 	return curator{Actor: owner}
 }
 
-func testCandidate(id agentskill.CandidateID, skill agentskill.SkillID, tree agentskill.TreeDigest, provenance provenance) candidate {
+func testCandidate(id candidateID, skill registry.SkillID, tree registry.TreeDigest, provenance provenance) candidate {
 	return candidate{ID: id, Skill: skill, Tree: tree, Provenance: provenance}
 }
 

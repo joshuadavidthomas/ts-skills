@@ -15,7 +15,7 @@ import (
 	"testing"
 	"testing/fstest"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
@@ -46,7 +46,7 @@ func TestRunInstallsCurrentAndRestoresLockedTree(t *testing.T) {
 		"SKILL.md":  {Data: []byte("---\nname: sample\ndescription: CLI test\n---\nInstructions.\n")},
 		"asset.txt": {Data: []byte("asset")},
 	}
-	digest, err := agentskill.SumTree(context.Background(), files, ".")
+	digest, err := registry.SumTree(context.Background(), files, ".")
 	if err != nil {
 		t.Fatal(err)
 	}
