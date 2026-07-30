@@ -30,7 +30,7 @@ Run these after implementing changes:
 - `internal/agentskill/` parses and validates the open Agent Skills format
 - `internal/registry/` owns ts-skills namespaces, publication identity, tree hashing, and verification
 - `internal/safetree/` validates and stages bounded, portable file trees
-- `internal/treearchive/` defines the v1 ZIP transport contract shared by the client and daemon
+- `internal/treearchive/` encodes and safely decodes the v1 ZIP transport shared by the client and daemon
 - `internal/server/` owns the daemon, tsnet node, catalog, candidate identity, SQLite storage, browser upload, HTTP API, and server-rendered UI
 - `internal/version/` carries the build version injected into release binaries
 - `cmd/ts-skills/` owns the CLI, configuration, registry HTTP client, and installer

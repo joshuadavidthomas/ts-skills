@@ -392,7 +392,7 @@ func (d Directory) FS() fs.FS
 
 ### Registry and installation model
 
-`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/registry` builds on it with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/treearchive` owns the shared v1 ZIP transport contract. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
+`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/registry` builds on it with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/treearchive` encodes and safely decodes the shared v1 ZIP transport. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and the registry HTTP API together. `cmd/ts-skills` keeps requirements, locked selections, the HTTP client, and installation together.
 
 The CLI validates every downloaded tree against its requested publication before replacing the managed destination and writing the lock. No project-defined remote or catalog interfaces remain.
 
@@ -408,7 +408,7 @@ The CLI validates every downloaded tree against its requested publication before
 │   ├── registry/     # ts-skills identity, hashing, and publication verification
 │   ├── safetree/     # portable bounded tree staging
 │   ├── server/       # daemon, catalog, candidate IDs, storage, HTTP, and UI
-│   ├── treearchive/  # shared publication ZIP transport contract
+│   ├── treearchive/  # shared publication ZIP encoding and safe decoding
 │   └── version/      # release build version
 ├── docs/
 │   ├── research/

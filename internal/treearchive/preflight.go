@@ -1,4 +1,4 @@
-package main
+package treearchive
 
 import (
 	"encoding/binary"
@@ -19,10 +19,10 @@ const (
 	zipMaximumCommentLength  = 1<<16 - 1
 )
 
-// preflightZIP bounds classic ZIP entry metadata before archive/zip allocates
+// preflight bounds classic ZIP entry metadata before archive/zip allocates
 // and decodes the central directory. Registry downloads do not accept ZIP64 or
 // multi-disk archives.
-func preflightZIP(archivePath string, maximumEntries int64) (err error) {
+func preflight(archivePath string, maximumEntries int64) (err error) {
 	if maximumEntries <= 0 {
 		return fmt.Errorf("ZIP entry maximum must be positive")
 	}
@@ -38,10 +38,13 @@ func preflightZIP(archivePath string, maximumEntries int64) (err error) {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("ZIP spool is not a regular file")
 	}
-	return preflightZIPDirectory(archive, info.Size(), maximumEntries)
+	if info.Size() > MaxBytes {
+		return &safetree.LimitError{Limit: "archive bytes", Max: MaxBytes, Actual: info.Size()}
+	}
+	return preflightDirectory(archive, info.Size(), maximumEntries)
 }
 
-func preflightZIPDirectory(archive io.ReaderAt, size, maximumEntries int64) error {
+func preflightDirectory(archive io.ReaderAt, size, maximumEntries int64) error {
 	if size < zipDirectoryEndLength {
 		return fmt.Errorf("ZIP end record is missing")
 	}

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"mime"
 	"net"
 	"net/http"
@@ -219,8 +217,11 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 		return fetchedSkill{}, fmt.Errorf("%w: tree response was truncated", errProtocol)
 	}
 
-	snapshot, err := r.decodeZIP(ctx, spoolName)
+	snapshot, err := treearchive.Decode(ctx, spoolName, r.stagingParent, r.limits)
 	if err != nil {
+		if errors.Is(err, treearchive.ErrInvalid) {
+			return fetchedSkill{}, fmt.Errorf("%w: %v", errProtocol, err)
+		}
 		return fetchedSkill{}, err
 	}
 	owned := true
@@ -286,65 +287,6 @@ func requiredTreeHeader(header http.Header, name string) (string, error) {
 		return "", fmt.Errorf("%w: tree response requires exactly one %s header", errProtocol, name)
 	}
 	return values[0], nil
-}
-
-func (r *remote) decodeZIP(ctx context.Context, archivePath string) (_ *safetree.Snapshot, err error) {
-	maximumEntries := int64(r.limits.MaxFiles)
-	if err := preflightZIP(archivePath, maximumEntries); err != nil {
-		if errors.Is(err, safetree.ErrLimitExceeded) {
-			return nil, err
-		}
-		return nil, fmt.Errorf("%w: inspect tree archive end record: %v", errProtocol, err)
-	}
-	archive, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return nil, fmt.Errorf("%w: open tree archive: %v", errProtocol, err)
-	}
-	defer func() { err = errors.Join(err, archive.Close()) }()
-	if int64(len(archive.File)) > maximumEntries {
-		return nil, &safetree.LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(len(archive.File))}
-	}
-	builder, err := safetree.NewBuilder(r.stagingParent, r.limits)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			err = errors.Join(err, builder.Close())
-		}
-	}()
-	for _, entry := range archive.File {
-		if entry.Method != treearchive.ZIPMethod || entry.Flags&0x1 != 0 || entry.FileInfo().IsDir() || !entry.Mode().IsRegular() {
-			return nil, fmt.Errorf("%w: tree archive contains an unsupported entry", errProtocol)
-		}
-		if entry.UncompressedSize64 > math.MaxInt64 {
-			return nil, &safetree.LimitError{Limit: "file bytes", Max: r.limits.MaxFileBytes, Actual: math.MaxInt64}
-		}
-		input, openErr := entry.Open()
-		if openErr != nil {
-			return nil, fmt.Errorf("%w: open tree archive entry: %v", errProtocol, openErr)
-		}
-		addErr := builder.AddFile(ctx, entry.Name, int64(entry.UncompressedSize64), input)
-		closeErr := input.Close()
-		if addErr != nil {
-			switch {
-			case errors.Is(addErr, safetree.ErrLimitExceeded):
-				return nil, addErr
-			case errors.Is(addErr, context.Canceled), errors.Is(addErr, context.DeadlineExceeded):
-				return nil, addErr
-			default:
-				return nil, fmt.Errorf("%w: unsafe tree archive entry: %w", errProtocol, addErr)
-			}
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("%w: close tree archive entry: %w", errProtocol, closeErr)
-		}
-	}
-	snapshot, err := builder.Finish()
-	if err != nil {
-		return nil, err
-	}
-	return snapshot, nil
 }
 
 func (r *remote) get(ctx context.Context, endpoint, accept string) (*http.Response, error) {

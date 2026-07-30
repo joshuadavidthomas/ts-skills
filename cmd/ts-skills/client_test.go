@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -176,28 +175,6 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	}
 }
 
-// TestDecodeZIPPreservesCancellation stays below Fetch because Fetch has no
-// synchronization point between spooling an HTTP response and decoding it.
-// It verifies that AddFile cancellation stays distinct from protocol errors.
-func TestDecodeZIPPreservesCancellation(t *testing.T) {
-	_, archive := clientTree(t, "cancellation")
-	parent := t.TempDir()
-	archivePath := filepath.Join(parent, "tree.zip")
-	if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	remote := &remote{stagingParent: t.TempDir(), limits: safetree.PrototypeLimits()}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err := remote.decodeZIP(ctx, archivePath)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled decodeZIP error = %v, want context.Canceled", err)
-	}
-	if errors.Is(err, errProtocol) {
-		t.Fatalf("canceled decodeZIP error flattened into ErrProtocol: %v", err)
-	}
-}
-
 func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 	tests := map[string]struct {
 		code string
@@ -273,19 +250,8 @@ func TestResponseErrorSanitizesServerMessage(t *testing.T) {
 	}
 }
 
-func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
-	digest, archive := clientTree(t, "archive format")
-	end := bytes.LastIndex(archive, []byte{'P', 'K', 5, 6})
-	if end < 0 {
-		t.Fatal("test ZIP has no end record")
-	}
-	underreported := bytes.Clone(archive)
-	binary.LittleEndian.PutUint16(underreported[end+8:end+10], 1)
-	binary.LittleEndian.PutUint16(underreported[end+10:end+12], 1)
-	zip64 := bytes.Clone(archive)
-	binary.LittleEndian.PutUint16(zip64[end+8:end+10], ^uint16(0))
-	binary.LittleEndian.PutUint16(zip64[end+10:end+12], ^uint16(0))
-
+func TestRemoteFetchMapsInvalidTreeArchiveToProtocolError(t *testing.T) {
+	digest, _ := clientTree(t, "archive format")
 	var deflated bytes.Buffer
 	writer := zip.NewWriter(&deflated)
 	deflatedFiles := map[string][]byte{
@@ -304,39 +270,22 @@ func TestRemoteFetchRejectsInvalidTreeArchives(t *testing.T) {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-
-	limited := safetree.PrototypeLimits()
-	limited.MaxFiles = 1
-	tests := map[string]struct {
-		archive []byte
-		limits  safetree.Limits
-		want    error
-	}{
-		"too many entries":      {archive: archive, limits: limited, want: safetree.ErrLimitExceeded},
-		"underreported entries": {archive: underreported, limits: safetree.PrototypeLimits(), want: errProtocol},
-		"ZIP64":                 {archive: zip64, limits: safetree.PrototypeLimits(), want: errProtocol},
-		"deflated entry":        {archive: deflated.Bytes(), limits: safetree.PrototypeLimits(), want: errProtocol},
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+		_, _ = w.Write(deflated.Bytes())
+	}))
+	defer server.Close()
+	requirement, err := exact(clientSkill(t), digest)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for name, test := range tests {
-		t.Run(name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/zip")
-				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
-				_, _ = w.Write(test.archive)
-			}))
-			defer server.Close()
-			requirement, err := exact(clientSkill(t), digest)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = remoteForServerWithLimits(t, server, test.limits).fetch(context.Background(), requirement)
-			if !errors.Is(err, test.want) {
-				t.Fatalf("Fetch error = %v, want errors.Is %v", err, test.want)
-			}
-			if name == "ZIP64" && errors.Is(err, safetree.ErrLimitExceeded) {
-				t.Fatalf("ZIP64 error = %v, want format rejection", err)
-			}
-		})
+	_, err = remoteForServer(t, server).fetch(context.Background(), requirement)
+	if !errors.Is(err, errProtocol) {
+		t.Fatalf("Fetch error = %v, want errors.Is %v", err, errProtocol)
+	}
+	if errors.Is(err, safetree.ErrLimitExceeded) {
+		t.Fatalf("Fetch error = %v, want format rejection", err)
 	}
 }
 

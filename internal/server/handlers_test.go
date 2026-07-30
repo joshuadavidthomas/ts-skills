@@ -673,8 +673,8 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 	}
 	var names []string
 	for _, file := range archive.File {
-		if file.Method != treearchive.ZIPMethod {
-			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, treearchive.ZIPMethod)
+		if file.Method != zip.Store {
+			t.Fatalf("tree ZIP entry %q method = %d, want %d", file.Name, file.Method, zip.Store)
 		}
 		names = append(names, file.Name)
 	}

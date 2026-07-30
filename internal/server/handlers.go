@@ -1,7 +1,6 @@
 package server
 
 import (
-	"archive/zip"
 	"bytes"
 	"context"
 	"embed"
@@ -576,32 +575,6 @@ func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
 }
 
 func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err error) {
-	files := make([]string, 0)
-	err = fs.WalkDir(tree, ".", func(name string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if name == "." || entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("published tree contains unsupported path")
-		}
-		files = append(files, name)
-		return nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list published tree: %w", err)
-	}
-	sort.Strings(files)
-
 	archive, err := os.CreateTemp(h.options.StagingParent, ".ts-skills-download-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("create tree archive: %w", err)
@@ -613,31 +586,8 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 			err = errors.Join(err, archive.Close(), os.Remove(name))
 		}
 	}()
-	writer := zip.NewWriter(archive)
-	for _, name := range files {
-		if err := ctx.Err(); err != nil {
-			return nil, errors.Join(err, writer.Close())
-		}
-		// V1 tree archives use treearchive.ZIPMethod for every entry.
-		header := &zip.FileHeader{Name: name, Method: treearchive.ZIPMethod}
-		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
-		header.SetMode(0o644)
-		output, err := writer.CreateHeader(header)
-		if err != nil {
-			return nil, errors.Join(fmt.Errorf("create tree archive entry: %w", err), writer.Close())
-		}
-		input, err := tree.Open(name)
-		if err != nil {
-			return nil, errors.Join(fmt.Errorf("open published tree file: %w", err), writer.Close())
-		}
-		_, copyErr := io.Copy(output, &requestContextReader{ctx: ctx, source: input})
-		closeInputErr := input.Close()
-		if err := errors.Join(copyErr, closeInputErr); err != nil {
-			return nil, errors.Join(fmt.Errorf("write tree archive entry: %w", err), writer.Close())
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return nil, fmt.Errorf("finish tree archive: %w", err)
+	if err := treearchive.Encode(ctx, archive, tree); err != nil {
+		return nil, err
 	}
 	info, err := archive.Stat()
 	if err != nil {

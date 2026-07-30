@@ -1,3 +1,3 @@
-// Package treearchive defines the ts-skills v1 ZIP transport contract for
-// publication trees.
+// Package treearchive encodes and safely decodes publication trees using the
+// ts-skills v1 ZIP transport format.
 package treearchive
