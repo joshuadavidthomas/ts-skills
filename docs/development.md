@@ -15,9 +15,9 @@ The suite covers upload normalization, digest identity, SQLite restart, install 
 Useful focused runs while debugging:
 
 ```console
-go test ./cmd/ts-skills -run TestRunInstallsCurrentAndRestoresLockedTree
-go test ./cmd/ts-skills -run 'TestInstallIsIdempotentAndKeepsCanonicalLock|TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths'
-go test ./cmd/ts-skills -run TestInstallThroughDevDaemon
+go test ./internal/client -run TestRunInstallsCurrentAndRestoresLockedTree
+go test ./internal/client -run 'TestInstallIsIdempotentAndKeepsCanonicalLock|TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths'
+go test ./internal/client -run TestInstallThroughDevDaemon
 go test ./internal/server -run 'TestCurationRoutesEscapeReviewPublishAndChangeCurrent|TestDevRuntimeServesLoopbackHTTPAsDevActor'
 ```
 

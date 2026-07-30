@@ -1,5 +1,4 @@
-// Flag diagnostics are printed by the FlagSet; errors are reported once.
-package main
+package client
 
 import (
 	"context"
@@ -16,6 +15,17 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
+
+// Run executes one ts-skills command. It writes every user-facing diagnostic
+// exactly once and returns a non-nil error when the process should exit
+// unsuccessfully.
+func Run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	err := run(ctx, args, stdout, stderr)
+	if err != nil && stderr != nil && !alreadyReported(err) {
+		_, _ = fmt.Fprintf(stderr, "ts-skills: %v\n", err)
+	}
+	return err
+}
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if ctx == nil {

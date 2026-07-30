@@ -1,6 +1,6 @@
 //go:build !windows
 
-package main
+package client
 
 func rejectPlatformPathComponents(string) error {
 	return nil

@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -134,7 +134,7 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"install", "--project", project, "--config", config, "team/sample"}, &stdout, &stderr); err != nil {
+	if err := Run(context.Background(), []string{"install", "--project", project, "--config", config, "team/sample"}, &stdout, &stderr); err != nil {
 		t.Fatalf("install: %v; stderr=%s", err, stderr.String())
 	}
 	installed, err := registry.SumTree(context.Background(), os.DirFS(filepath.Join(project, ".agents", "skills", "sample")), ".")

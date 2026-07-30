@@ -392,7 +392,7 @@ func (d Directory) FS() fs.FS
 
 ### Registry and installation model
 
-`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/protocol` owns the private HTTP contract shared by the client and daemon: route shapes, media types, headers, wire bodies, canonical wire identity conversion, and error-code status mapping. `internal/registry` builds on Agent Skills with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/tree` validates, durably stages, encodes, and decodes bounded portable publication trees; ZIP is its private v1 transport representation. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and HTTP policy together. `cmd/ts-skills` keeps requirements, locked selections, HTTP transport policy, and installation together.
+`internal/agentskill` owns only the portable Agent Skills document and directory rules. `internal/protocol` owns the private HTTP contract shared by the client and daemon: route shapes, media types, headers, wire bodies, canonical wire identity conversion, and error-code status mapping. `internal/registry` builds on Agent Skills with ts-skills namespaces, skill IDs, publication IDs, tree digests, and verified publication trees. `internal/tree` validates, durably stages, encodes, and decodes bounded portable publication trees; ZIP is its private v1 transport representation. `internal/client` keeps command interpretation, configuration, registry HTTP access, requirements, locked selections, installation, rollback, and recovery behind one application entry point. `internal/server` keeps candidate IDs, catalog records, SQLite storage, upload handling, Tailnet identity, and HTTP policy together.
 
 The CLI validates every downloaded tree against its requested publication before replacing the managed destination and writing the lock. No project-defined remote or catalog interfaces remain.
 
@@ -401,10 +401,11 @@ The CLI validates every downloaded tree against its requested publication before
 ```text
 .
 ├── cmd/
-│   ├── ts-skills/    # CLI, config, HTTP client, and installer
+│   ├── ts-skills/    # thin client process entry point
 │   └── ts-skillsd/   # thin daemon entry point
 ├── internal/
 │   ├── agentskill/   # portable Agent Skills format parsing and validation
+│   ├── client/       # client command, registry access, install, and recovery
 │   ├── protocol/     # private client/daemon HTTP contract
 │   ├── registry/     # ts-skills identity, hashing, and publication verification
 │   ├── tree/         # portable tree validation, durable staging, and transport
@@ -417,7 +418,7 @@ The CLI validates every downloaded tree against its requested publication before
 └── go.sum
 ```
 
-The two command packages own their private application code. Shared packages exist only where both binaries need the same vocabulary or invariants.
+The command packages contain only process entry adapters. Each binary's application logic lives in one deep internal package: `client` or `server`. Cross-binary mechanics live in shared packages only where both applications need the same vocabulary or invariants.
 
 ## Resolved implementation choices
 

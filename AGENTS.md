@@ -25,18 +25,17 @@ Run these after implementing changes:
 ## Architecture
 
 - Module: `github.com/joshuadavidthomas/ts-skills`
-- `cmd/ts-skills/` is the client CLI entry point
-- `cmd/ts-skillsd/` is the tsnet registry daemon entry point
+- `cmd/ts-skills/` is a thin client process entry point over `internal/client`
+- `cmd/ts-skillsd/` is a thin daemon process entry point over `internal/server`
+- `internal/client/` owns command interpretation, configuration, registry HTTP access, installation, locking, rollback, and recovery
 - `internal/agentskill/` parses and validates the open Agent Skills format
 - `internal/protocol/` defines the private HTTP contract shared by the client and daemon
 - `internal/registry/` owns ts-skills namespaces, publication identity, tree hashing, and verification
 - `internal/tree/` validates, durably stages, encodes, and decodes bounded portable publication trees
 - `internal/server/` owns the daemon, tsnet node, catalog, candidate identity, SQLite storage, browser upload, HTTP API, and server-rendered UI
 - `internal/version/` carries the build version injected into release binaries
-- `cmd/ts-skills/` owns the CLI, configuration, registry HTTP client, and installer
-- `cmd/ts-skillsd/` is a thin daemon entry point over `internal/server`
 
-A package exists only when both binaries import it. A constructor parses untrusted input. An interface needs two production implementations.
+Cross-binary mechanics belong in shared packages only when both binaries use them. Binary-specific application logic belongs in one internal package; command packages contain process entry adapters only. A constructor parses untrusted input. An interface needs two production implementations.
 
 ## Codebase patterns
 
