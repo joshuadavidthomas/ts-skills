@@ -1,4 +1,4 @@
-package safetree
+package tree
 
 import "strings"
 

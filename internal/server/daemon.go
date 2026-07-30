@@ -20,7 +20,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"tailscale.com/ipn"
 	"tailscale.com/types/persist"
 )
@@ -41,8 +41,8 @@ const (
 // uploadBodyCap covers a maximal legal directory upload: staged file bytes,
 // the manifest (one entry per file), the namespace, and multipart framing for
 // the namespace, manifest, and each file part.
-func uploadBodyCap(limits safetree.Limits) (int64, error) {
-	if err := safetree.ValidateLimits(limits); err != nil {
+func uploadBodyCap(limits tree.Limits) (int64, error) {
+	if err := tree.ValidateLimits(limits); err != nil {
 		return 0, err
 	}
 	files := int64(limits.MaxFiles)
@@ -621,7 +621,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 		return runtime{}, err
 	}
 	actors := &actorResolver{local: localClient}
-	limits := safetree.PrototypeLimits()
+	limits := tree.PrototypeLimits()
 	maxRequestBodyBytes, err := uploadBodyCap(limits)
 	if err != nil {
 		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
@@ -673,7 +673,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}()
 
 	devCurator := curator{Actor: actor{ID: "dev", Display: "dev@localhost"}}
-	limits := safetree.PrototypeLimits()
+	limits := tree.PrototypeLimits()
 	maxRequestBodyBytes, err := uploadBodyCap(limits)
 	if err != nil {
 		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)

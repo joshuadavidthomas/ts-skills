@@ -24,8 +24,7 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 type fixedCuratorResolver struct {
@@ -49,14 +48,14 @@ type webFixture struct {
 	resolver      *fixedCuratorResolver
 	key           csrfKey
 	logger        *slog.Logger
-	limits        safetree.Limits
+	limits        tree.Limits
 	bodyCap       int64
 	treeWork      chan struct{}
 	treeWorkLimit int
 	archiveLimit  int64
 }
 
-func mustUploadBodyCap(t *testing.T, limits safetree.Limits) int64 {
+func mustUploadBodyCap(t *testing.T, limits tree.Limits) int64 {
 	t.Helper()
 	cap, err := uploadBodyCap(limits)
 	if err != nil {
@@ -66,26 +65,26 @@ func mustUploadBodyCap(t *testing.T, limits safetree.Limits) int64 {
 }
 
 func newWebFixture(t *testing.T) *webFixture {
-	return newWebFixtureWithLimits(t, safetree.PrototypeLimits(), nil)
+	return newWebFixtureWithLimits(t, tree.PrototypeLimits(), nil)
 }
 
 func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
-	return newWebFixtureWithLimits(t, safetree.PrototypeLimits(), logger)
+	return newWebFixtureWithLimits(t, tree.PrototypeLimits(), logger)
 }
 
-func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.Logger) *webFixture {
+func newWebFixtureWithLimits(t *testing.T, limits tree.Limits, logger *slog.Logger) *webFixture {
 	return newWebFixtureWithTreeWorkAndArchiveLimit(t, limits, logger, 0, 0)
 }
 
-func newWebFixtureWithTreeWork(t *testing.T, limits safetree.Limits, logger *slog.Logger, treeWork int) *webFixture {
+func newWebFixtureWithTreeWork(t *testing.T, limits tree.Limits, logger *slog.Logger, treeWork int) *webFixture {
 	return newWebFixtureWithTreeWorkAndArchiveLimit(t, limits, logger, treeWork, 0)
 }
 
 func newWebFixtureWithArchiveLimit(t *testing.T, archiveLimit int64) *webFixture {
-	return newWebFixtureWithTreeWorkAndArchiveLimit(t, safetree.PrototypeLimits(), nil, 0, archiveLimit)
+	return newWebFixtureWithTreeWorkAndArchiveLimit(t, tree.PrototypeLimits(), nil, 0, archiveLimit)
 }
 
-func newWebFixtureWithTreeWorkAndArchiveLimit(t *testing.T, limits safetree.Limits, logger *slog.Logger, treeWork int, archiveLimit int64) *webFixture {
+func newWebFixtureWithTreeWorkAndArchiveLimit(t *testing.T, limits tree.Limits, logger *slog.Logger, treeWork int, archiveLimit int64) *webFixture {
 	t.Helper()
 	state := t.TempDir()
 	records, err := openCatalog(context.Background(), state)
@@ -663,7 +662,7 @@ func TestPublicationTreeRouteReturnsRootlessZIPWithResolvedIdentity(t *testing.T
 			t.Fatalf("%s = %q, want %q", header, got, want)
 		}
 	}
-	ceiling := treearchive.MaxBytes
+	ceiling := tree.MaxBytes
 	if int64(len(body)) > ceiling {
 		t.Fatalf("tree ZIP bytes = %d, exceeds protocol ceiling %d", len(body), ceiling)
 	}
@@ -726,7 +725,7 @@ func (t *cancelAfterReadTreeFile) Read(buffer []byte) (int, error) {
 func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	staging := t.TempDir()
-	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: treearchive.MaxBytes}
+	h := &handler{options: handlerOptions{StagingParent: staging}, maxArchiveBytes: tree.MaxBytes}
 	tree := cancelAfterReadTree{
 		files:  fstest.MapFS{"large": {Data: bytes.Repeat([]byte("x"), 128<<10)}},
 		cancel: cancel,
@@ -744,7 +743,7 @@ func TestRootlessZIPHonorsCancellationWhileStreaming(t *testing.T) {
 }
 
 func TestRootlessZIPFitsProtocolMetadataAllowance(t *testing.T) {
-	ceiling := treearchive.MaxBytes
+	ceiling := tree.MaxBytes
 	h := &handler{options: handlerOptions{StagingParent: t.TempDir()}, maxArchiveBytes: ceiling}
 	archive, err := h.rootlessZIP(context.Background(), fstest.MapFS{
 		"SKILL.md":        {Data: []byte("s")},
@@ -976,7 +975,7 @@ func TestReviewAndSkillPagesTruncateLargePreviews(t *testing.T) {
 }
 
 func TestReadRoutesRejectWhenTreeWorkIsSaturated(t *testing.T) {
-	fixture := newWebFixtureWithTreeWork(t, safetree.PrototypeLimits(), nil, 1)
+	fixture := newWebFixtureWithTreeWork(t, tree.PrototypeLimits(), nil, 1)
 	candidatePath := fixture.uploadDirectory("Bounded read work.\n")
 	digest := digestPattern.FindString(fixture.get(candidatePath))
 	response := postForm(t, fixture, candidatePath+"/publish", nil)
@@ -1025,7 +1024,7 @@ func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {
 }
 
 func TestUploadBodyCapLetsTreeLimitsDecideAtSmallScale(t *testing.T) {
-	limits := safetree.Limits{
+	limits := tree.Limits{
 		MaxFiles:         1,
 		MaxPathBytes:     128,
 		MaxDepth:         2,
@@ -1249,7 +1248,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	t.Cleanup(func() { _ = catalog.close() })
 	resolver := &fixedCuratorResolver{}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), MaxRequestBodyBytes: mustUploadBodyCap(t, safetree.PrototypeLimits()), CSRFKey: key, SecureCookies: false,
+		StagingParent: t.TempDir(), Limits: tree.PrototypeLimits(), MaxRequestBodyBytes: mustUploadBodyCap(t, tree.PrototypeLimits()), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1283,7 +1282,7 @@ func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
 }
 
 func TestNewHandlerRejectsRequestBodyCapBelowUploadMinimum(t *testing.T) {
-	limits := safetree.PrototypeLimits()
+	limits := tree.PrototypeLimits()
 	minimum := mustUploadBodyCap(t, limits)
 	catalog, err := openCatalog(context.Background(), t.TempDir())
 	if err != nil {

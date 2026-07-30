@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func rejectWindowsPathComponents(name string) error {
@@ -14,7 +14,7 @@ func rejectWindowsPathComponents(name string) error {
 			return nil
 		}
 		component := filepath.Base(current)
-		if safetree.InvalidWindowsPathComponent(component) {
+		if tree.InvalidWindowsPathComponent(component) {
 			return fmt.Errorf("managed path component %q is invalid on Windows", component)
 		}
 	}

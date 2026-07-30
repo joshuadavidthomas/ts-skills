@@ -20,8 +20,7 @@ import (
 	"unicode"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func clientSkill(t *testing.T) registry.SkillID {
@@ -63,10 +62,10 @@ func clientTree(t *testing.T, body string) (registry.TreeDigest, []byte) {
 }
 
 func remoteForServer(t *testing.T, server *httptest.Server) *remote {
-	return remoteForServerWithLimits(t, server, safetree.PrototypeLimits())
+	return remoteForServerWithLimits(t, server, tree.PrototypeLimits())
 }
 
-func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits safetree.Limits) *remote {
+func remoteForServerWithLimits(t *testing.T, server *httptest.Server, limits tree.Limits) *remote {
 	t.Helper()
 	origin, err := parseOrigin(server.URL)
 	if err != nil {
@@ -140,11 +139,11 @@ func setClientTreeHeaders(header http.Header, namespace, name, digest string) {
 }
 
 func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
-	limits := safetree.Limits{
+	limits := tree.Limits{
 		MaxFiles: 2, MaxPathBytes: 16, MaxDepth: 2, MaxFileBytes: 80, MaxExpandedBytes: 100,
 	}
 	digest, archive := clientTree(t, "archive ceiling")
-	maximum := treearchive.MaxBytes
+	maximum := tree.MaxBytes
 	responseBody := archive
 	oversized := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -170,8 +169,8 @@ func TestRemoteFetchEnforcesTreeArchiveCeiling(t *testing.T) {
 	}
 
 	oversized = true
-	if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, safetree.ErrLimitExceeded) {
-		t.Fatalf("oversize tree archive error = %v, want %v", err, safetree.ErrLimitExceeded)
+	if _, err := remote.fetch(context.Background(), requirement); !errors.Is(err, tree.ErrLimitExceeded) {
+		t.Fatalf("oversize tree archive error = %v, want %v", err, tree.ErrLimitExceeded)
 	}
 }
 
@@ -182,7 +181,7 @@ func TestRemoteMapsRegistryErrorCodesToSentinels(t *testing.T) {
 	}{
 		"not-found":       {codeNotFound, errNotFound},
 		"invalid-request": {codeInvalidRequest, errInvalidRequest},
-		"too-large":       {codeTooLarge, safetree.ErrLimitExceeded},
+		"too-large":       {codeTooLarge, tree.ErrLimitExceeded},
 		"internal":        {codeInternal, errInternal},
 	}
 	for name, test := range tests {
@@ -284,7 +283,7 @@ func TestRemoteFetchMapsInvalidTreeArchiveToProtocolError(t *testing.T) {
 	if !errors.Is(err, errProtocol) {
 		t.Fatalf("Fetch error = %v, want errors.Is %v", err, errProtocol)
 	}
-	if errors.Is(err, safetree.ErrLimitExceeded) {
+	if errors.Is(err, tree.ErrLimitExceeded) {
 		t.Fatalf("Fetch error = %v, want format rejection", err)
 	}
 }
@@ -458,7 +457,7 @@ func TestRemoteRejectsRedirectsContentTypeSizeAndUnsafeZIP(t *testing.T) {
 				setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
 				w.WriteHeader(http.StatusOK)
 			}),
-			expectedErr: safetree.ErrLimitExceeded,
+			expectedErr: tree.ErrLimitExceeded,
 		},
 		{
 			name: "unsafe path",
@@ -609,7 +608,7 @@ func TestRemoteRejectsCurrentResponseForAnotherSkill(t *testing.T) {
 }
 
 func TestFetchedTreeCloseRetainsSnapshotAfterFailure(t *testing.T) {
-	builder, err := safetree.NewBuilder(t.TempDir(), safetree.PrototypeLimits())
+	builder, err := tree.NewBuilder(t.TempDir(), tree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -620,23 +619,23 @@ func TestFetchedTreeCloseRetainsSnapshotAfterFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tree := &fetchedTree{snapshot: snapshot}
+	fetched := &fetchedTree{snapshot: snapshot}
 	injected := errors.New("injected snapshot close failure")
-	tree.closeSnapshot = func(*safetree.Snapshot) error { return injected }
-	if err := tree.Close(); !errors.Is(err, injected) {
+	fetched.closeSnapshot = func(*tree.Snapshot) error { return injected }
+	if err := fetched.Close(); !errors.Is(err, injected) {
 		t.Fatalf("first Close error = %v, want injected failure", err)
 	}
-	if tree.snapshot == nil {
+	if fetched.snapshot == nil {
 		t.Fatal("failed Close released fetched snapshot ownership")
 	}
-	if _, err := fs.ReadFile(tree, "SKILL.md"); err != nil {
+	if _, err := fs.ReadFile(fetched, "SKILL.md"); err != nil {
 		t.Fatalf("fetched tree after failed Close: %v", err)
 	}
-	tree.closeSnapshot = nil
-	if err := tree.Close(); err != nil {
+	fetched.closeSnapshot = nil
+	if err := fetched.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if tree.snapshot != nil {
+	if fetched.snapshot != nil {
 		t.Fatal("successful Close retained fetched snapshot ownership")
 	}
 }

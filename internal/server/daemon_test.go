@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 	"tailscale.com/types/persist"
@@ -36,7 +36,7 @@ func (l *recordingListener) Close() error {
 }
 
 func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
-	server := newHTTPServer(context.Background(), http.NotFoundHandler(), mustUploadBodyCap(t, safetree.PrototypeLimits()), newHandlerGate(nil))
+	server := newHTTPServer(context.Background(), http.NotFoundHandler(), mustUploadBodyCap(t, tree.PrototypeLimits()), newHandlerGate(nil))
 	if server.BaseContext == nil {
 		t.Error("HTTP server has no base context for handler cancellation")
 	}
@@ -68,7 +68,7 @@ func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
 }
 
 func TestUploadBodyCapCoversPrototypeLimits(t *testing.T) {
-	limits := safetree.PrototypeLimits()
+	limits := tree.PrototypeLimits()
 	cap, err := uploadBodyCap(limits)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +82,7 @@ func TestUploadBodyCapCoversPrototypeLimits(t *testing.T) {
 }
 
 func TestUploadBodyCapRejectsOverflow(t *testing.T) {
-	_, err := uploadBodyCap(safetree.Limits{
+	_, err := uploadBodyCap(tree.Limits{
 		MaxFiles:         math.MaxInt,
 		MaxPathBytes:     math.MaxInt,
 		MaxDepth:         1,

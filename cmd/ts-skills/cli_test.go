@@ -16,7 +16,7 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
@@ -25,7 +25,7 @@ func TestCommandInstallerReportsConstructorAndCleanupFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	constructErr := errors.New("injected registry client construction failure")
-	newClientRemote = func(origin, *http.Client, string, safetree.Limits) (*remote, error) {
+	newClientRemote = func(origin, *http.Client, string, tree.Limits) (*remote, error) {
 		return nil, constructErr
 	}
 	t.Cleanup(func() { newClientRemote = newRemote })
@@ -171,7 +171,7 @@ func TestCommandErrorMapsRegistryFailureClasses(t *testing.T) {
 		"identity mismatch": {errIdentityMismatch, "cannot install because the registry response did not match the requested skill"},
 		"digest mismatch":   {errDigestMismatch, "cannot install because the registry response did not match the requested skill"},
 		"not found":         {errNotFound, "cannot install because the requested skill publication was not found"},
-		"tree limit":        {safetree.ErrLimitExceeded, "cannot install because the downloaded skill exceeds the configured safety limits"},
+		"tree limit":        {tree.ErrLimitExceeded, "cannot install because the downloaded skill exceeds the configured safety limits"},
 		"protocol":          {errProtocol, "cannot install because the registry returned an invalid response"},
 		"invalid request":   {errInvalidRequest, "cannot install because the registry rejected the request as invalid"},
 		"internal error":    {errInternal, "cannot install because the registry could not complete the request"},

@@ -1,4 +1,4 @@
-package treearchive
+package tree
 
 import (
 	"encoding/binary"
@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 const (
@@ -39,7 +37,7 @@ func preflight(archivePath string, maximumEntries int64) (err error) {
 		return fmt.Errorf("ZIP spool is not a regular file")
 	}
 	if info.Size() > MaxBytes {
-		return &safetree.LimitError{Limit: "archive bytes", Max: MaxBytes, Actual: info.Size()}
+		return &LimitError{Limit: "archive bytes", Max: MaxBytes, Actual: info.Size()}
 	}
 	return preflightDirectory(archive, info.Size(), maximumEntries)
 }
@@ -83,7 +81,7 @@ func preflightDirectory(archive io.ReaderAt, size, maximumEntries int64) error {
 		return fmt.Errorf("multi-disk ZIP archives are not accepted")
 	}
 	if int64(records) > maximumEntries {
-		return &safetree.LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(records)}
+		return &LimitError{Limit: "archive entries", Max: maximumEntries, Actual: int64(records)}
 	}
 
 	directoryStart := endOffset - int64(directorySize)

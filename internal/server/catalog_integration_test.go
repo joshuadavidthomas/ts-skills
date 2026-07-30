@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func newCatalogFixture(t *testing.T) (*catalog, registry.Namespace, curator, string, time.Time) {
@@ -43,9 +43,9 @@ func skillSource(instructions, asset string) fstest.MapFS {
 	}
 }
 
-func stageTree(t *testing.T, source fs.FS) *safetree.Snapshot {
+func stageTree(t *testing.T, source fs.FS) *tree.Snapshot {
 	t.Helper()
-	builder, err := safetree.NewBuilder(t.TempDir(), safetree.PrototypeLimits())
+	builder, err := tree.NewBuilder(t.TempDir(), tree.PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}

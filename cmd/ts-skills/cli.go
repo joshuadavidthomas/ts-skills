@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"github.com/joshuadavidthomas/ts-skills/internal/version"
 )
 
@@ -173,7 +173,7 @@ func commandInstaller(configPath, projectPath string) (*installer, project, func
 		return nil, project{}, noop, fmt.Errorf("create client staging directory: %w", err)
 	}
 	cleanup := func() error { return removeClientStaging(staging) }
-	remote, err := newClientRemote(settings.registry, &http.Client{Timeout: 2 * time.Minute}, staging, safetree.PrototypeLimits())
+	remote, err := newClientRemote(settings.registry, &http.Client{Timeout: 2 * time.Minute}, staging, tree.PrototypeLimits())
 	if err != nil {
 		return nil, project{}, noop, errors.Join(err, cleanup())
 	}
@@ -194,7 +194,7 @@ func commandError(operation string, err error) error {
 		message = fmt.Sprintf("cannot %s because the registry response did not match the requested skill", operation)
 	case errors.Is(err, errNotFound):
 		message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)
-	case errors.Is(err, safetree.ErrLimitExceeded):
+	case errors.Is(err, tree.ErrLimitExceeded):
 		message = fmt.Sprintf("cannot %s because the downloaded skill exceeds the configured safety limits", operation)
 	case errors.Is(err, errProtocol):
 		message = fmt.Sprintf("cannot %s because the registry returned an invalid response", operation)

@@ -24,8 +24,7 @@ import (
 	"github.com/gorilla/csrf"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 //go:embed templates
@@ -55,7 +54,7 @@ func newCSRFKey(src []byte) (csrfKey, error) {
 
 type handlerOptions struct {
 	StagingParent       string
-	Limits              safetree.Limits
+	Limits              tree.Limits
 	MaxRequestBodyBytes int64
 	MaxTreeWork         int
 	CSRFKey             csrfKey
@@ -90,7 +89,7 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	if options.CSRFKey == (csrfKey{}) {
 		return nil, fmt.Errorf("CSRF key must be provided")
 	}
-	if err := safetree.ValidateLimits(options.Limits); err != nil {
+	if err := tree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
 	}
 	minimumBodyCap, err := uploadBodyCap(options.Limits)
@@ -108,7 +107,7 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	}
 	maxArchiveBytes := options.maxArchiveBytes
 	if maxArchiveBytes == 0 {
-		maxArchiveBytes = treearchive.MaxBytes
+		maxArchiveBytes = tree.MaxBytes
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -574,7 +573,7 @@ func parseAPISkill(namespaceText, nameText string) (registry.SkillID, error) {
 	return registry.NewSkillID(namespace, name)
 }
 
-func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err error) {
+func (h *handler) rootlessZIP(ctx context.Context, source fs.FS) (_ *os.File, err error) {
 	archive, err := os.CreateTemp(h.options.StagingParent, ".ts-skills-download-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("create tree archive: %w", err)
@@ -586,7 +585,7 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 			err = errors.Join(err, archive.Close(), os.Remove(name))
 		}
 	}()
-	if err := treearchive.Encode(ctx, archive, tree); err != nil {
+	if err := tree.Encode(ctx, archive, source); err != nil {
 		return nil, err
 	}
 	info, err := archive.Stat()
@@ -594,7 +593,7 @@ func (h *handler) rootlessZIP(ctx context.Context, tree fs.FS) (_ *os.File, err 
 		return nil, fmt.Errorf("stat tree archive: %w", err)
 	}
 	if info.Size() > h.maxArchiveBytes {
-		return nil, &safetree.LimitError{Limit: "archive bytes", Max: h.maxArchiveBytes, Actual: info.Size()}
+		return nil, &tree.LimitError{Limit: "archive bytes", Max: h.maxArchiveBytes, Actual: info.Size()}
 	}
 	if err := archive.Sync(); err != nil {
 		return nil, fmt.Errorf("sync tree archive: %w", err)
@@ -610,7 +609,7 @@ func (h *handler) writeAPIDomainError(w http.ResponseWriter, r *http.Request, er
 	switch {
 	case errors.Is(err, errNotFound):
 		h.writeAPIError(w, codeNotFound)
-	case errors.Is(err, safetree.ErrLimitExceeded):
+	case errors.Is(err, tree.ErrLimitExceeded):
 		h.writeAPIError(w, codeTooLarge)
 	default:
 		h.options.Logger.Error("API request failed", "method", r.Method, "path", r.URL.Path, "error", err)
@@ -648,7 +647,7 @@ func nextTextPart(body *multipart.Reader, expected string, maximum int64) (strin
 		return "", malformedRequest("cannot read "+expected, err)
 	}
 	if int64(len(contents)) > maximum {
-		return "", &safetree.LimitError{Limit: expected + " bytes", Max: maximum, Actual: int64(len(contents))}
+		return "", &tree.LimitError{Limit: expected + " bytes", Max: maximum, Actual: int64(len(contents))}
 	}
 	if !utf8.Valid(contents) {
 		return "", malformedRequest(expected+" must be valid UTF-8", nil)
@@ -819,9 +818,9 @@ func malformedRequest(problem string, cause error) error {
 func (h *handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	var maxBytes *http.MaxBytesError
 	switch {
-	case errors.Is(err, safetree.ErrLimitExceeded), errors.As(err, &maxBytes):
+	case errors.Is(err, tree.ErrLimitExceeded), errors.As(err, &maxBytes):
 		h.renderError(w, http.StatusRequestEntityTooLarge, "Upload is too large", "Choose a smaller upload and try again.")
-	case errors.Is(err, errMalformedUpload), errors.Is(err, safetree.ErrInvalidPath),
+	case errors.Is(err, errMalformedUpload), errors.Is(err, tree.ErrInvalidPath),
 		errors.Is(err, agentskill.ErrInvalidName), errors.Is(err, agentskill.ErrInvalidDocument), errors.Is(err, agentskill.ErrInvalidTree):
 		h.renderError(w, http.StatusBadRequest, "Upload is invalid", "Check the skill files and upload them again.")
 	case errors.Is(err, errNotFound):

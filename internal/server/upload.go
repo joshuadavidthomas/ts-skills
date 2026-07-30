@@ -12,7 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 var errMalformedUpload = errors.New("malformed skill upload")
@@ -20,15 +20,15 @@ var errMalformedUpload = errors.New("malformed skill upload")
 // Submission owns one validated, staged upload tree. Snapshot lends that tree
 // to a caller; the caller must not close it. Close remains Submission's job.
 type submission struct {
-	snapshot      *safetree.Snapshot
+	snapshot      *tree.Snapshot
 	root          string
 	label         string
-	closeSnapshot func(*safetree.Snapshot) error
+	closeSnapshot func(*tree.Snapshot) error
 }
 
 // Snapshot lends the validated staged tree. The Submission retains ownership;
 // callers must not close the returned snapshot.
-func (s *submission) Snapshot() *safetree.Snapshot {
+func (s *submission) Snapshot() *tree.Snapshot {
 	if s == nil {
 		return nil
 	}
@@ -55,7 +55,7 @@ func (s *submission) Close() error {
 	}
 	closeSnapshot := s.closeSnapshot
 	if closeSnapshot == nil {
-		closeSnapshot = (*safetree.Snapshot).Close
+		closeSnapshot = (*tree.Snapshot).Close
 	}
 	if err := closeSnapshot(s.snapshot); err != nil {
 		return err
@@ -70,11 +70,11 @@ type manifestEntry struct {
 	Size  int64  `json:"size"`
 }
 
-func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits safetree.Limits) (_ *submission, err error) {
+func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.Reader, limits tree.Limits) (_ *submission, err error) {
 	if body == nil {
 		return nil, malformed("multipart directory parts are missing", nil)
 	}
-	if err := safetree.ValidateLimits(limits); err != nil {
+	if err := tree.ValidateLimits(limits); err != nil {
 		return nil, fmt.Errorf("directory staging limits: %w", err)
 	}
 	manifest, err := body.NextPart()
@@ -90,14 +90,14 @@ func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 		return nil, malformed("cannot read directory manifest", readErr)
 	}
 	if int64(len(manifestBytes)) > manifestLimit {
-		return nil, &safetree.LimitError{Limit: "manifest bytes", Max: manifestLimit, Actual: int64(len(manifestBytes))}
+		return nil, &tree.LimitError{Limit: "manifest bytes", Max: manifestLimit, Actual: int64(len(manifestBytes))}
 	}
 	entries, root, err := decodeManifest(manifestBytes, limits)
 	if err != nil {
 		return nil, err
 	}
 
-	builder, err := safetree.NewBuilder(parent, limits)
+	builder, err := tree.NewBuilder(parent, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -118,13 +118,13 @@ func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 		addErr := builder.AddFile(ctx, entry.Path, entry.Size, part)
 		if addErr != nil {
 			switch {
-			case errors.Is(addErr, safetree.ErrLimitExceeded):
+			case errors.Is(addErr, tree.ErrLimitExceeded):
 				return nil, addErr
 			case errors.Is(addErr, context.Canceled), errors.Is(addErr, context.DeadlineExceeded):
 				return nil, addErr
-			case errors.Is(addErr, safetree.ErrInvalidPath):
+			case errors.Is(addErr, tree.ErrInvalidPath):
 				return nil, malformed("directory path is unsafe or collides with another path", addErr)
-			case errors.Is(addErr, safetree.ErrSizeMismatch):
+			case errors.Is(addErr, tree.ErrSizeMismatch):
 				return nil, malformed(fmt.Sprintf("%s size does not match its manifest entry", expectedName), addErr)
 			default:
 				return nil, fmt.Errorf("stage uploaded file %q: %w", entry.Path, addErr)
@@ -145,7 +145,7 @@ func stageBrowserDirectory(ctx context.Context, parent string, body *multipart.R
 	return &submission{snapshot: snapshot, root: root, label: root}, nil
 }
 
-func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string, error) {
+func decodeManifest(src []byte, limits tree.Limits) ([]manifestEntry, string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(src))
 	decoder.DisallowUnknownFields()
 	var entries []manifestEntry
@@ -160,7 +160,7 @@ func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string
 		return nil, "", malformed("directory manifest is empty", nil)
 	}
 	if len(entries) > limits.MaxFiles {
-		return nil, "", &safetree.LimitError{Limit: "files", Max: int64(limits.MaxFiles), Actual: int64(len(entries))}
+		return nil, "", &tree.LimitError{Limit: "files", Max: int64(limits.MaxFiles), Actual: int64(len(entries))}
 	}
 	root := ""
 	for position, entry := range entries {
@@ -171,10 +171,10 @@ func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string
 			return nil, "", malformed(fmt.Sprintf("manifest file-%d has a negative size", entry.Index), nil)
 		}
 		if entry.Size > limits.MaxFileBytes {
-			return nil, "", &safetree.LimitError{Limit: "file bytes", Max: limits.MaxFileBytes, Actual: entry.Size}
+			return nil, "", &tree.LimitError{Limit: "file bytes", Max: limits.MaxFileBytes, Actual: entry.Size}
 		}
 		if err := validateUploadPath(entry.Path, limits); err != nil {
-			if errors.Is(err, safetree.ErrLimitExceeded) {
+			if errors.Is(err, tree.ErrLimitExceeded) {
 				return nil, "", err
 			}
 			return nil, "", malformed("directory manifest contains an unsafe path", err)
@@ -192,16 +192,16 @@ func decodeManifest(src []byte, limits safetree.Limits) ([]manifestEntry, string
 	return entries, root, nil
 }
 
-func validateUploadPath(name string, limits safetree.Limits) error {
+func validateUploadPath(name string, limits tree.Limits) error {
 	if name == "." || !fs.ValidPath(name) || !utf8.ValidString(name) || strings.Contains(name, "\\") || strings.HasPrefix(name, "/") || isWindowsAbsolute(name) {
-		return fmt.Errorf("%w: %q", safetree.ErrInvalidPath, name)
+		return fmt.Errorf("%w: %q", tree.ErrInvalidPath, name)
 	}
 	if len(name) > limits.MaxPathBytes {
-		return &safetree.LimitError{Limit: "path bytes", Max: int64(limits.MaxPathBytes), Actual: int64(len(name))}
+		return &tree.LimitError{Limit: "path bytes", Max: int64(limits.MaxPathBytes), Actual: int64(len(name))}
 	}
 	depth := strings.Count(name, "/") + 1
 	if depth > limits.MaxDepth {
-		return &safetree.LimitError{Limit: "path depth", Max: int64(limits.MaxDepth), Actual: int64(depth)}
+		return &tree.LimitError{Limit: "path depth", Max: int64(limits.MaxDepth), Actual: int64(depth)}
 	}
 	return nil
 }

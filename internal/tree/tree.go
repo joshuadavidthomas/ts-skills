@@ -1,4 +1,4 @@
-package safetree
+package tree
 
 import (
 	"context"
@@ -39,7 +39,7 @@ func PrototypeLimits() Limits {
 
 func ValidateLimits(limits Limits) error {
 	if limits.MaxFiles <= 0 || limits.MaxPathBytes <= 0 || limits.MaxDepth <= 0 || limits.MaxFileBytes <= 0 || limits.MaxExpandedBytes <= 0 {
-		return fmt.Errorf("safetree limits must all be positive")
+		return fmt.Errorf("tree limits must all be positive")
 	}
 	if limits.MaxFileBytes > limits.MaxExpandedBytes {
 		return fmt.Errorf("maximum file size cannot exceed maximum expanded size")

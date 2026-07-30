@@ -1,4 +1,4 @@
-package treearchive
+package tree
 
 import (
 	"archive/zip"
@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/fstest"
-
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
 )
 
 func TestMaxBytesCoversPrototypeLimits(t *testing.T) {
@@ -60,7 +58,7 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	if err := os.WriteFile(archivePath, encoded.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := Decode(context.Background(), archivePath, t.TempDir(), safetree.PrototypeLimits())
+	snapshot, err := Decode(context.Background(), archivePath, t.TempDir(), PrototypeLimits())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,17 +91,17 @@ func TestDecodeRejectsInvalidFormatsAndLimits(t *testing.T) {
 	binary.LittleEndian.PutUint16(zip64[end+8:end+10], ^uint16(0))
 	binary.LittleEndian.PutUint16(zip64[end+10:end+12], ^uint16(0))
 
-	limited := safetree.PrototypeLimits()
+	limited := PrototypeLimits()
 	limited.MaxFiles = 1
 	tests := map[string]struct {
 		archive []byte
-		limits  safetree.Limits
+		limits  Limits
 		want    error
 	}{
-		"too many entries":      {archive: valid, limits: limited, want: safetree.ErrLimitExceeded},
-		"underreported entries": {archive: underreported, limits: safetree.PrototypeLimits(), want: ErrInvalid},
-		"ZIP64":                 {archive: zip64, limits: safetree.PrototypeLimits(), want: ErrInvalid},
-		"deflated entry":        {archive: encodeTestArchive(t, zip.Deflate), limits: safetree.PrototypeLimits(), want: ErrInvalid},
+		"too many entries":      {archive: valid, limits: limited, want: ErrLimitExceeded},
+		"underreported entries": {archive: underreported, limits: PrototypeLimits(), want: ErrInvalid},
+		"ZIP64":                 {archive: zip64, limits: PrototypeLimits(), want: ErrInvalid},
+		"deflated entry":        {archive: encodeTestArchive(t, zip.Deflate), limits: PrototypeLimits(), want: ErrInvalid},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -115,7 +113,7 @@ func TestDecodeRejectsInvalidFormatsAndLimits(t *testing.T) {
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Decode error = %v, want errors.Is %v", err, test.want)
 			}
-			if test.want == ErrInvalid && errors.Is(err, safetree.ErrLimitExceeded) {
+			if test.want == ErrInvalid && errors.Is(err, ErrLimitExceeded) {
 				t.Fatalf("Decode error = %v, want format rejection", err)
 			}
 		})
@@ -129,7 +127,7 @@ func TestDecodePreservesCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Decode(ctx, archivePath, t.TempDir(), safetree.PrototypeLimits())
+	_, err := Decode(ctx, archivePath, t.TempDir(), PrototypeLimits())
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Decode error = %v, want context.Canceled", err)
 	}

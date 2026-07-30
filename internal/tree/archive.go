@@ -1,4 +1,4 @@
-package treearchive
+package tree
 
 import (
 	"archive/zip"

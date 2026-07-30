@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 func TestLoadAcceptsOnlyOneStrictRegistryOrigin(t *testing.T) {
@@ -47,7 +47,7 @@ func TestLoadProducesOriginAcceptedByRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := newRemote(loaded.registry, &http.Client{Timeout: time.Second}, t.TempDir(), safetree.PrototypeLimits()); err != nil {
+	if _, err := newRemote(loaded.registry, &http.Client{Timeout: time.Second}, t.TempDir(), tree.PrototypeLimits()); err != nil {
 		t.Fatalf("NewRemote(config registry): %v", err)
 	}
 }

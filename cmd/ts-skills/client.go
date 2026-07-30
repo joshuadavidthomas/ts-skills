@@ -19,8 +19,7 @@ import (
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
-	"github.com/joshuadavidthomas/ts-skills/internal/treearchive"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 const (
@@ -68,11 +67,11 @@ type remote struct {
 	baseURL       *url.URL
 	client        *http.Client
 	stagingParent string
-	limits        safetree.Limits
+	limits        tree.Limits
 	maxZIPBytes   int64
 }
 
-func newRemote(origin origin, httpClient *http.Client, stagingParent string, limits safetree.Limits) (*remote, error) {
+func newRemote(origin origin, httpClient *http.Client, stagingParent string, limits tree.Limits) (*remote, error) {
 	base := origin.asURL()
 	if httpClient == nil {
 		return nil, fmt.Errorf("registry HTTP client must be provided")
@@ -80,7 +79,7 @@ func newRemote(origin origin, httpClient *http.Client, stagingParent string, lim
 	if httpClient.Timeout <= 0 {
 		return nil, fmt.Errorf("registry HTTP client timeout must be positive")
 	}
-	if err := safetree.ValidateLimits(limits); err != nil {
+	if err := tree.ValidateLimits(limits); err != nil {
 		return nil, fmt.Errorf("registry tree limits: %w", err)
 	}
 	info, err := os.Stat(stagingParent)
@@ -90,7 +89,7 @@ func newRemote(origin origin, httpClient *http.Client, stagingParent string, lim
 	if !info.IsDir() {
 		return nil, fmt.Errorf("registry staging parent must be a directory")
 	}
-	maxZIPBytes := treearchive.MaxBytes
+	maxZIPBytes := tree.MaxBytes
 
 	privateClient := *httpClient
 	privateClient.CheckRedirect = func(*http.Request, []*http.Request) error {
@@ -196,7 +195,7 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 		return fetchedSkill{}, fmt.Errorf("%w: tree response identifies another publication", errIdentityMismatch)
 	}
 	if response.ContentLength > r.maxZIPBytes {
-		return fetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
+		return fetchedSkill{}, &tree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: response.ContentLength}
 	}
 
 	spool, err := os.CreateTemp(r.stagingParent, ".ts-skills-download-*.zip")
@@ -211,15 +210,15 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 		return fetchedSkill{}, fmt.Errorf("stage publication archive: %w", err)
 	}
 	if written > r.maxZIPBytes {
-		return fetchedSkill{}, &safetree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: written}
+		return fetchedSkill{}, &tree.LimitError{Limit: "download bytes", Max: r.maxZIPBytes, Actual: written}
 	}
 	if response.ContentLength >= 0 && written != response.ContentLength {
 		return fetchedSkill{}, fmt.Errorf("%w: tree response was truncated", errProtocol)
 	}
 
-	snapshot, err := treearchive.Decode(ctx, spoolName, r.stagingParent, r.limits)
+	snapshot, err := tree.Decode(ctx, spoolName, r.stagingParent, r.limits)
 	if err != nil {
-		if errors.Is(err, treearchive.ErrInvalid) {
+		if errors.Is(err, tree.ErrInvalid) {
 			return fetchedSkill{}, fmt.Errorf("%w: %v", errProtocol, err)
 		}
 		return fetchedSkill{}, err
@@ -324,7 +323,7 @@ func (r *remote) responseError(response *http.Response) error {
 	case codeInvalidRequest:
 		return fmt.Errorf("%w: %s", errInvalidRequest, safeErrorMessage(wire.Message, "registry rejected the request"))
 	case codeTooLarge:
-		return fmt.Errorf("%w: registry could not return the tree within its limit", safetree.ErrLimitExceeded)
+		return fmt.Errorf("%w: registry could not return the tree within its limit", tree.ErrLimitExceeded)
 	case codeInternal:
 		return fmt.Errorf("%w: %s", errInternal, safeErrorMessage(wire.Message, "registry encountered an internal error"))
 	default:
@@ -397,8 +396,8 @@ func decodeStrictJSON(source []byte, destination any) error {
 }
 
 type fetchedTree struct {
-	snapshot      *safetree.Snapshot
-	closeSnapshot func(*safetree.Snapshot) error
+	snapshot      *tree.Snapshot
+	closeSnapshot func(*tree.Snapshot) error
 }
 
 func (t *fetchedTree) Open(name string) (fs.File, error) {
@@ -411,7 +410,7 @@ func (t *fetchedTree) Close() error {
 	}
 	closeSnapshot := t.closeSnapshot
 	if closeSnapshot == nil {
-		closeSnapshot = (*safetree.Snapshot).Close
+		closeSnapshot = (*tree.Snapshot).Close
 	}
 	if err := closeSnapshot(t.snapshot); err != nil {
 		return err

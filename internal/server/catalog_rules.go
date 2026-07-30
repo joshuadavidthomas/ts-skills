@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/joshuadavidthomas/ts-skills/internal/safetree"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 type captureRequest struct {
 	Namespace   registry.Namespace
-	Staged      *safetree.Snapshot
+	Staged      *tree.Snapshot
 	Root        string
 	Source      string
 	SubmittedAt time.Time
