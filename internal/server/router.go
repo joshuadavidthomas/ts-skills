@@ -21,12 +21,11 @@ func newCSRFKey(src []byte) (csrfKey, error) {
 }
 
 type handlerOptions struct {
-	StagingParent       string
-	Limits              tree.Limits
-	MaxRequestBodyBytes int64
-	MaxTreeWork         int
-	CSRFKey             csrfKey
-	SecureCookies       bool
+	StagingParent string
+	Limits        tree.Limits
+	MaxTreeWork   int
+	CSRFKey       csrfKey
+	SecureCookies bool
 	// Logger receives diagnostics for unexpected request failures and
 	// post-commit cleanup failures; nil selects slog.Default().
 	Logger *slog.Logger
@@ -63,13 +62,12 @@ func newHandler(catalog *servercatalog.Catalog, resolveCurator func(*http.Reques
 		return nil, err
 	}
 	web, err := serverweb.New(catalog, resolveCurator, serverweb.Options{
-		StagingParent:       options.StagingParent,
-		Limits:              options.Limits,
-		MaxRequestBodyBytes: options.MaxRequestBodyBytes,
-		CSRFKey:             options.CSRFKey,
-		SecureCookies:       options.SecureCookies,
-		Logger:              options.Logger,
-		TreeWork:            treeWork,
+		StagingParent: options.StagingParent,
+		Limits:        options.Limits,
+		CSRFKey:       options.CSRFKey,
+		SecureCookies: options.SecureCookies,
+		Logger:        options.Logger,
+		TreeWork:      treeWork,
 	})
 	if err != nil {
 		return nil, err

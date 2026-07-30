@@ -37,7 +37,7 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	serverCtx, cancelServerWork := context.WithCancel(ctx)
 	defer cancelServerWork()
 
-	server := newHTTPServer(serverCtx, active.handler, active.maxRequestBodyBytes, handlers)
+	server := newHTTPServer(serverCtx, active.handler, handlers)
 	serveResult := make(chan error, 1)
 	go func() {
 		serveResult <- server.Serve(active.listener)
@@ -98,7 +98,7 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	return errors.Join(shutdownErr, serveErr, drainErr)
 }
 
-func newHTTPServer(baseCtx context.Context, handler http.Handler, maxRequestBodyBytes int64, handlers *handlerGate) *http.Server {
+func newHTTPServer(baseCtx context.Context, handler http.Handler, handlers *handlerGate) *http.Server {
 	return &http.Server{
 		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -108,7 +108,6 @@ func newHTTPServer(baseCtx context.Context, handler http.Handler, maxRequestBody
 				return
 			}
 			defer handlers.done()
-			request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBodyBytes)
 			handler.ServeHTTP(writer, request)
 		}),
 		ReadHeaderTimeout: readHeaderTimeout,

@@ -10,7 +10,7 @@ import (
 
 func TestUploadBodyCapCoversPrototypeLimits(t *testing.T) {
 	limits := tree.PrototypeLimits()
-	cap, err := UploadBodyCap(limits)
+	cap, err := uploadBodyCap(limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +23,7 @@ func TestUploadBodyCapCoversPrototypeLimits(t *testing.T) {
 }
 
 func TestUploadBodyCapRejectsOverflow(t *testing.T) {
-	_, err := UploadBodyCap(tree.Limits{
+	_, err := uploadBodyCap(tree.Limits{
 		MaxFiles:         math.MaxInt,
 		MaxPathBytes:     math.MaxInt,
 		MaxDepth:         1,

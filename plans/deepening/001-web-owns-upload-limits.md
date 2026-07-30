@@ -99,16 +99,16 @@ without calculating web limits.
 
 ### Automated
 
-- [ ] `go test ./internal/server/web ./internal/server -race -count=1`
-- [ ] `just test`
-- [ ] `just lint`
-- [ ] `just vet`
+- [x] `go test ./internal/server/web ./internal/server -race -count=1`
+- [x] `just test`
+- [x] `just lint`
+- [x] `just vet`
 
 ### Evals / Regression Checks
 
-- [ ] `rg -n "UploadBodyCap|MaxRequestBodyBytes" internal/server` returns no production matches.
-- [ ] A near-maximum legal upload still reaches the tree-limit decision.
-- [ ] The limit is applied exactly once, on browser candidate creation.
+- [x] `rg -n "UploadBodyCap|MaxRequestBodyBytes" internal/server` returns no production matches.
+- [x] A near-maximum legal upload still reaches the tree-limit decision.
+- [x] The limit is applied exactly once, on browser candidate creation.
 
 ### Manual
 

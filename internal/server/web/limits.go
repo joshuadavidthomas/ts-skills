@@ -11,9 +11,9 @@ import (
 // boundary and headers. Browser form parts are comfortably below 1 KiB.
 const multipartPartOverheadBytes int64 = 1 << 10
 
-// UploadBodyCap covers a maximal legal directory upload: staged file bytes,
+// uploadBodyCap covers a maximal legal directory upload: staged file bytes,
 // the manifest, namespace, and multipart framing.
-func UploadBodyCap(limits tree.Limits) (int64, error) {
+func uploadBodyCap(limits tree.Limits) (int64, error) {
 	if err := tree.ValidateLimits(limits); err != nil {
 		return 0, err
 	}

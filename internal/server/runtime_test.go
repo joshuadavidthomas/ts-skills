@@ -18,7 +18,6 @@ import (
 	"time"
 
 	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
-	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
 	"tailscale.com/types/persist"
@@ -36,7 +35,7 @@ func (l *recordingListener) Close() error {
 }
 
 func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
-	server := newHTTPServer(context.Background(), http.NotFoundHandler(), mustUploadBodyCap(t, tree.PrototypeLimits()), newHandlerGate(nil))
+	server := newHTTPServer(context.Background(), http.NotFoundHandler(), newHandlerGate(nil))
 	if server.BaseContext == nil {
 		t.Error("HTTP server has no base context for handler cancellation")
 	}

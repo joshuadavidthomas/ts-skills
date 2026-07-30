@@ -24,7 +24,6 @@ import (
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
-	serverweb "github.com/joshuadavidthomas/ts-skills/internal/server/web"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"golang.org/x/sync/semaphore"
 )
@@ -51,18 +50,8 @@ type webFixture struct {
 	key           csrfKey
 	logger        *slog.Logger
 	limits        tree.Limits
-	bodyCap       int64
 	treeWork      *semaphore.Weighted
 	treeWorkLimit int
-}
-
-func mustUploadBodyCap(t *testing.T, limits tree.Limits) int64 {
-	t.Helper()
-	cap, err := serverweb.UploadBodyCap(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cap
 }
 
 func mustArchiveCap(t *testing.T, limits tree.Limits) int64 {
@@ -101,22 +90,18 @@ func newWebFixtureWithTreeWork(t *testing.T, limits tree.Limits, logger *slog.Lo
 		t.Fatal(err)
 	}
 	resolver := &fixedCuratorResolver{curator: servercatalog.Curator{Actor: actor}}
-	bodyCap, err := serverweb.UploadBodyCap(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var work *semaphore.Weighted
 	if treeWork != 0 {
 		work = semaphore.NewWeighted(int64(treeWork))
 	}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work,
+		StagingParent: staging, Limits: limits, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newHTTPServer(context.Background(), handler, bodyCap, newHandlerGate(nil))
+	server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
 	server.Start()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Get(server.URL + "/upload")
@@ -138,7 +123,7 @@ func newWebFixtureWithTreeWork(t *testing.T, limits tree.Limits, logger *slog.Lo
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap, treeWork: work, treeWorkLimit: treeWork,
+		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, treeWork: work, treeWorkLimit: treeWork,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -165,7 +150,7 @@ func (f *webFixture) restart() {
 		work = semaphore.NewWeighted(int64(f.treeWorkLimit))
 	}
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work,
+		StagingParent: f.staging, Limits: f.limits, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -173,7 +158,7 @@ func (f *webFixture) restart() {
 	f.storage = records
 	f.treeWork = work
 	f.server = httptest.NewUnstartedServer(nil)
-	f.server.Config = newHTTPServer(context.Background(), handler, f.bodyCap, newHandlerGate(nil))
+	f.server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
 	f.server.Start()
 	response, err := f.client.Get(f.server.URL + "/upload")
 	if err != nil {
@@ -945,9 +930,6 @@ func TestUploadBodyCapLetsTreeLimitsDecideAtSmallScale(t *testing.T) {
 	}
 
 	accepted := multipartRequest(t, fixture.server.URL+"/candidates", makeParts(4095))
-	if accepted.ContentLength >= fixture.bodyCap {
-		t.Fatalf("accepted request is %d bytes, body cap is %d", accepted.ContentLength, fixture.bodyCap)
-	}
 	response := fixture.do(accepted, true)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusSeeOther {
@@ -955,9 +937,6 @@ func TestUploadBodyCapLetsTreeLimitsDecideAtSmallScale(t *testing.T) {
 	}
 
 	rejected := multipartRequest(t, fixture.server.URL+"/candidates", makeParts(4097))
-	if rejected.ContentLength >= fixture.bodyCap {
-		t.Fatalf("over-tree-limit request is %d bytes, body cap is %d", rejected.ContentLength, fixture.bodyCap)
-	}
 	response = fixture.do(rejected, true)
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusRequestEntityTooLarge {
@@ -1042,7 +1021,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	t.Cleanup(func() { _ = catalog.Close() })
 	resolver := &fixedCuratorResolver{}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: t.TempDir(), Limits: tree.PrototypeLimits(), MaxRequestBodyBytes: mustUploadBodyCap(t, tree.PrototypeLimits()), CSRFKey: key, SecureCookies: false,
+		StagingParent: t.TempDir(), Limits: tree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1072,25 +1051,5 @@ func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
 	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
 	if err != nil || key == (csrfKey{}) {
 		t.Fatalf("valid key = %x, %v", key, err)
-	}
-}
-
-func TestNewHandlerRejectsRequestBodyCapBelowUploadMinimum(t *testing.T) {
-	limits := tree.PrototypeLimits()
-	minimum := mustUploadBodyCap(t, limits)
-	catalog, err := servercatalog.Open(context.Background(), t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = catalog.Close() })
-	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = newHandler(catalog, (&fixedCuratorResolver{}).resolve, handlerOptions{
-		StagingParent: t.TempDir(), Limits: limits, MaxRequestBodyBytes: minimum - 1, CSRFKey: key,
-	})
-	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%d", minimum-1)) || !strings.Contains(err.Error(), fmt.Sprintf("%d", minimum)) {
-		t.Fatalf("undersized request body cap error = %v, want both cap values", err)
 	}
 }

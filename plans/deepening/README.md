@@ -125,7 +125,7 @@ standalone project.
 
 | Plan | Status | Audit category | Standards concern | Depends on | Ready for routine execution? | Needs deeper planning? | Autonomy boundary | Notes |
 |---|---|---|---|---|---|---|---|---|
-| [001](001-web-owns-upload-limits.md) | TODO | Architecture | Modules / effects | None | Yes | No | Routine execution | Smallest proven ownership leak |
+| [001](001-web-owns-upload-limits.md) | DONE | Architecture | Modules / effects | None | Yes | No | Routine execution | Web derives and route-locally enforces the browser upload cap |
 | [002](002-delete-catalog-public-facade.md) | TODO | Architecture / DX | Modules / maintainability | None | Yes | No | Routine execution | Mechanical end-state rename |
 | [003](003-explicit-server-startup-config.md) | TODO | Architecture | Boundaries / state | 001 | Yes | No | Routine within specified shape | Removes sentinel configuration |
 | [004](004-explicit-tree-format-policy.md) | TODO | Architecture / correctness | Domain model / boundaries | None | Yes | No | Design review if format semantics move | Foundation for 005 and 007 |
@@ -237,6 +237,8 @@ SUPERSEDED (replacement)
 
 ## Reconciliation Log
 
+- **2026-07-30** — Completed plan 001. Browser upload sizing is private to
+  `internal/server/web` and enforced only while creating candidates.
 - **2026-07-30** — Reconciled every specialist-audit item. Added plans 009–012
   for upload handoff, command-session ownership, curation identity, and final
   surface/test pruning; added the source-to-disposition ledger above.

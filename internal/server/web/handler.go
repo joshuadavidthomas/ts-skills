@@ -53,21 +53,21 @@ func NewCSRFKey(src []byte) (CSRFKey, error) {
 }
 
 type Options struct {
-	StagingParent       string
-	Limits              tree.Limits
-	MaxRequestBodyBytes int64
-	CSRFKey             CSRFKey
-	SecureCookies       bool
-	Logger              *slog.Logger
-	TreeWork            *semaphore.Weighted
+	StagingParent string
+	Limits        tree.Limits
+	CSRFKey       CSRFKey
+	SecureCookies bool
+	Logger        *slog.Logger
+	TreeWork      *semaphore.Weighted
 }
 
 type webHandler struct {
-	catalog  *servercatalog.Catalog
-	curator  func(*http.Request) (servercatalog.Curator, error)
-	options  Options
-	pages    map[string]*template.Template
-	treeWork *semaphore.Weighted
+	catalog            *servercatalog.Catalog
+	curator            func(*http.Request) (servercatalog.Curator, error)
+	options            Options
+	pages              map[string]*template.Template
+	treeWork           *semaphore.Weighted
+	maxUploadBodyBytes int64
 }
 
 type pageView struct {
@@ -108,12 +108,9 @@ func New(catalog *servercatalog.Catalog, resolveCurator func(*http.Request) (ser
 	if err := tree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
 	}
-	minimumBodyCap, err := UploadBodyCap(options.Limits)
+	maxUploadBodyBytes, err := uploadBodyCap(options.Limits)
 	if err != nil {
 		return nil, fmt.Errorf("derive web request body cap: %w", err)
-	}
-	if options.MaxRequestBodyBytes < minimumBodyCap {
-		return nil, fmt.Errorf("web request body cap %d is smaller than upload minimum %d", options.MaxRequestBodyBytes, minimumBodyCap)
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -138,7 +135,7 @@ func New(catalog *servercatalog.Catalog, resolveCurator func(*http.Request) (ser
 	}
 	h := &webHandler{
 		catalog: catalog, curator: resolveCurator, options: options, pages: pages,
-		treeWork: options.TreeWork,
+		treeWork: options.TreeWork, maxUploadBodyBytes: maxUploadBodyBytes,
 	}
 	routes := h.routes(http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 
@@ -280,6 +277,7 @@ func (h *webHandler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxUploadBodyBytes)
 	mediaType, parameters, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != "multipart/form-data" || parameters["boundary"] == "" {
 		h.renderError(w, http.StatusBadRequest, "Upload format is invalid", "Submit the directory from the upload page.")

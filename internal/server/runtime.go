@@ -15,15 +15,13 @@ import (
 	"syscall"
 
 	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
-	serverweb "github.com/joshuadavidthomas/ts-skills/internal/server/web"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 type runtime struct {
-	listener            net.Listener
-	handler             http.Handler
-	maxRequestBodyBytes int64
-	close               func() error
+	listener net.Listener
+	handler  http.Handler
+	close    func() error
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -140,17 +138,12 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	}
 	actors := &actorResolver{local: localClient}
 	limits := tree.PrototypeLimits()
-	maxRequestBodyBytes, err := serverweb.UploadBodyCap(limits)
-	if err != nil {
-		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
-	}
 	handler, err := newHandler(catalog, actors.curator, handlerOptions{
-		StagingParent:       filepath.Join(config.StateDir, "tmp"),
-		Limits:              limits,
-		MaxRequestBodyBytes: maxRequestBodyBytes,
-		CSRFKey:             csrfKey,
-		SecureCookies:       true,
-		Logger:              logger,
+		StagingParent: filepath.Join(config.StateDir, "tmp"),
+		Limits:        limits,
+		CSRFKey:       csrfKey,
+		SecureCookies: true,
+		Logger:        logger,
 	})
 	if err != nil {
 		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
@@ -163,10 +156,9 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	closeTailnet = false
 	closeCatalog = false
 	return runtime{
-		listener:            tailServer.listenerAddr(),
-		handler:             handler,
-		maxRequestBodyBytes: maxRequestBodyBytes,
-		close:               cleanup.close,
+		listener: tailServer.listenerAddr(),
+		handler:  handler,
+		close:    cleanup.close,
 	}, nil
 }
 
@@ -196,17 +188,12 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}
 	devCurator := servercatalog.Curator{Actor: devActor}
 	limits := tree.PrototypeLimits()
-	maxRequestBodyBytes, err := serverweb.UploadBodyCap(limits)
-	if err != nil {
-		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
-	}
 	handler, err := newHandler(catalog, func(*http.Request) (servercatalog.Curator, error) { return devCurator, nil }, handlerOptions{
-		StagingParent:       filepath.Join(config.StateDir, "tmp"),
-		Limits:              limits,
-		MaxRequestBodyBytes: maxRequestBodyBytes,
-		CSRFKey:             csrfKey,
-		SecureCookies:       false,
-		Logger:              slog.Default(),
+		StagingParent: filepath.Join(config.StateDir, "tmp"),
+		Limits:        limits,
+		CSRFKey:       csrfKey,
+		SecureCookies: false,
+		Logger:        slog.Default(),
 	})
 	if err != nil {
 		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
@@ -238,10 +225,9 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}
 	closeCatalog = false
 	return runtime{
-		listener:            listener,
-		handler:             handler,
-		maxRequestBodyBytes: maxRequestBodyBytes,
-		close:               cleanup.close,
+		listener: listener,
+		handler:  handler,
+		close:    cleanup.close,
 	}, nil
 }
 
