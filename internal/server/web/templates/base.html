@@ -1,0 +1,26 @@
+{{define "page"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}} · ts-skills{{else}}ts-skills{{end}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {{if .CSRFToken}}<meta name="csrf-token" content="{{.CSRFToken}}">{{end}}
+</head>
+<body class="flex min-h-screen flex-col">
+<header class="bg-gray-100 border-b border-gray-200">
+  <div class="mx-auto flex max-w-5xl items-center justify-between gap-4 px-4 py-4">
+    <div>
+      <h1 class="text-2xl font-bold"><a href="/">ts-skills/</a></h1>
+      <p class="mt-1 text-sm text-gray-500">A private Agent Skills registry for your tailnet</p>
+    </div>
+    <a href="/upload" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Upload a skill</a>
+  </div>
+</header>
+{{template "content" .Content}}
+<footer class="border-t border-gray-200 bg-gray-100 text-sm text-gray-500">
+  <div class="mx-auto max-w-5xl px-4 py-4">ts-skills — served over Tailscale</div>
+</footer>
+</body>
+</html>
+{{end}}

@@ -1,6 +1,6 @@
-// Package server runs the ts-skills registry daemon.
+// Package server composes and runs the ts-skills registry daemon.
 //
-// One package owns the daemon; files group features. Interfaces belong here
-// only when production has two implementations. The exported surface is the
-// small set of entry points used by cmd/ts-skillsd.
+// Catalog persistence, the machine protocol, and the browser UI live in
+// focused subpackages. This package owns process lifecycle, tsnet, and the
+// small exported entry-point surface used by cmd/ts-skillsd.
 package server

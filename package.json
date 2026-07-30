@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "build:css": "tailwindcss -i internal/server/tailwind.css -o internal/server/static/style.css --minify"
+    "build:css": "tailwindcss -i internal/server/web/tailwind.css -o internal/server/web/static/style.css --minify"
   },
   "devDependencies": {
     "@tailwindcss/cli": "4.3.3",

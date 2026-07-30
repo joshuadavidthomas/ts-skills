@@ -10,7 +10,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -20,8 +19,6 @@ import (
 )
 
 const (
-	Version = "v1"
-
 	JSONMediaType = "application/json"
 	ZIPMediaType  = "application/zip"
 
@@ -37,9 +34,6 @@ const (
 	CodeTooLarge       Code = "too_large"
 	CodeInternal       Code = "internal"
 	CodeUnavailable    Code = "unavailable"
-
-	CurrentPattern = "GET /api/" + Version + "/skills/{namespace}/{name}/current"
-	TreePattern    = "GET /api/" + Version + "/skills/{namespace}/{name}/publications/{digest}/tree.zip"
 )
 
 var (
@@ -73,18 +67,6 @@ type CurrentResponse struct {
 type ErrorResponse struct {
 	Code    Code   `json:"code"`
 	Message string `json:"message"`
-}
-
-func CurrentPath(skill registry.SkillID) string {
-	return "/api/" + Version + "/skills/" + url.PathEscape(skill.Namespace().String()) +
-		"/" + url.PathEscape(skill.Name().String()) + "/current"
-}
-
-func TreePath(publication registry.PublicationID) string {
-	skill := publication.Skill()
-	return "/api/" + Version + "/skills/" + url.PathEscape(skill.Namespace().String()) +
-		"/" + url.PathEscape(skill.Name().String()) + "/publications/" +
-		publication.Tree().String() + "/tree.zip"
 }
 
 func NewCurrentResponse(publication registry.PublicationID) CurrentResponse {

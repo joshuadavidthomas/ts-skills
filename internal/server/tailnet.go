@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
 	"tailscale.com/client/local"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
-	"time"
 )
 
 const (
@@ -29,51 +31,51 @@ type actorResolver struct {
 	local *local.Client
 }
 
-func (r *actorResolver) curator(request *http.Request) (curator, error) {
+func (r *actorResolver) curator(request *http.Request) (servercatalog.Curator, error) {
 	if r == nil || r.local == nil {
-		return curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
+		return servercatalog.Curator{}, fmt.Errorf("resolve Tailnet identity: LocalAPI client is unavailable")
 	}
 	if request == nil {
-		return curator{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
+		return servercatalog.Curator{}, fmt.Errorf("resolve Tailnet identity: HTTP request must be provided")
 	}
 
 	who, err := r.local.WhoIs(request.Context(), request.RemoteAddr)
 	if err != nil {
-		return curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
+		return servercatalog.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, err)
 	}
 	if who == nil || who.Node == nil {
-		return curator{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
+		return servercatalog.Curator{}, fmt.Errorf("identify Tailnet peer %q: WhoIs returned no node", request.RemoteAddr)
 	}
-	var resolvedActor actor
+	var resolvedActor servercatalog.Actor
 	if len(who.Node.Tags) != 0 {
 		if who.Node.StableID.IsZero() || strings.TrimSpace(who.Node.Name) == "" {
-			return curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
+			return servercatalog.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: node identity is incomplete", request.RemoteAddr)
 		}
 		display := strings.TrimSuffix(who.Node.Name, ".") + " [" + strings.Join(who.Node.Tags, ", ") + "]"
-		resolvedActor = actor{ID: string(who.Node.StableID), Display: display}
-		if err := validateActor(resolvedActor); err != nil {
-			return curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
+		resolvedActor, err = servercatalog.NewActor(string(who.Node.StableID), display)
+		if err != nil {
+			return servercatalog.Curator{}, fmt.Errorf("identify tagged Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	} else {
 		if who.UserProfile == nil || who.UserProfile.ID.IsZero() || strings.TrimSpace(who.UserProfile.LoginName) == "" {
-			return curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
+			return servercatalog.Curator{}, fmt.Errorf("identify human Tailnet peer %q: user identity is incomplete", request.RemoteAddr)
 		}
-		resolvedActor = actor{ID: strconv.FormatInt(int64(who.UserProfile.ID), 10), Display: who.UserProfile.LoginName}
-		if err := validateActor(resolvedActor); err != nil {
-			return curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
+		resolvedActor, err = servercatalog.NewActor(strconv.FormatInt(int64(who.UserProfile.ID), 10), who.UserProfile.LoginName)
+		if err != nil {
+			return servercatalog.Curator{}, fmt.Errorf("identify human Tailnet peer %q: %w", request.RemoteAddr, err)
 		}
 	}
 
 	rules, err := tailcfg.UnmarshalCapJSON[capabilityRule](who.CapMap, skillsCapabilityName)
 	if err != nil {
-		return curator{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
+		return servercatalog.Curator{}, fmt.Errorf("identify Tailnet peer %q capabilities: %w", request.RemoteAddr, err)
 	}
 	for _, rule := range rules {
 		if rule.Curate {
-			return curator{Actor: resolvedActor}, nil
+			return servercatalog.Curator{Actor: resolvedActor}, nil
 		}
 	}
-	return curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, errCurationDenied)
+	return servercatalog.Curator{}, fmt.Errorf("identify Tailnet peer %q: %w", request.RemoteAddr, servercatalog.ErrCurationDenied)
 }
 
 type tailnetConfig struct {

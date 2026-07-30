@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -20,6 +19,8 @@ import (
 	"time"
 	"unicode"
 
+	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
+	serverweb "github.com/joshuadavidthomas/ts-skills/internal/server/web"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"tailscale.com/ipn"
 	"tailscale.com/types/persist"
@@ -32,68 +33,7 @@ const (
 	writeTimeout      = 5 * time.Minute
 	idleTimeout       = 5 * time.Minute
 	shutdownTimeout   = 30 * time.Second
-
-	// multipartPartOverheadBytes pays for each browser-generated multipart
-	// boundary and headers. Browser form parts are comfortably below 1 KiB.
-	multipartPartOverheadBytes int64 = 1 << 10
 )
-
-// uploadBodyCap covers a maximal legal directory upload: staged file bytes,
-// the manifest (one entry per file), the namespace, and multipart framing for
-// the namespace, manifest, and each file part.
-func uploadBodyCap(limits tree.Limits) (int64, error) {
-	if err := tree.ValidateLimits(limits); err != nil {
-		return 0, err
-	}
-	files := int64(limits.MaxFiles)
-	manifestEntryBytes, err := checkedAdd(int64(limits.MaxPathBytes), 96)
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload manifest entry allowance: %w", err)
-	}
-	manifestBytes, err := checkedMultiply(files, manifestEntryBytes)
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload manifest allowance: %w", err)
-	}
-	manifestBytes, err = checkedAdd(manifestBytes, 2) // JSON array brackets.
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload manifest allowance: %w", err)
-	}
-	parts, err := checkedAdd(files, 2) // namespace and manifest, plus files.
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload multipart parts: %w", err)
-	}
-	framingBytes, err := checkedMultiply(parts, multipartPartOverheadBytes)
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload multipart framing allowance: %w", err)
-	}
-	cap, err := checkedAdd(limits.MaxExpandedBytes, manifestBytes)
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload body cap: %w", err)
-	}
-	cap, err = checkedAdd(cap, 1024) // namespace value limit.
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload body cap: %w", err)
-	}
-	cap, err = checkedAdd(cap, framingBytes)
-	if err != nil {
-		return 0, fmt.Errorf("calculate upload body cap: %w", err)
-	}
-	return cap, nil
-}
-
-func checkedAdd(left, right int64) (int64, error) {
-	if right > 0 && left > math.MaxInt64-right {
-		return 0, fmt.Errorf("integer overflow")
-	}
-	return left + right, nil
-}
-
-func checkedMultiply(left, right int64) (int64, error) {
-	if left != 0 && right > math.MaxInt64/left {
-		return 0, fmt.Errorf("integer overflow")
-	}
-	return left * right, nil
-}
 
 type Config struct {
 	StateDir string
@@ -554,14 +494,14 @@ func shutdownHTTP(server *http.Server, ctx context.Context) error {
 	return nil
 }
 
-func openRegistryCore(ctx context.Context, stateDir string) (_ *catalog, _ csrfKey, err error) {
-	catalog, err := openCatalog(ctx, stateDir)
+func openRegistryCore(ctx context.Context, stateDir string) (_ *servercatalog.Catalog, _ csrfKey, err error) {
+	catalog, err := servercatalog.Open(ctx, stateDir)
 	if err != nil {
 		return nil, csrfKey{}, fmt.Errorf("open registry storage: %w", err)
 	}
 	defer func() {
 		if err != nil {
-			err = errors.Join(err, catalog.close())
+			err = errors.Join(err, catalog.Close())
 		}
 	}()
 
@@ -581,7 +521,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	closeCatalog := true
 	defer func() {
 		if closeCatalog {
-			err = errors.Join(err, catalog.close())
+			err = errors.Join(err, catalog.Close())
 		}
 	}()
 
@@ -622,7 +562,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	}
 	actors := &actorResolver{local: localClient}
 	limits := tree.PrototypeLimits()
-	maxRequestBodyBytes, err := uploadBodyCap(limits)
+	maxRequestBodyBytes, err := serverweb.UploadBodyCap(limits)
 	if err != nil {
 		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
 	}
@@ -640,7 +580,7 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 
 	cleanup := &runtimeCleanup{
 		closeNetwork: tailServer.close,
-		closeStorage: catalog.close,
+		closeStorage: catalog.Close,
 	}
 	closeTailnet = false
 	closeCatalog = false
@@ -668,17 +608,21 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	closeCatalog := true
 	defer func() {
 		if closeCatalog {
-			err = errors.Join(err, catalog.close())
+			err = errors.Join(err, catalog.Close())
 		}
 	}()
 
-	devCurator := curator{Actor: actor{ID: "dev", Display: "dev@localhost"}}
+	devActor, err := servercatalog.NewActor("dev", "dev@localhost")
+	if err != nil {
+		return runtime{}, fmt.Errorf("construct dev curator: %w", err)
+	}
+	devCurator := servercatalog.Curator{Actor: devActor}
 	limits := tree.PrototypeLimits()
-	maxRequestBodyBytes, err := uploadBodyCap(limits)
+	maxRequestBodyBytes, err := serverweb.UploadBodyCap(limits)
 	if err != nil {
 		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
 	}
-	handler, err := newHandler(catalog, func(*http.Request) (curator, error) { return devCurator, nil }, handlerOptions{
+	handler, err := newHandler(catalog, func(*http.Request) (servercatalog.Curator, error) { return devCurator, nil }, handlerOptions{
 		StagingParent:       filepath.Join(config.StateDir, "tmp"),
 		Limits:              limits,
 		MaxRequestBodyBytes: maxRequestBodyBytes,
@@ -712,7 +656,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 			}
 			return nil
 		},
-		closeStorage: catalog.close,
+		closeStorage: catalog.Close,
 	}
 	closeCatalog = false
 	return runtime{

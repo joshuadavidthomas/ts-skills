@@ -20,7 +20,7 @@ Run these after implementing changes:
 - Lint: `just lint`
 - Static analysis: `just vet`
 - Format: `just fmt`
-- After editing templates or `internal/server/tailwind.css`: `just css`
+- After editing templates or `internal/server/web/tailwind.css`: `just css`
 
 ## Architecture
 
@@ -32,16 +32,19 @@ Run these after implementing changes:
 - `internal/protocol/` defines the private HTTP contract shared by the client and daemon
 - `internal/registry/` owns ts-skills namespaces, publication identity, tree hashing, and verification
 - `internal/tree/` validates, durably stages, encodes, and decodes bounded portable publication trees
-- `internal/server/` owns the daemon, tsnet node, catalog, candidate identity, SQLite storage, browser upload, HTTP API, and server-rendered UI
+- `internal/server/` composes the daemon runtime and tsnet node
+- `internal/server/catalog/` owns candidate identity, publication lifecycle, SQLite storage, and durable catalog trees
+- `internal/server/api/` serves the private machine-readable registry protocol
+- `internal/server/web/` owns browser upload, curation routes, templates, and static assets
 - `internal/version/` carries the build version injected into release binaries
 
-Cross-binary mechanics belong in shared packages only when both binaries use them. Binary-specific application logic belongs in one internal package; command packages contain process entry adapters only. A constructor parses untrusted input. An interface needs two production implementations.
+Cross-binary mechanics belong in shared packages only when both binaries use them. Binary-specific application logic stays within its internal package tree; command packages contain process entry adapters only. A constructor parses untrusted input. An interface needs two production implementations.
 
 ## Codebase patterns
 
 - Use plain `database/sql` with `modernc.org/sqlite`; do not add an ORM.
-- Treat the migration ladder in `internal/server/sqlite.go` as append-only history. Never edit an old migration; append a new entry.
-- Render the UI on the server with `html/template` and Tailwind. Commit generated `internal/server/static/style.css` after running `just css`.
+- Treat the migration ladder in `internal/server/catalog/sqlite.go` as append-only history. Never edit an old migration; append a new entry.
+- Render the UI on the server with `html/template` and Tailwind. Commit generated `internal/server/web/static/style.css` after running `just css`.
 - Do not ask the browser for choices the server can infer.
 - Address publications by namespace/name and SHA-256 tree digest. Published content is immutable.
 - Production identity comes from tsnet peers; there are no application accounts or bearer tokens.

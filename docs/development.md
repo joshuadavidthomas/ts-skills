@@ -53,13 +53,13 @@ Testing against a real tailnet is a deployment concern; see the [deployment guid
 
 ## Web UI
 
-Page templates live in `internal/server/templates`. The daemon embeds them and the static files in `internal/server/static` at build time. The compiled CSS is committed; rebuild it after changing a template or `internal/server/tailwind.css`:
+Page templates live in `internal/server/web/templates`. The web package embeds them and the static files in `internal/server/web/static` at build time. The compiled CSS is committed; rebuild it after changing a template or `internal/server/web/tailwind.css`:
 
 ```console
 npm install && npm run build:css
 ```
 
-The UI self-hosts Inter from `internal/server/static/fonts` under the SIL Open Font License included beside the font.
+The UI self-hosts Inter from `internal/server/web/static/fonts` under the SIL Open Font License included beside the font.
 
 ## The bundled example skill
 

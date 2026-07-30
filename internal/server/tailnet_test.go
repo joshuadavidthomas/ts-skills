@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
 	"tailscale.com/client/local"
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
@@ -96,7 +97,7 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 		request.RemoteAddr = "100.64.0.7:51820"
 		request.Header = headers
 		_, err = resolver.curator(request)
-		if !errors.Is(err, errCurationDenied) {
+		if !errors.Is(err, servercatalog.ErrCurationDenied) {
 			t.Fatalf("curator error = %v, want permission denial", err)
 		}
 	}
@@ -112,13 +113,13 @@ func TestActorResolverUsesRemoteAddrAndIgnoresIdentityHeaders(t *testing.T) {
 }
 
 func TestValidateActorRejectsUntrustedText(t *testing.T) {
-	for _, actor := range []actor{
+	for _, actor := range []servercatalog.Actor{
 		{ID: "id\x00", Display: "display"},
 		{ID: string([]byte{0xff}), Display: "display"},
 		{ID: strings.Repeat("a", 257), Display: "display"},
 	} {
-		if err := validateActor(actor); err == nil {
-			t.Fatalf("validateActor(%#v) succeeded", actor)
+		if _, err := servercatalog.NewActor(actor.ID, actor.Display); err == nil {
+			t.Fatalf("NewActor(%#v) succeeded", actor)
 		}
 	}
 }
@@ -209,7 +210,7 @@ func TestActorResolverCapabilityRules(t *testing.T) {
 				}
 				return
 			}
-			if !errors.Is(err, errCurationDenied) {
+			if !errors.Is(err, servercatalog.ErrCurationDenied) {
 				t.Fatalf("curator error = %v, want permission denial", err)
 			}
 		})
@@ -223,7 +224,7 @@ func TestActorResolverValidatesIdentityBeforeCapability(t *testing.T) {
 	}, &addresses)}
 	request := httptest.NewRequest(http.MethodPost, "https://registry.example.ts.net/candidates", nil)
 	request.RemoteAddr = "100.64.0.7:51820"
-	if _, err := resolver.curator(request); err == nil || errors.Is(err, errCurationDenied) {
+	if _, err := resolver.curator(request); err == nil || errors.Is(err, servercatalog.ErrCurationDenied) {
 		t.Fatalf("curator error = %v, want incomplete identity failure", err)
 	}
 }

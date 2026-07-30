@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"math"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -18,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 	"tailscale.com/ipn"
 	"tailscale.com/types/key"
@@ -64,33 +64,6 @@ func TestHTTPServerHasFiniteTimeouts(t *testing.T) {
 		if timeout < 2*time.Minute {
 			t.Errorf("%s timeout = %v, want at least two minutes for a maximum-size prototype transfer", name, timeout)
 		}
-	}
-}
-
-func TestUploadBodyCapCoversPrototypeLimits(t *testing.T) {
-	limits := tree.PrototypeLimits()
-	cap, err := uploadBodyCap(limits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifestBytes := int64(limits.MaxFiles)*(int64(limits.MaxPathBytes)+96) + 2
-	framingBytes := int64(limits.MaxFiles+2) * multipartPartOverheadBytes
-	want := limits.MaxExpandedBytes + manifestBytes + 1024 + framingBytes
-	if cap != want {
-		t.Fatalf("upload body cap = %d, want %d", cap, want)
-	}
-}
-
-func TestUploadBodyCapRejectsOverflow(t *testing.T) {
-	_, err := uploadBodyCap(tree.Limits{
-		MaxFiles:         math.MaxInt,
-		MaxPathBytes:     math.MaxInt,
-		MaxDepth:         1,
-		MaxFileBytes:     math.MaxInt64,
-		MaxExpandedBytes: math.MaxInt64,
-	})
-	if err == nil || !strings.Contains(err.Error(), "overflow") {
-		t.Fatalf("overflowing upload body cap error = %v, want overflow", err)
 	}
 }
 
@@ -476,13 +449,13 @@ func TestRuntimeCleanupRetriesFailedStorageClose(t *testing.T) {
 			events = append(events, "storage-close-attempted")
 			storageAttempts++
 			if storageAttempts == 1 {
-				return errTreesOpen
+				return servercatalog.ErrTreesOpen
 			}
 			return nil
 		},
 	}
 
-	if err := cleanup.close(); !errors.Is(err, errTreesOpen) {
+	if err := cleanup.close(); !errors.Is(err, servercatalog.ErrTreesOpen) {
 		t.Fatalf("first cleanup error = %v, want errTreesOpen", err)
 	}
 	if err := cleanup.close(); err != nil {
