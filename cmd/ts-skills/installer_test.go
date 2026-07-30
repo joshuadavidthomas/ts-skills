@@ -11,8 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+
+	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 )
 
 func testInstaller(t *testing.T, body string) (*installer, project, requirement, func(string)) {
@@ -94,6 +97,85 @@ func TestInstallIsIdempotentAndKeepsCanonicalLock(t *testing.T) {
 	}
 	if !bytes.Equal(first, second) {
 		t.Fatal("idempotent install changed lock bytes")
+	}
+}
+
+func TestInstallConvergesWhenAnotherInstallUpdatesTheLockDuringFetch(t *testing.T) {
+	digest, archive := clientTree(t, "sample")
+	project, err := openProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := agentskill.ParseSkillID("team/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPublication, err := agentskill.NewPublicationID(other, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentLock, err := newLock([]lockedSkill{{publication: otherPublication}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	concurrentBytes, err := encodeLockBytes(concurrentLock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mutationMu sync.Mutex
+	var mutationErr error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/" + apiVersion + "/skills/team/sample/current":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(currentResponse{Namespace: "team", Name: "sample", Digest: digest.String()})
+		case "/api/" + apiVersion + "/skills/team/sample/publications/" + digest.String() + "/tree.zip":
+			err := os.MkdirAll(filepath.Dir(project.lockPath()), 0o755)
+			if err == nil {
+				err = writeSyncedFile(project.lockPath(), concurrentBytes, 0o600)
+			}
+			mutationMu.Lock()
+			mutationErr = err
+			mutationMu.Unlock()
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/zip")
+			setClientTreeHeaders(w.Header(), "team", "sample", digest.String())
+			_, _ = w.Write(archive)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	requirement, err := current(clientSkill(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	installer := &installer{remote: remoteForServer(t, server)}
+	if _, err := installer.install(context.Background(), project, requirement); err != nil {
+		t.Fatal(err)
+	}
+	mutationMu.Lock()
+	err = mutationErr
+	mutationMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	installed, _, _, err := writer.readLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, skill := range []agentskill.SkillID{clientSkill(t), other} {
+		if _, found := installed.lookup(skill); !found {
+			t.Fatalf("final lock is missing %s", skill.String())
+		}
 	}
 }
 
@@ -191,7 +273,7 @@ func TestRestoreReplacesChangedLockedDestinationAndPreservesOtherPaths(t *testin
 	}
 }
 
-func TestReadLockSnapshotRejectsSymlink(t *testing.T) {
+func TestWriterReadLockRejectsSymlink(t *testing.T) {
 	project, err := openProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -202,12 +284,13 @@ func TestReadLockSnapshotRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), project.lockPath()); err != nil {
 		t.Skipf("create lock symlink: %v", err)
 	}
-	if _, _, err := readLockSnapshot(project); err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("readLockSnapshot() error = %v, want symbolic-link rejection", err)
+	writer := &projectWriter{project: project}
+	if _, _, _, err := writer.readLock(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("readLock() error = %v, want symbolic-link rejection", err)
 	}
 }
 
-func TestReadLockSnapshotRejectsSymlinkedParent(t *testing.T) {
+func TestWriterReadLockRejectsSymlinkedParent(t *testing.T) {
 	project, err := openProject(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +298,9 @@ func TestReadLockSnapshotRejectsSymlinkedParent(t *testing.T) {
 	if err := os.Symlink(t.TempDir(), filepath.Join(project.root, ".agents")); err != nil {
 		t.Skipf("create managed-directory symlink: %v", err)
 	}
-	if _, _, err := readLockSnapshot(project); err == nil || !strings.Contains(err.Error(), "symbolic link") {
-		t.Fatalf("readLockSnapshot() error = %v, want symbolic-link rejection", err)
+	writer := &projectWriter{project: project}
+	if _, _, _, err := writer.readLock(); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		t.Fatalf("readLock() error = %v, want symbolic-link rejection", err)
 	}
 }
 
@@ -323,6 +407,31 @@ func TestReplaceRestoresOldTreeWhenMoveSyncFails(t *testing.T) {
 	contents, err := os.ReadFile(filepath.Join(project.skillsDir(), "sample", "SKILL.md"))
 	if err != nil || !bytes.Contains(contents, []byte("old")) {
 		t.Fatalf("destination after rollback = %q, %v", contents, err)
+	}
+}
+
+func TestReplaceRollsBackWhenVerifiedTreeWasAlreadyTransferred(t *testing.T) {
+	project, writer, verified, newLock := stagedUpgrade(t)
+	staged, err := verified.transfer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(staged) })
+	if err := writer.replace(context.Background(), verified, newLock, true); err == nil {
+		t.Fatal("replace succeeded after verified tree transfer")
+	}
+	contents, err := os.ReadFile(filepath.Join(project.skillsDir(), "sample", "SKILL.md"))
+	if err != nil || !bytes.Contains(contents, []byte("old")) {
+		t.Fatalf("destination after rollback = %q, %v", contents, err)
+	}
+	entries, err := os.ReadDir(project.skillsDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), installTrashPendingPrefix) {
+			t.Fatalf("pending trash remains after rollback: %s", entry.Name())
+		}
 	}
 }
 
@@ -496,12 +605,9 @@ func TestWriterSweepPreservesChangedUncommittedDestination(t *testing.T) {
 	if _, err := installer.install(context.Background(), project, requirement); err != nil {
 		t.Fatal(err)
 	}
-	contents, found, err := readLockSnapshot(project)
+	contents, err := os.ReadFile(project.lockPath())
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !found {
-		t.Fatal("installed skill lock is missing")
 	}
 	lock, err := decodeLock(bytes.NewReader(contents))
 	if err != nil {
@@ -803,6 +909,86 @@ func TestWriterSweepsEmptyFreshInstallTrash(t *testing.T) {
 	defer func() { _ = writer.close() }()
 	if _, err := os.Stat(pending); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("empty fresh-install trash remains: %v", err)
+	}
+}
+
+func TestWriterSweepsRecordlessTrashWithoutTree(t *testing.T) {
+	project, err := openProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(project.skillsDir(), installTrashPendingPrefix+"recordless")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writer, err = project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.close() }()
+	if _, err := os.Stat(trash); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("recordless trash remains: %v", err)
+	}
+}
+
+func TestWriterRejectsRecordlessTrashWithTree(t *testing.T) {
+	project, err := openProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(project.skillsDir(), installTrashPendingPrefix+"recordless-tree")
+	if err := os.MkdirAll(filepath.Join(trash, trashTreeName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashTreeName, "SKILL.md"), []byte("previous skill"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), trash) {
+		t.Fatalf("acquireWriter() error = %v, want error naming %q", err, trash)
+	}
+	if _, err := os.Stat(trash); err != nil {
+		t.Fatalf("recordless trash was removed: %v", err)
+	}
+}
+
+func TestWriterRejectsCorruptTrashRecord(t *testing.T) {
+	project, err := openProject(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := project.acquireWriter(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.close(); err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(project.skillsDir(), installTrashPendingPrefix+"corrupt")
+	if err := os.Mkdir(trash, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(trash, trashRecordName), []byte("not JSON"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), trash) {
+		t.Fatalf("acquireWriter() error = %v, want error naming %q", err, trash)
+	}
+	if _, err := os.Stat(trash); err != nil {
+		t.Fatalf("corrupt trash was removed: %v", err)
 	}
 }
 

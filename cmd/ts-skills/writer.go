@@ -218,6 +218,8 @@ type trashRecord struct {
 	HadDestination bool   `json:"had_destination"`
 }
 
+var errUnreadableTrashRecord = errors.New("unreadable install trash record")
+
 func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
@@ -296,7 +298,15 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 	}
 	record, skill, err := readTrashRecord(path)
 	if err != nil {
-		return nil, nil
+		if errors.Is(err, fs.ErrNotExist) {
+			if _, treeErr := os.Lstat(filepath.Join(path, trashTreeName)); errors.Is(treeErr, fs.ErrNotExist) {
+				return &staleTrash{}, nil
+			} else if treeErr != nil {
+				return nil, fmt.Errorf("inspect install trash %q tree: %w", path, treeErr)
+			}
+			return nil, fmt.Errorf("install trash %q has no record but contains a tree", path)
+		}
+		return nil, fmt.Errorf("read install trash %q: %w", path, err)
 	}
 	lock, _, _, err := w.readLock()
 	if err != nil {
@@ -328,19 +338,25 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 func readTrashRecord(path string) (trashRecord, agentskill.SkillID, error) {
 	recordPath := filepath.Join(path, trashRecordName)
 	if err := rejectLink(recordPath, false); err != nil {
-		return trashRecord{}, agentskill.SkillID{}, err
+		if errors.Is(err, fs.ErrNotExist) {
+			return trashRecord{}, agentskill.SkillID{}, err
+		}
+		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	contents, err := os.ReadFile(recordPath)
 	if err != nil {
-		return trashRecord{}, agentskill.SkillID{}, err
+		if errors.Is(err, fs.ErrNotExist) {
+			return trashRecord{}, agentskill.SkillID{}, err
+		}
+		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	var record trashRecord
 	if err := json.Unmarshal(contents, &record); err != nil {
-		return trashRecord{}, agentskill.SkillID{}, err
+		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	skill, err := agentskill.ParseSkillID(record.Skill)
 	if err != nil {
-		return trashRecord{}, agentskill.SkillID{}, err
+		return trashRecord{}, agentskill.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
 	return record, skill, nil
 }
@@ -353,6 +369,8 @@ func (w *projectWriter) createTrash(publication agentskill.PublicationID, hadDes
 	if err := os.Mkdir(path, 0o700); err != nil {
 		return "", err
 	}
+	// The record is written before a prior destination can move into tree, so
+	// recovery may safely discard a recordless trash directory with no tree.
 	contents, err := json.Marshal(trashRecord{Skill: publication.Skill().String(), Tree: publication.Tree().String(), HadDestination: hadDestination})
 	if err != nil {
 		return "", err

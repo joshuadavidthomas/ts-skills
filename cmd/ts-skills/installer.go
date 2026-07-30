@@ -28,10 +28,6 @@ func (i *installer) install(ctx context.Context, project project, requirement re
 	if err := project.validate(); err != nil {
 		return lockedSkill{}, err
 	}
-	fetchedLock, fetchedLockExists, err := readLockSnapshot(project)
-	if err != nil {
-		return lockedSkill{}, err
-	}
 	fetched, err := i.remote.fetch(ctx, requirement)
 	if err != nil {
 		return lockedSkill{}, fmt.Errorf("fetch skill %s: %w", requirement.skillID().String(), err)
@@ -45,9 +41,6 @@ func (i *installer) install(ctx context.Context, project project, requirement re
 	oldLock, oldBytes, hadLock, err := writer.readLock()
 	if err != nil {
 		return lockedSkill{}, err
-	}
-	if hadLock != fetchedLockExists || !bytes.Equal(oldBytes, fetchedLock) {
-		return lockedSkill{}, errProjectChanged
 	}
 	before, err := writer.destinationState(ctx, requirement.skillID())
 	if err != nil {
@@ -186,20 +179,6 @@ func (p restorePlan) matches(ctx context.Context, writer *projectWriter) error {
 
 func projectChanged(operation string, err error) error {
 	return errors.Join(errProjectChanged, fmt.Errorf("%s: %w", operation, err))
-}
-
-func readLockSnapshot(project project) ([]byte, bool, error) {
-	if err := rejectLink(project.lockPath(), true); err != nil {
-		return nil, false, fmt.Errorf("inspect project lock: %w", err)
-	}
-	contents, err := os.ReadFile(project.lockPath())
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("read project lock: %w", err)
-	}
-	return contents, true, nil
 }
 
 func closeFetchedTree(fetched fetchedSkill) error {
@@ -378,7 +357,7 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 	}
 	staged, err := verified.transfer()
 	if err != nil {
-		return err
+		return w.rollbackReplacement(destination, trash, err, exists, false)
 	}
 	if err := w.rename(staged, destination); err != nil {
 		return errors.Join(w.rollbackReplacement(destination, trash, fmt.Errorf("replace skill destination: %w", err), exists, false), os.RemoveAll(staged))
