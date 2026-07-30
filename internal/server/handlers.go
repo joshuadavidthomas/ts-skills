@@ -48,10 +48,11 @@ func newCSRFKey(src []byte) (csrfKey, error) {
 }
 
 type handlerOptions struct {
-	StagingParent string
-	Limits        safetree.Limits
-	CSRFKey       csrfKey
-	SecureCookies bool
+	StagingParent       string
+	Limits              safetree.Limits
+	MaxRequestBodyBytes int64
+	CSRFKey             csrfKey
+	SecureCookies       bool
 	// Logger receives diagnostics for unexpected request failures and
 	// post-commit cleanup failures; nil selects slog.Default().
 	Logger *slog.Logger
@@ -77,6 +78,13 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	}
 	if err := safetree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
+	}
+	minimumBodyCap, err := uploadBodyCap(options.Limits)
+	if err != nil {
+		return nil, fmt.Errorf("derive web request body cap: %w", err)
+	}
+	if options.MaxRequestBodyBytes < minimumBodyCap {
+		return nil, fmt.Errorf("web request body cap %d is smaller than upload minimum %d", options.MaxRequestBodyBytes, minimumBodyCap)
 	}
 	maxArchiveBytes := agentskill.TreeArchiveMaxBytes
 	if options.Logger == nil {

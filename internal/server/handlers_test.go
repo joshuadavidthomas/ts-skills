@@ -47,13 +47,28 @@ type webFixture struct {
 	resolver *fixedCuratorResolver
 	key      csrfKey
 	logger   *slog.Logger
+	limits   safetree.Limits
+	bodyCap  int64
+}
+
+func mustUploadBodyCap(t *testing.T, limits safetree.Limits) int64 {
+	t.Helper()
+	cap, err := uploadBodyCap(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cap
 }
 
 func newWebFixture(t *testing.T) *webFixture {
-	return newWebFixtureWithLogger(t, nil)
+	return newWebFixtureWithLimits(t, safetree.PrototypeLimits(), nil)
 }
 
 func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
+	return newWebFixtureWithLimits(t, safetree.PrototypeLimits(), logger)
+}
+
+func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.Logger) *webFixture {
 	t.Helper()
 	state := t.TempDir()
 	records, err := openCatalog(context.Background(), state)
@@ -69,14 +84,18 @@ func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
 		t.Fatal(err)
 	}
 	resolver := &fixedCuratorResolver{curator: curator{Actor: actor}}
+	bodyCap, err := uploadBodyCap(limits)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false, Logger: logger,
+		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, CSRFKey: key, SecureCookies: false, Logger: logger,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
+	server.Config = newHTTPServer(context.Background(), handler, bodyCap, newHandlerGate(nil))
 	server.Start()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Get(server.URL + "/upload")
@@ -98,7 +117,7 @@ func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key, logger: logger,
+		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -121,14 +140,14 @@ func (f *webFixture) restart() {
 	}
 	catalog := records
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: safetree.PrototypeLimits(), CSRFKey: f.key, SecureCookies: false, Logger: f.logger,
+		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, CSRFKey: f.key, SecureCookies: false, Logger: f.logger,
 	})
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.storage = records
 	f.server = httptest.NewUnstartedServer(nil)
-	f.server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
+	f.server.Config = newHTTPServer(context.Background(), handler, f.bodyCap, newHandlerGate(nil))
 	f.server.Start()
 	response, err := f.client.Get(f.server.URL + "/upload")
 	if err != nil {
@@ -778,6 +797,47 @@ func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {
 	}
 }
 
+func TestUploadBodyCapLetsTreeLimitsDecideAtSmallScale(t *testing.T) {
+	limits := safetree.Limits{
+		MaxFiles:         1,
+		MaxPathBytes:     128,
+		MaxDepth:         2,
+		MaxFileBytes:     4096,
+		MaxExpandedBytes: 4096,
+	}
+	fixture := newWebFixtureWithLimits(t, limits, nil)
+	makeParts := func(size int) []formPart {
+		body := append([]byte("---\nname: sample\ndescription: Request body cap test\n---\n"), bytes.Repeat([]byte("x"), size-len("---\nname: sample\ndescription: Request body cap test\n---\n"))...)
+		manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d}]`, len(body))
+		return []formPart{
+			{name: "namespace", body: []byte("team")},
+			{name: "manifest", body: []byte(manifest)},
+			{name: "file-0", filename: "SKILL.md", body: body},
+		}
+	}
+
+	accepted := multipartRequest(t, fixture.server.URL+"/candidates", makeParts(4095))
+	if accepted.ContentLength >= fixture.bodyCap {
+		t.Fatalf("accepted request is %d bytes, body cap is %d", accepted.ContentLength, fixture.bodyCap)
+	}
+	response := fixture.do(accepted, true)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("near-limit upload status = %d, want %d", response.StatusCode, http.StatusSeeOther)
+	}
+
+	rejected := multipartRequest(t, fixture.server.URL+"/candidates", makeParts(4097))
+	if rejected.ContentLength >= fixture.bodyCap {
+		t.Fatalf("over-tree-limit request is %d bytes, body cap is %d", rejected.ContentLength, fixture.bodyCap)
+	}
+	response = fixture.do(rejected, true)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusRequestEntityTooLarge {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("over-tree-limit upload status = %d, want %d: %s", response.StatusCode, http.StatusRequestEntityTooLarge, body)
+	}
+}
+
 func TestUploadRequiresCSRFAndRejectsExtraParts(t *testing.T) {
 	fixture := newWebFixture(t)
 	validParts := skillDirectoryParts("Safe.\n")
@@ -962,7 +1022,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	t.Cleanup(func() { _ = catalog.close() })
 	resolver := &fixedCuratorResolver{}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
+		StagingParent: t.TempDir(), Limits: safetree.PrototypeLimits(), MaxRequestBodyBytes: mustUploadBodyCap(t, safetree.PrototypeLimits()), CSRFKey: key, SecureCookies: false,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -992,5 +1052,25 @@ func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
 	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
 	if err != nil || key == (csrfKey{}) {
 		t.Fatalf("valid key = %x, %v", key, err)
+	}
+}
+
+func TestNewHandlerRejectsRequestBodyCapBelowUploadMinimum(t *testing.T) {
+	limits := safetree.PrototypeLimits()
+	minimum := mustUploadBodyCap(t, limits)
+	catalog, err := openCatalog(context.Background(), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.close() })
+	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = newHandler(catalog, (&fixedCuratorResolver{}).resolve, handlerOptions{
+		StagingParent: t.TempDir(), Limits: limits, MaxRequestBodyBytes: minimum - 1, CSRFKey: key,
+	})
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%d", minimum-1)) || !strings.Contains(err.Error(), fmt.Sprintf("%d", minimum)) {
+		t.Fatalf("undersized request body cap error = %v, want both cap values", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -25,14 +26,74 @@ import (
 )
 
 const (
-	defaultHostname     = "ts-skillsd"
-	readHeaderTimeout   = 10 * time.Second
-	readTimeout         = 5 * time.Minute
-	writeTimeout        = 5 * time.Minute
-	idleTimeout         = 5 * time.Minute
-	shutdownTimeout     = 30 * time.Second
-	maxRequestBodyBytes = int64(32 << 20)
+	defaultHostname   = "ts-skillsd"
+	readHeaderTimeout = 10 * time.Second
+	readTimeout       = 5 * time.Minute
+	writeTimeout      = 5 * time.Minute
+	idleTimeout       = 5 * time.Minute
+	shutdownTimeout   = 30 * time.Second
+
+	// multipartPartOverheadBytes pays for each browser-generated multipart
+	// boundary and headers. Browser form parts are comfortably below 1 KiB.
+	multipartPartOverheadBytes int64 = 1 << 10
 )
+
+// uploadBodyCap covers a maximal legal directory upload: staged file bytes,
+// the manifest (one entry per file), the namespace, and multipart framing for
+// the namespace, manifest, and each file part.
+func uploadBodyCap(limits safetree.Limits) (int64, error) {
+	if err := safetree.ValidateLimits(limits); err != nil {
+		return 0, err
+	}
+	files := int64(limits.MaxFiles)
+	manifestEntryBytes, err := checkedAdd(int64(limits.MaxPathBytes), 96)
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload manifest entry allowance: %w", err)
+	}
+	manifestBytes, err := checkedMultiply(files, manifestEntryBytes)
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload manifest allowance: %w", err)
+	}
+	manifestBytes, err = checkedAdd(manifestBytes, 2) // JSON array brackets.
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload manifest allowance: %w", err)
+	}
+	parts, err := checkedAdd(files, 2) // namespace and manifest, plus files.
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload multipart parts: %w", err)
+	}
+	framingBytes, err := checkedMultiply(parts, multipartPartOverheadBytes)
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload multipart framing allowance: %w", err)
+	}
+	cap, err := checkedAdd(limits.MaxExpandedBytes, manifestBytes)
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload body cap: %w", err)
+	}
+	cap, err = checkedAdd(cap, 1024) // namespace value limit.
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload body cap: %w", err)
+	}
+	cap, err = checkedAdd(cap, framingBytes)
+	if err != nil {
+		return 0, fmt.Errorf("calculate upload body cap: %w", err)
+	}
+	return cap, nil
+}
+
+func checkedAdd(left, right int64) (int64, error) {
+	if right > 0 && left > math.MaxInt64-right {
+		return 0, fmt.Errorf("integer overflow")
+	}
+	return left + right, nil
+}
+
+func checkedMultiply(left, right int64) (int64, error) {
+	if left != 0 && right > math.MaxInt64/left {
+		return 0, fmt.Errorf("integer overflow")
+	}
+	return left * right, nil
+}
 
 type Config struct {
 	StateDir string
@@ -277,9 +338,10 @@ func isASCIILetter(char byte) bool {
 }
 
 type runtime struct {
-	listener net.Listener
-	handler  http.Handler
-	close    func() error
+	listener            net.Listener
+	handler             http.Handler
+	maxRequestBodyBytes int64
+	close               func() error
 }
 
 func Run(ctx context.Context, config Config) error {
@@ -347,7 +409,7 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	serverCtx, cancelServerWork := context.WithCancel(ctx)
 	defer cancelServerWork()
 
-	server := newHTTPServer(serverCtx, active.handler, handlers)
+	server := newHTTPServer(serverCtx, active.handler, active.maxRequestBodyBytes, handlers)
 	serveResult := make(chan error, 1)
 	go func() {
 		serveResult <- server.Serve(active.listener)
@@ -408,7 +470,7 @@ func serveWithHandlerGate(ctx context.Context, active runtime, timeout time.Dura
 	return errors.Join(shutdownErr, serveErr, drainErr)
 }
 
-func newHTTPServer(baseCtx context.Context, handler http.Handler, handlers *handlerGate) *http.Server {
+func newHTTPServer(baseCtx context.Context, handler http.Handler, maxRequestBodyBytes int64, handlers *handlerGate) *http.Server {
 	return &http.Server{
 		BaseContext: func(net.Listener) context.Context { return baseCtx },
 		Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -559,12 +621,18 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 		return runtime{}, err
 	}
 	actors := &actorResolver{local: localClient}
+	limits := safetree.PrototypeLimits()
+	maxRequestBodyBytes, err := uploadBodyCap(limits)
+	if err != nil {
+		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
+	}
 	handler, err := newHandler(catalog, actors.curator, handlerOptions{
-		StagingParent: filepath.Join(config.StateDir, "tmp"),
-		Limits:        safetree.PrototypeLimits(),
-		CSRFKey:       csrfKey,
-		SecureCookies: true,
-		Logger:        logger,
+		StagingParent:       filepath.Join(config.StateDir, "tmp"),
+		Limits:              limits,
+		MaxRequestBodyBytes: maxRequestBodyBytes,
+		CSRFKey:             csrfKey,
+		SecureCookies:       true,
+		Logger:              logger,
 	})
 	if err != nil {
 		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
@@ -577,9 +645,10 @@ func buildRuntime(ctx context.Context, config Config) (_ runtime, err error) {
 	closeTailnet = false
 	closeCatalog = false
 	return runtime{
-		listener: tailServer.listenerAddr(),
-		handler:  handler,
-		close:    cleanup.close,
+		listener:            tailServer.listenerAddr(),
+		handler:             handler,
+		maxRequestBodyBytes: maxRequestBodyBytes,
+		close:               cleanup.close,
 	}, nil
 }
 
@@ -597,12 +666,18 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}()
 
 	devCurator := curator{Actor: actor{ID: "dev", Display: "dev@localhost"}}
+	limits := safetree.PrototypeLimits()
+	maxRequestBodyBytes, err := uploadBodyCap(limits)
+	if err != nil {
+		return runtime{}, fmt.Errorf("derive registry request body cap: %w", err)
+	}
 	handler, err := newHandler(catalog, func(*http.Request) (curator, error) { return devCurator, nil }, handlerOptions{
-		StagingParent: filepath.Join(config.StateDir, "tmp"),
-		Limits:        safetree.PrototypeLimits(),
-		CSRFKey:       csrfKey,
-		SecureCookies: false,
-		Logger:        slog.Default(),
+		StagingParent:       filepath.Join(config.StateDir, "tmp"),
+		Limits:              limits,
+		MaxRequestBodyBytes: maxRequestBodyBytes,
+		CSRFKey:             csrfKey,
+		SecureCookies:       false,
+		Logger:              slog.Default(),
 	})
 	if err != nil {
 		return runtime{}, fmt.Errorf("construct registry HTTP handler: %w", err)
@@ -634,9 +709,10 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}
 	closeCatalog = false
 	return runtime{
-		listener: listener,
-		handler:  handler,
-		close:    cleanup.close,
+		listener:            listener,
+		handler:             handler,
+		maxRequestBodyBytes: maxRequestBodyBytes,
+		close:               cleanup.close,
 	}, nil
 }
 
