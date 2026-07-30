@@ -33,6 +33,11 @@ var templatesFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
+const (
+	defaultTreeWorkLimit = 4
+	maxPreviewBytes      = 256 << 10
+)
+
 type csrfKey [32]byte
 
 func newCSRFKey(src []byte) (csrfKey, error) {
@@ -51,11 +56,15 @@ type handlerOptions struct {
 	StagingParent       string
 	Limits              safetree.Limits
 	MaxRequestBodyBytes int64
+	MaxTreeWork         int
 	CSRFKey             csrfKey
 	SecureCookies       bool
 	// Logger receives diagnostics for unexpected request failures and
 	// post-commit cleanup failures; nil selects slog.Default().
 	Logger *slog.Logger
+	// treeWork is a package-private test seam. Production allocates the
+	// bounded work channel from MaxTreeWork.
+	treeWork chan struct{}
 }
 
 type handler struct {
@@ -64,6 +73,7 @@ type handler struct {
 	options         handlerOptions
 	pages           *template.Template
 	maxArchiveBytes int64
+	treeWork        chan struct{}
 }
 
 func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, error), options handlerOptions) (http.Handler, error) {
@@ -86,6 +96,12 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	if options.MaxRequestBodyBytes < minimumBodyCap {
 		return nil, fmt.Errorf("web request body cap %d is smaller than upload minimum %d", options.MaxRequestBodyBytes, minimumBodyCap)
 	}
+	if options.MaxTreeWork < 0 {
+		return nil, fmt.Errorf("web tree work limit must not be negative")
+	}
+	if options.MaxTreeWork == 0 {
+		options.MaxTreeWork = defaultTreeWorkLimit
+	}
 	maxArchiveBytes := agentskill.TreeArchiveMaxBytes
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -105,7 +121,11 @@ func newHandler(catalog *catalog, resolveCurator func(*http.Request) (curator, e
 	if err != nil {
 		return nil, fmt.Errorf("open embedded web assets: %w", err)
 	}
-	h := &handler{catalog: catalog, curator: resolveCurator, options: options, pages: pages, maxArchiveBytes: maxArchiveBytes}
+	treeWork := options.treeWork
+	if treeWork == nil {
+		treeWork = make(chan struct{}, options.MaxTreeWork)
+	}
+	h := &handler{catalog: catalog, curator: resolveCurator, options: options, pages: pages, maxArchiveBytes: maxArchiveBytes, treeWork: treeWork}
 	mux := http.NewServeMux()
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFiles)))
 	mux.HandleFunc("GET /", h.catalogPage)
@@ -186,15 +206,16 @@ func (h *handler) catalogPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type skillPageData struct {
-	Skill           string
-	Digest          string
-	PublishedBy     string
-	PublishedAt     string
-	DownloadPath    string
-	FileTree        *fileTreeNode
-	SelectedPath    string
-	SelectedContent string
-	SelectedBinary  bool
+	Skill             string
+	Digest            string
+	PublishedBy       string
+	PublishedAt       string
+	DownloadPath      string
+	FileTree          *fileTreeNode
+	SelectedPath      string
+	SelectedContent   string
+	SelectedBinary    bool
+	SelectedTruncated bool
 }
 
 func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +239,10 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 			h.options.Logger.Warn("web publication tree close failed", "error", err)
 		}
 	}()
+	if !h.admitTreeWork(w, false) {
+		return
+	}
+	defer h.releaseTreeWork()
 	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this skill.")
@@ -235,7 +260,7 @@ func (h *handler) skillPage(w http.ResponseWriter, r *http.Request) {
 		PublishedAt:  publication.PublishedAt.Format(time.RFC3339),
 		DownloadPath: publicationTreePath(resolved),
 		FileTree:     selected.Tree, SelectedPath: selected.Path,
-		SelectedContent: selected.Content, SelectedBinary: selected.Binary,
+		SelectedContent: selected.Content, SelectedBinary: selected.Binary, SelectedTruncated: selected.Truncated,
 	}
 	h.render(w, http.StatusOK, "skill", data)
 }
@@ -305,19 +330,20 @@ func (h *handler) createCandidate(w http.ResponseWriter, r *http.Request) {
 }
 
 type reviewPageData struct {
-	CandidateID     string
-	Skill           string
-	SkillPath       string
-	Digest          string
-	Source          string
-	SubmittedBy     string
-	SubmittedAt     string
-	FileTree        *fileTreeNode
-	SelectedPath    string
-	SelectedContent string
-	SelectedBinary  bool
-	Published       bool
-	CSRFField       template.HTML
+	CandidateID       string
+	Skill             string
+	SkillPath         string
+	Digest            string
+	Source            string
+	SubmittedBy       string
+	SubmittedAt       string
+	FileTree          *fileTreeNode
+	SelectedPath      string
+	SelectedContent   string
+	SelectedBinary    bool
+	SelectedTruncated bool
+	Published         bool
+	CSRFField         template.HTML
 }
 
 func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +367,10 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 			h.options.Logger.Warn("web candidate tree close failed", "error", err)
 		}
 	}()
+	if !h.admitTreeWork(w, false) {
+		return
+	}
+	defer h.releaseTreeWork()
 	selected, err := resolveTreeFile(r.Context(), tree, r.URL.Query())
 	if errors.Is(err, errTreeFileNotFound) {
 		h.renderError(w, http.StatusNotFound, "File was not found", "Choose a file from this candidate.")
@@ -366,7 +396,7 @@ func (h *handler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		CandidateID: id.String(), Skill: candidate.Skill.String(), SkillPath: skillPagePath(candidate.Skill), Digest: candidate.Tree.String(),
 		Source: provenance.Source, SubmittedBy: provenance.SubmittedBy.Display,
 		SubmittedAt: provenance.SubmittedAt.Format(time.RFC3339), FileTree: selected.Tree,
-		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary,
+		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary, SelectedTruncated: selected.Truncated,
 		Published: published, CSRFField: csrf.TemplateField(r),
 	}
 	h.render(w, http.StatusOK, "review", data)
@@ -485,6 +515,13 @@ func (h *handler) publicationTree(w http.ResponseWriter, r *http.Request) {
 		h.writeAPIDomainError(w, r, err)
 		return
 	}
+	if !h.admitTreeWork(w, true) {
+		if closeErr := tree.Close(); closeErr != nil {
+			h.options.Logger.Warn("web publication tree close failed", "error", closeErr)
+		}
+		return
+	}
+	defer h.releaseTreeWork()
 	archive, err := h.rootlessZIP(r.Context(), tree)
 	if archive != nil {
 		defer func() {
@@ -674,10 +711,11 @@ func (n *fileTreeNode) Href() template.URL {
 }
 
 type resolvedTreeFile struct {
-	Tree    *fileTreeNode
-	Path    string
-	Content string
-	Binary  bool
+	Tree      *fileTreeNode
+	Path      string
+	Content   string
+	Binary    bool
+	Truncated bool
 }
 
 func resolveTreeFile(ctx context.Context, tree fs.FS, query map[string][]string) (resolvedTreeFile, error) {
@@ -745,16 +783,40 @@ func resolveTreeFile(ctx context.Context, tree fs.FS, query map[string][]string)
 	if err != nil {
 		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
 	}
-	var contents bytes.Buffer
-	_, copyErr := io.Copy(&contents, &requestContextReader{ctx: ctx, source: file})
+	contents, copyErr := io.ReadAll(io.LimitReader(&requestContextReader{ctx: ctx, source: file}, maxPreviewBytes+1))
 	closeErr := file.Close()
 	if err := errors.Join(copyErr, closeErr); err != nil {
 		return resolvedTreeFile{}, fmt.Errorf("read tree file %q: %w", selectedPath, err)
 	}
-	if !utf8.Valid(contents.Bytes()) {
-		return resolvedTreeFile{Tree: root, Path: selectedPath, Binary: true}, nil
+	truncated := int64(len(contents)) > maxPreviewBytes
+	if truncated {
+		contents = contents[:maxPreviewBytes]
 	}
-	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: contents.String()}, nil
+	if !utf8.Valid(contents) {
+		return resolvedTreeFile{Tree: root, Path: selectedPath, Binary: true, Truncated: truncated}, nil
+	}
+	return resolvedTreeFile{Tree: root, Path: selectedPath, Content: string(contents), Truncated: truncated}, nil
+}
+
+func (h *handler) admitTreeWork(w http.ResponseWriter, api bool) bool {
+	select {
+	case h.treeWork <- struct{}{}:
+		return true
+	default:
+		w.Header().Set("Retry-After", "1")
+		if api {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(errorResponse{Code: "unavailable", Message: "Registry tree work is temporarily unavailable."})
+		} else {
+			h.renderError(w, http.StatusServiceUnavailable, "Registry is busy", "Try again in a moment.")
+		}
+		return false
+	}
+}
+
+func (h *handler) releaseTreeWork() {
+	<-h.treeWork
 }
 
 // requestContextReader aborts a streaming read as soon as ctx is cancelled.

@@ -621,7 +621,7 @@ func TestRecordCandidateRejectsDigestMismatchAndConflict(t *testing.T) {
 	}
 }
 
-func TestOpenTreeDetectsCorruptDigestDirectory(t *testing.T) {
+func TestOpenTreeCachesVerifiedDigestUntilRestart(t *testing.T) {
 	state := t.TempDir()
 	catalog := openTestCatalog(t, state)
 	fixture := newFixture(t, "# Stored\n", "asset")
@@ -629,20 +629,41 @@ func TestOpenTreeDetectsCorruptDigestDirectory(t *testing.T) {
 	if err := catalog.recordCandidate(context.Background(), candidate, fixture.directory); err != nil {
 		t.Fatal(err)
 	}
+	tree, err := catalog.openTree(context.Background(), candidate.Tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatal(err)
+	}
 	_, final := catalog.treePaths(candidate.Tree)
 	if err := os.WriteFile(filepath.Join(final, "assets", "data.txt"), []byte("corrupt"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := catalog.openTree(context.Background(), candidate.Tree); !errors.Is(err, errTreeMismatch) {
-		t.Fatalf("open corrupt tree error = %v", err)
+	tree, err = catalog.openTree(context.Background(), candidate.Tree)
+	if err != nil {
+		t.Fatalf("open cached tree error = %v", err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatal(err)
 	}
 	closeCatalog(t, catalog)
 
 	catalog = openTestCatalog(t, state)
-	defer closeCatalog(t, catalog)
 	if _, err := catalog.openTree(context.Background(), candidate.Tree); !errors.Is(err, errTreeMismatch) {
 		t.Fatalf("open corrupt tree after restart error = %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(final, "assets", "data.txt"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tree, err = catalog.openTree(context.Background(), candidate.Tree)
+	if err != nil {
+		t.Fatalf("open repaired tree error = %v", err)
+	}
+	if err := tree.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closeCatalog(t, catalog)
 }
 
 func TestSyncTreeStopsWhenContextIsCanceled(t *testing.T) {

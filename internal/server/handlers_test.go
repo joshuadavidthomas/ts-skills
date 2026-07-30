@@ -36,19 +36,21 @@ func (r *fixedCuratorResolver) resolve(*http.Request) (curator, error) {
 }
 
 type webFixture struct {
-	t        *testing.T
-	server   *httptest.Server
-	client   *http.Client
-	cookie   *http.Cookie
-	token    string
-	storage  *catalog
-	state    string
-	staging  string
-	resolver *fixedCuratorResolver
-	key      csrfKey
-	logger   *slog.Logger
-	limits   safetree.Limits
-	bodyCap  int64
+	t             *testing.T
+	server        *httptest.Server
+	client        *http.Client
+	cookie        *http.Cookie
+	token         string
+	storage       *catalog
+	state         string
+	staging       string
+	resolver      *fixedCuratorResolver
+	key           csrfKey
+	logger        *slog.Logger
+	limits        safetree.Limits
+	bodyCap       int64
+	treeWork      chan struct{}
+	treeWorkLimit int
 }
 
 func mustUploadBodyCap(t *testing.T, limits safetree.Limits) int64 {
@@ -69,6 +71,10 @@ func newWebFixtureWithLogger(t *testing.T, logger *slog.Logger) *webFixture {
 }
 
 func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.Logger) *webFixture {
+	return newWebFixtureWithTreeWork(t, limits, logger, 0)
+}
+
+func newWebFixtureWithTreeWork(t *testing.T, limits safetree.Limits, logger *slog.Logger, treeWork int) *webFixture {
 	t.Helper()
 	state := t.TempDir()
 	records, err := openCatalog(context.Background(), state)
@@ -88,8 +94,12 @@ func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.
 	if err != nil {
 		t.Fatal(err)
 	}
+	var work chan struct{}
+	if treeWork != 0 {
+		work = make(chan struct{}, treeWork)
+	}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, CSRFKey: key, SecureCookies: false, Logger: logger,
+		StagingParent: staging, Limits: limits, MaxRequestBodyBytes: bodyCap, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +127,7 @@ func newWebFixtureWithLimits(t *testing.T, limits safetree.Limits, logger *slog.
 	}
 	fixture := &webFixture{
 		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap,
+		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, bodyCap: bodyCap, treeWork: work, treeWorkLimit: treeWork,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -139,13 +149,18 @@ func (f *webFixture) restart() {
 		f.t.Fatal(err)
 	}
 	catalog := records
+	var work chan struct{}
+	if f.treeWorkLimit != 0 {
+		work = make(chan struct{}, f.treeWorkLimit)
+	}
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, CSRFKey: f.key, SecureCookies: false, Logger: f.logger,
+		StagingParent: f.staging, Limits: f.limits, MaxRequestBodyBytes: f.bodyCap, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work,
 	})
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.storage = records
+	f.treeWork = work
 	f.server = httptest.NewUnstartedServer(nil)
 	f.server.Config = newHTTPServer(context.Background(), handler, f.bodyCap, newHandlerGate(nil))
 	f.server.Start()
@@ -780,6 +795,77 @@ func TestReviewAndSkillPagesDescribeBinaryFiles(t *testing.T) {
 		t.Fatalf("publish status = %d", response.StatusCode)
 	}
 	assertBinary(t, "/skills/team/sample")
+}
+
+func TestReviewAndSkillPagesTruncateLargePreviews(t *testing.T) {
+	fixture := newWebFixture(t)
+	skill := "---\nname: sample\ndescription: Preview size test\n---\nDefault text.\n"
+	large := []byte(strings.Repeat("x", maxPreviewBytes+1))
+	manifest := fmt.Sprintf(`[{"index":0,"path":"sample/SKILL.md","size":%d},{"index":1,"path":"sample/assets/large.txt","size":%d}]`, len(skill), len(large))
+	request := multipartRequest(t, fixture.server.URL+"/candidates", []formPart{
+		{name: "namespace", body: []byte("team")},
+		{name: "manifest", body: []byte(manifest)},
+		{name: "file-0", filename: "SKILL.md", body: []byte(skill)},
+		{name: "file-1", filename: "large.txt", body: large},
+	})
+	response := fixture.do(request, true)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("upload status = %d", response.StatusCode)
+	}
+	candidatePath := response.Header.Get("Location")
+	assertPreview := func(t *testing.T, path string) {
+		t.Helper()
+		page := fixture.get(path + "?file=assets/large.txt")
+		if !strings.Contains(page, "Preview truncated — download the ZIP for the full file.") {
+			t.Fatalf("truncation notice is missing: %s", page)
+		}
+		if len(page) > maxPreviewBytes+(10<<10) {
+			t.Fatalf("rendered preview is %d bytes, want at most %d", len(page), maxPreviewBytes+(10<<10))
+		}
+	}
+
+	assertPreview(t, candidatePath)
+	response = postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+	assertPreview(t, "/skills/team/sample")
+}
+
+func TestReadRoutesRejectWhenTreeWorkIsSaturated(t *testing.T) {
+	fixture := newWebFixtureWithTreeWork(t, safetree.PrototypeLimits(), nil, 1)
+	candidatePath := fixture.uploadDirectory("Bounded read work.\n")
+	digest := digestPattern.FindString(fixture.get(candidatePath))
+	response := postForm(t, fixture, candidatePath+"/publish", nil)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusSeeOther {
+		t.Fatalf("publish status = %d", response.StatusCode)
+	}
+	fixture.treeWork <- struct{}{}
+	defer func() { <-fixture.treeWork }()
+
+	for name, path := range map[string]string{
+		"preview":  candidatePath,
+		"download": "/api/" + apiVersion + "/skills/team/sample/publications/" + digest + "/tree.zip",
+	} {
+		t.Run(name, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodGet, fixture.server.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := fixture.do(request, false)
+			body, err := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
+				t.Fatalf("saturated route status/retry-after = %d/%q, want 503/1: %s", response.StatusCode, response.Header.Get("Retry-After"), body)
+			}
+		})
+	}
 }
 
 func TestUploadLimitMapsToRequestEntityTooLarge(t *testing.T) {

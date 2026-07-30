@@ -165,6 +165,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 		if err := c.step("sync existing digest tree"); err != nil {
 			return err
 		}
+		c.markTreeVerified(expected)
 		return nil
 	case !errors.Is(statErr, fs.ErrNotExist):
 		return fmt.Errorf("inspect digest tree: %w", statErr)
@@ -183,6 +184,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected agentskill.TreeD
 	if err := c.step("sync installed digest tree parent"); err != nil {
 		return err
 	}
+	c.markTreeVerified(expected)
 	return nil
 }
 
@@ -350,13 +352,29 @@ func (c *catalog) openTree(ctx context.Context, digest agentskill.TreeDigest) (*
 	}
 	defer done()
 	_, final := c.treePaths(digest)
-	if err := verifyTree(ctx, final, digest); err != nil {
-		return nil, err
+	if !c.treeVerified(digest) {
+		if err := verifyTree(ctx, final, digest); err != nil {
+			return nil, err
+		}
+		c.markTreeVerified(digest)
 	}
 	c.refsMu.Lock()
 	c.openTrees++
 	c.refsMu.Unlock()
 	return &treeView{files: os.DirFS(final), release: c.releaseTree}, nil
+}
+
+func (c *catalog) treeVerified(digest agentskill.TreeDigest) bool {
+	c.verifiedMu.Lock()
+	defer c.verifiedMu.Unlock()
+	_, ok := c.verified[digest]
+	return ok
+}
+
+func (c *catalog) markTreeVerified(digest agentskill.TreeDigest) {
+	c.verifiedMu.Lock()
+	defer c.verifiedMu.Unlock()
+	c.verified[digest] = struct{}{}
 }
 
 func (c *catalog) releaseTree() {

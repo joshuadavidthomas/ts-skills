@@ -49,6 +49,8 @@ type catalog struct {
 	rollbackTx  func(*sql.Tx) error
 	refsMu      sync.Mutex
 	openTrees   int
+	verifiedMu  sync.Mutex
+	verified    map[agentskill.TreeDigest]struct{}
 	digestMu    sync.Mutex
 	digestLocks map[agentskill.TreeDigest]*digestMutex
 
@@ -125,6 +127,7 @@ func openCatalog(ctx context.Context, stateDir string) (_ *catalog, err error) {
 		treesDir:      treesDir,
 		tmpDir:        tmpDir,
 		digestLocks:   make(map[agentskill.TreeDigest]*digestMutex),
+		verified:      make(map[agentskill.TreeDigest]struct{}),
 		syncDirectory: syncDirectory,
 		closeDB:       (*sql.DB).Close,
 		closeLock:     (*flock.Flock).Close,

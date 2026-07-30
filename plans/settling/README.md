@@ -27,7 +27,7 @@ are never reused or renumbered.)
 | [001](001-sweep-server-tmp-at-startup.md) | Sweep daemon tmp at startup; close orphaned-archive window | S | — | DONE |
 | [002](002-derive-body-cap-from-tree-limits.md) | Derive HTTP body cap from tree limits | S | — | DONE |
 | [004](004-installer-concurrency-and-convergence.md) | Concurrent installs succeed; trash recovery converges | M | — | TODO |
-| [003](003-bound-read-route-cost.md) | Bound read-route cost: verify once, cap concurrency, cap previews | M | 001 | TODO |
+| [003](003-bound-read-route-cost.md) | Bound read-route cost: verify once, cap concurrency, cap previews | M | 001 | DONE — concurrent first opens may both verify |
 | [005](005-close-small-hardening-gaps.md) | Review-page gating, dev state guard, headers, client message hygiene | M | — (after 003) | TODO |
 | [006](006-close-test-and-ci-trigger-gaps.md) | Cover untested error surfaces; widen CI path triggers | S | — (run last) | TODO |
 
@@ -50,6 +50,9 @@ SUPERSEDED (one-line pointer to what replaced it)
 Newest first. A few lines per entry — date, what happened, link,
 deviations, next executable plan.
 
+- **2026-07-29**: Completed 003 — cached verified tree digests per
+  process (concurrent first opens may both verify), bounded concurrent
+  preview/ZIP work, and limited rendered previews to 256 KiB. Next: 004.
 - **2026-07-29**: Completed 002 — derived the multipart request cap from
   `safetree.Limits`, added overflow and construction guards, and covered
   near-limit uploads. Next: 004 (or 003, after its 001 dependency).

@@ -37,6 +37,7 @@
       {{else}}
       <pre class="mt-2 overflow-x-auto rounded-md bg-gray-100 p-4 font-mono text-sm text-gray-800">{{.SelectedContent}}</pre>
       {{end}}
+      {{if .SelectedTruncated}}<p class="mt-2 text-sm text-gray-600">Preview truncated — download the ZIP for the full file.</p>{{end}}
     </section>
   </div>
 
