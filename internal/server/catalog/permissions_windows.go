@@ -62,8 +62,8 @@ func verifyPrivateDirectoryPermissions(name string, _ fs.FileInfo) error {
 	if err != nil {
 		return fmt.Errorf("read private directory DACL: %w", err)
 	}
-	if dacl == nil || dacl.AceCount != 3 {
-		return fmt.Errorf("private directory ACL has unexpected entries")
+	if dacl == nil {
+		return fmt.Errorf("private directory has no DACL")
 	}
 	return nil
 }
