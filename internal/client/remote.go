@@ -156,7 +156,7 @@ func (r *remote) fetchTree(ctx context.Context, expected registry.PublicationID)
 			err = errors.Join(err, snapshot.Close())
 		}
 	}()
-	inspection, err := registry.Inspect(ctx, snapshot.FS(), ".")
+	inspection, err := registry.Inspect(ctx, snapshot, ".")
 	if err != nil {
 		return fetchedSkill{}, fmt.Errorf("%w: downloaded tree is not an Agent Skill: %v", protocol.ErrInvalidResponse, err)
 	}

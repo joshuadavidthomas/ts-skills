@@ -3,11 +3,8 @@ package registry
 import (
 	"fmt"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
-	"golang.org/x/text/unicode/norm"
 )
 
 type Namespace struct{ canonical string }
@@ -23,25 +20,19 @@ type PublicationID struct {
 }
 
 func ParseNamespace(src string) (Namespace, error) {
-	if !utf8.ValidString(src) {
-		return Namespace{}, fmt.Errorf("namespace must be valid UTF-8")
+	if len(src) < 1 || len(src) > 64 {
+		return Namespace{}, fmt.Errorf("namespace must contain 1 to 64 ASCII characters")
 	}
-	canonical := norm.NFKC.String(src)
-	if n := utf8.RuneCountInString(canonical); n < 1 || n > 64 {
-		return Namespace{}, fmt.Errorf("namespace must contain 1 to 64 Unicode scalar values")
-	}
-	if canonical == "." || canonical == ".." || strings.ContainsAny(canonical, "/\\") {
-		return Namespace{}, fmt.Errorf("namespace %q is reserved or contains a path separator", canonical)
-	}
-	for _, r := range canonical {
-		if unicode.IsSpace(r) {
-			return Namespace{}, fmt.Errorf("namespace must not contain whitespace")
+	for i, ch := range []byte(src) {
+		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') {
+			continue
 		}
-		if unicode.IsControl(r) {
-			return Namespace{}, fmt.Errorf("namespace must not contain control characters")
+		if ch == '-' && i > 0 && i < len(src)-1 {
+			continue
 		}
+		return Namespace{}, fmt.Errorf("namespace must use lowercase ASCII letters, digits, and internal hyphens")
 	}
-	return Namespace{canonical: canonical}, nil
+	return Namespace{canonical: src}, nil
 }
 
 func (n Namespace) String() string { return n.canonical }

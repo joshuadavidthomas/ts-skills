@@ -29,7 +29,7 @@ func (c *catalog) capture(ctx context.Context, curator curator, request captureR
 		return candidate{}, fmt.Errorf("validate capture: %w", err)
 	}
 	provenance := provenance{Source: request.Source, SubmittedBy: curator.Actor, SubmittedAt: canonicalTime(request.SubmittedAt)}
-	inspection, err := registry.Inspect(ctx, request.Staged.FS(), request.Root)
+	inspection, err := registry.Inspect(ctx, request.Staged, request.Root)
 	if err != nil {
 		return candidate{}, fmt.Errorf("load captured Agent Skill: %w", err)
 	}

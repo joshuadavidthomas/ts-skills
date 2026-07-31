@@ -666,34 +666,16 @@ func TestSkillDetailPageShowsCurrentPublication(t *testing.T) {
 	}
 }
 
-func TestSkillLinksEscapeNamespaceSegments(t *testing.T) {
+func TestUploadRejectsNamespaceOutsideRegistryGrammar(t *testing.T) {
 	fixture := newWebFixture(t)
-	parts := skillDirectoryParts("Escaped namespace links.\n")
-	parts[0].body = []byte("team?x")
-	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", parts), true)
-	candidatePath := response.Header.Get("Location")
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("upload status = %d", response.StatusCode)
-	}
-	response = postForm(t, fixture, candidatePath+"/publish", nil)
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("publish status = %d", response.StatusCode)
-	}
-
-	const skillPath = "/skills/team%3Fx/sample"
-	catalog := fixture.get("/")
-	if !strings.Contains(catalog, `href="`+skillPath+`"`) {
-		t.Fatalf("catalog link = %s", catalog)
-	}
-	review := fixture.get(candidatePath)
-	if !strings.Contains(review, `href="`+skillPath+`"`) {
-		t.Fatalf("review link = %s", review)
-	}
-	detail := fixture.get(skillPath)
-	if !strings.Contains(detail, "/api/"+protocol.Version+"/skills/team%3Fx/sample/publications/") {
-		t.Fatalf("download link = %s", detail)
+	for _, namespace := range []string{"team?x", "Team", "téam", "te\u202eam"} {
+		parts := skillDirectoryParts("Invalid namespace.\n")
+		parts[0].body = []byte(namespace)
+		response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", parts), true)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusBadRequest {
+			t.Errorf("upload namespace %q status = %d, want %d", namespace, response.StatusCode, http.StatusBadRequest)
+		}
 	}
 }
 

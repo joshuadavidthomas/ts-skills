@@ -98,7 +98,7 @@ func (c *catalog) materializeTree(ctx context.Context, expected registry.Publica
 		return err
 	}
 
-	inspection, err := registry.Inspect(ctx, staged.FS(), ".")
+	inspection, err := registry.Inspect(ctx, staged, ".")
 	if err != nil {
 		return fmt.Errorf("inspect staged Agent Skill: %w", err)
 	}

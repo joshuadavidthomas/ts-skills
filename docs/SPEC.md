@@ -118,7 +118,7 @@ A registry skill uses:
 
 Agent Skill names use the open specification’s Unicode-capable validation and NFKC comparison. The typed internal name is canonical; the captured source file retains its original spelling.
 
-`Namespace` remains opaque during scaffolding. Its user-facing grammar can be chosen with the first web and protocol boundary.
+A namespace contains 1 to 64 ASCII lowercase letters, digits, and internal hyphens. It begins and ends with a letter or digit. Namespaces are deliberately narrower than portable Agent Skill names because they serve as registry routing and ownership identifiers across URLs, terminals, lock files, and databases.
 
 ### Candidate
 
@@ -424,7 +424,7 @@ The command packages contain only process entry adapters. Each binary's applicat
 
 The executor plan resolves the prototype choices that this specification first left open:
 
-- strict NFKC namespace grammar;
+- strict lowercase ASCII namespace grammar;
 - one user config and one project digest lock in TOML;
 - project installation under `.agents/skills`;
 - browser directory manifests for upload and rootless ZIP archives for publication download;

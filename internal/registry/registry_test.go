@@ -7,7 +7,18 @@ import (
 	"testing/fstest"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
+
+func stageInspectionTree(t *testing.T, files fstest.MapFS) *tree.Snapshot {
+	t.Helper()
+	snapshot, err := tree.Stage(context.Background(), t.TempDir(), ".inspect-", files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = snapshot.Close() })
+	return snapshot
+}
 
 func TestTreeDigestTextIsStrict(t *testing.T) {
 	var digest TreeDigest
@@ -67,7 +78,7 @@ func TestInspectBindsDocumentAndDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	inspection, err := Inspect(context.Background(), files, "right")
+	inspection, err := Inspect(context.Background(), stageInspectionTree(t, files), "right")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,15 +117,12 @@ func TestInspectBindsDocumentAndDigest(t *testing.T) {
 
 func TestInspectRejectsLoadAndTreeFailures(t *testing.T) {
 	document := &fstest.MapFile{Data: []byte("---\nname: root\ndescription: test\n---\n")}
-	if _, err := Inspect(context.Background(), fstest.MapFS{"root/other.md": document}, "root"); err == nil {
+	missing := stageInspectionTree(t, fstest.MapFS{"root/other.md": document})
+	if _, err := Inspect(context.Background(), missing, "root"); err == nil {
 		t.Fatal("Inspect without SKILL.md error = nil")
 	}
-	unsafe := fstest.MapFS{
-		"root/SKILL.md":   document,
-		"root/evil\\.txt": &fstest.MapFile{Data: []byte("x")},
-	}
-	if _, err := Inspect(context.Background(), unsafe, "root"); !errors.Is(err, agentskill.ErrInvalidTree) {
-		t.Fatalf("Inspect with unsafe entry error = %v, want ErrInvalidTree", err)
+	if _, err := Inspect(context.Background(), nil, "root"); err == nil {
+		t.Fatal("Inspect with nil snapshot error = nil")
 	}
 }
 
@@ -132,7 +140,7 @@ func TestInspectRespectsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	files := fstest.MapFS{"root/SKILL.md": &fstest.MapFile{Data: []byte("---\nname: root\ndescription: test\n---\n")}}
-	if _, err := Inspect(ctx, files, "root"); !errors.Is(err, context.Canceled) {
+	if _, err := Inspect(ctx, stageInspectionTree(t, files), "root"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Inspect with cancelled context error = %v, want context.Canceled", err)
 	}
 }

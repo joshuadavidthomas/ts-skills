@@ -6,6 +6,7 @@ require (
 	github.com/gofrs/flock v0.13.0
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/sync v0.22.0
+	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.54.0
@@ -53,7 +54,6 @@ require (
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofrs/flock"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
 )
 
@@ -58,7 +57,7 @@ func (v *verifiedTree) transfer() (string, error) {
 type projectWriter struct {
 	project       project
 	root          *os.Root
-	lock          *flock.Flock
+	lock          *os.File
 	staging       map[string]struct{}
 	syncDirectory func(string) error
 	rename        func(string, string) error
@@ -134,12 +133,15 @@ func (p project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 		}
 		return syncRootDirectory(root, relative)
 	}
-	lockPath := filepath.Join(p.stateDir(), "write.lock")
-	if err := rejectLink(lockPath, true); err != nil {
+	lockName, err := p.managedName(filepath.Join(p.stateDir(), "write.lock"))
+	if err != nil {
 		return nil, errors.Join(err, root.Close())
 	}
-	fileLock := flock.New(lockPath, flock.SetPermissions(0o600))
-	locked, err := fileLock.TryLockContext(ctx, 10*time.Millisecond)
+	fileLock, err := root.OpenFile(lockName, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("open project writer lock: %w", err), root.Close())
+	}
+	locked, err := tryLockContext(ctx, fileLock, 10*time.Millisecond)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("acquire project writer lock: %w", err), fileLock.Close(), root.Close())
 	}
@@ -163,7 +165,7 @@ func (w *projectWriter) close() error {
 	}
 	w.staging = nil
 	if w.lock != nil {
-		err = errors.Join(err, w.lock.Close())
+		err = errors.Join(err, unlockFile(w.lock), w.lock.Close())
 		w.lock = nil
 	}
 	if w.root != nil {

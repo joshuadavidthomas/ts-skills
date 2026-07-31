@@ -220,7 +220,7 @@ func TestCatalogCaptureBorrowsValidatedSnapshot(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	inspection, err := registry.Inspect(context.Background(), snapshot.FS(), "sample")
+	inspection, err := registry.Inspect(context.Background(), snapshot, "sample")
 	if err != nil {
 		t.Fatal(err)
 	}

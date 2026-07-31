@@ -234,29 +234,30 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirem
 	if err != nil {
 		return nil, err
 	}
-	inspection, err := registry.Inspect(ctx, os.DirFS(staged), ".")
+	inspection, err := registry.Inspect(ctx, staged, ".")
 	if err != nil {
-		_ = w.removeAll(staged)
+		_ = staged.Close()
 		return nil, fmt.Errorf("validate staged Agent Skill: %w", err)
 	}
 	if err := inspection.Verify(publication); err != nil {
-		_ = w.removeAll(staged)
+		_ = staged.Close()
 		return nil, fmt.Errorf("%w: staged tree: %v", protocol.ErrInvalidResponse, err)
 	}
-	w.staging[staged] = struct{}{}
-	return &verifiedTree{publication: publication, path: staged, owned: true, writer: w}, nil
+	stagedPath, err := staged.TakePath()
+	if err != nil {
+		_ = staged.Close()
+		return nil, fmt.Errorf("take verified install tree: %w", err)
+	}
+	w.staging[stagedPath] = struct{}{}
+	return &verifiedTree{publication: publication, path: stagedPath, owned: true, writer: w}, nil
 }
 
-func copyFetchedTree(ctx context.Context, parent string, source fs.FS) (string, error) {
+func copyFetchedTree(ctx context.Context, parent string, source fs.FS) (*tree.Snapshot, error) {
 	snapshot, err := tree.Stage(ctx, parent, installStagingPrefix, source)
 	if err != nil {
-		return "", fmt.Errorf("copy verified install tree: %w", err)
+		return nil, fmt.Errorf("copy verified install tree: %w", err)
 	}
-	staged, err := snapshot.TakePath()
-	if err != nil {
-		return "", errors.Join(err, snapshot.Close())
-	}
-	return staged, nil
+	return snapshot, nil
 }
 
 func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, lock lock, writeLock bool) error {

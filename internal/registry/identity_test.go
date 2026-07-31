@@ -1,27 +1,22 @@
 package registry
 
 import (
+	"strings"
 	"testing"
-	"unicode"
 )
 
 func TestNamespaceValidation(t *testing.T) {
-	for _, namespace := range []string{"", ".", "..", "team/other"} {
-		if _, err := ParseNamespace(namespace); err == nil {
-			t.Errorf("ParseNamespace(%q) succeeded", namespace)
+	for _, namespace := range []string{"team", "team-1", "a", strings.Repeat("a", 64)} {
+		parsed, err := ParseNamespace(namespace)
+		if err != nil {
+			t.Errorf("ParseNamespace(%q): %v", namespace, err)
+		} else if parsed.String() != namespace {
+			t.Errorf("ParseNamespace(%q) = %q", namespace, parsed.String())
 		}
 	}
-}
-
-func TestNamespaceRejectsUnicodeWhitespace(t *testing.T) {
-	for r := rune(0); r <= unicode.MaxRune; r++ {
-		if !unicode.IsSpace(r) {
-			continue
-		}
-		for _, namespace := range []string{string(r) + "team", "te" + string(r) + "am", "team" + string(r)} {
-			if _, err := ParseNamespace(namespace); err == nil {
-				t.Errorf("ParseNamespace(%q) succeeded", namespace)
-			}
+	for _, namespace := range []string{"", ".", "..", "team/other", "Team", "-team", "team-", "team_name", "téam", "te\u202eam", strings.Repeat("a", 65)} {
+		if _, err := ParseNamespace(namespace); err == nil {
+			t.Errorf("ParseNamespace(%q) succeeded", namespace)
 		}
 	}
 }

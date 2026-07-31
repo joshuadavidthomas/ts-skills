@@ -257,7 +257,7 @@ func (h *webHandler) createCandidate(w http.ResponseWriter, r *http.Request) {
 	}
 	namespace, err := registry.ParseNamespace(namespaceText)
 	if err != nil {
-		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Enter a namespace without spaces or path separators.")
+		h.renderError(w, http.StatusBadRequest, "Namespace is invalid", "Use 1–64 lowercase letters, digits, and internal hyphens.")
 		return
 	}
 	submission, err := stageBrowserDirectory(r.Context(), h.options.StagingParent, body, h.options.Limits)

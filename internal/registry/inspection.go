@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
+	"github.com/joshuadavidthomas/ts-skills/internal/tree"
 )
 
 var ErrPublicationMismatch = errors.New("agent skill tree does not match publication")
 
 // Inspection is a loaded Agent Skill tree with its identity facts bound: the
-// parsed SKILL.md and the digest of the whole tree. Inspect verifies both in
-// one pass, so a non-zero Inspection proves the tree parses and hashes
-// cleanly. Like Directory it is read-only; Document clones on access.
+// parsed SKILL.md and the digest of the whole tree. Inspect reads both from an
+// exclusively owned snapshot, so a non-zero Inspection binds them to one
+// stable tree state. Like Directory it is read-only; Document clones on access.
 type Inspection struct {
 	directory agentskill.Directory
 	digest    TreeDigest
@@ -23,7 +23,11 @@ type Inspection struct {
 // Inspect loads the Agent Skill at dir and hashes its full tree, returning
 // document and digest as one bound value. Trust boundaries that need both
 // facts should use Inspect rather than composing Load and SumTree by hand.
-func Inspect(ctx context.Context, fsys fs.FS, dir string) (Inspection, error) {
+func Inspect(ctx context.Context, snapshot *tree.Snapshot, dir string) (Inspection, error) {
+	if snapshot == nil {
+		return Inspection{}, fmt.Errorf("inspect Agent Skill: snapshot is nil")
+	}
+	fsys := snapshot.FS()
 	directory, err := agentskill.Load(fsys, dir)
 	if err != nil {
 		return Inspection{}, err
