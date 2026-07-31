@@ -150,6 +150,6 @@ func verifyPragmas(ctx context.Context, db *sql.DB) error {
 }
 
 func isConstraintError(err error) bool {
-	var sqliteErr *sqlite.Error
-	return errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == 19
+	sqliteErr, ok := errors.AsType[*sqlite.Error](err)
+	return ok && sqliteErr.Code()&0xff == 19
 }

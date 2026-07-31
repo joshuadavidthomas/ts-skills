@@ -152,8 +152,8 @@ func (e reportedError) Unwrap() error { return e.err }
 // alreadyReported reports whether err's diagnostics were already shown to
 // the user, so the caller should exit nonzero without printing it again.
 func alreadyReported(err error) bool {
-	var reported reportedError
-	return errors.As(err, &reported)
+	_, ok := errors.AsType[reportedError](err)
+	return ok
 }
 
 // Package-private test seams for construction and staging cleanup failures.
@@ -194,8 +194,7 @@ func commandInstaller(configPath, projectPath string) (*installer, project, func
 
 func commandError(operation string, err error) error {
 	var message string
-	var failure *protocol.Failure
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*protocol.Failure](err); ok {
 		switch failure.Code {
 		case protocol.CodeNotFound:
 			message = fmt.Sprintf("cannot %s because the requested skill publication was not found", operation)

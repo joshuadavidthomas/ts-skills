@@ -95,7 +95,6 @@ form.addEventListener('submit', async (event) => {
   status.textContent = 'Uploading…';
   const response = await fetch('/candidates', {
     method: 'POST',
-    headers: {'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content},
     body: data,
   });
   if (response.redirected) {

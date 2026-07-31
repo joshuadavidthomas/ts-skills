@@ -192,8 +192,8 @@ func requireInvalidDocumentField(t *testing.T, err error, field string) {
 	if !errors.Is(err, ErrInvalidDocument) {
 		t.Fatalf("error = %v, want ErrInvalidDocument", err)
 	}
-	var validationError *ValidationError
-	if !errors.As(err, &validationError) {
+	validationError, ok := errors.AsType[*ValidationError](err)
+	if !ok {
 		t.Fatalf("error type = %T, want *ValidationError", err)
 	}
 	if validationError.Field != field {

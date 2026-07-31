@@ -42,14 +42,12 @@
   <div class="mt-6">
     {{if .Published}}
     <form method="post" action="/current">
-      {{.CSRFField}}
       <input type="hidden" name="skill" value="{{.Skill}}">
       <input type="hidden" name="digest" value="{{.Digest}}">
       <button type="submit" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Make current</button>
     </form>
     {{else}}
     <form method="post" action="/candidates/{{.CandidateID}}/publish">
-      {{.CSRFField}}
       <button type="submit" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Publish</button>
     </form>
     {{end}}

@@ -38,7 +38,7 @@ func (v *verifiedTree) close() error {
 	if v == nil || !v.owned {
 		return nil
 	}
-	if err := os.RemoveAll(v.path); err != nil {
+	if err := v.writer.removeAll(v.path); err != nil {
 		return err
 	}
 	v.owned = false
@@ -57,11 +57,42 @@ func (v *verifiedTree) transfer() (string, error) {
 
 type projectWriter struct {
 	project       project
+	root          *os.Root
 	lock          *flock.Flock
 	staging       map[string]struct{}
 	syncDirectory func(string) error
 	rename        func(string, string) error
+	removeAll     func(string) error
 	closed        bool
+}
+
+func (w *projectWriter) lstat(path string) (fs.FileInfo, error) {
+	name, err := w.project.managedName(path)
+	if err != nil {
+		return nil, err
+	}
+	return w.root.Lstat(name)
+}
+
+func (w *projectWriter) readDir(path string) ([]fs.DirEntry, error) {
+	name, err := w.project.managedName(path)
+	if err != nil {
+		return nil, err
+	}
+	directory, err := w.root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(-1)
+	return entries, errors.Join(readErr, directory.Close())
+}
+
+func (w *projectWriter) managedFS(path string) (fs.FS, error) {
+	name, err := w.project.managedName(path)
+	if err != nil {
+		return nil, err
+	}
+	return fs.Sub(w.root.FS(), filepath.ToSlash(name))
 }
 
 func (p project) acquireWriter(ctx context.Context) (*projectWriter, error) {
@@ -71,22 +102,51 @@ func (p project) acquireWriter(ctx context.Context) (*projectWriter, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("acquire project writer: %w", err)
 	}
-	if err := prepareManagedDirectories(p); err != nil {
-		return nil, fmt.Errorf("prepare project paths: %w", err)
+	root, err := os.OpenRoot(p.root)
+	if err != nil {
+		return nil, fmt.Errorf("open project filesystem root: %w", err)
+	}
+	if err := prepareManagedDirectories(p, root); err != nil {
+		return nil, errors.Join(fmt.Errorf("prepare project paths: %w", err), root.Close())
+	}
+	rootRename := func(old, new string) error {
+		oldName, err := p.managedName(old)
+		if err != nil {
+			return err
+		}
+		newName, err := p.managedName(new)
+		if err != nil {
+			return err
+		}
+		return root.Rename(oldName, newName)
+	}
+	rootRemoveAll := func(name string) error {
+		relative, err := p.managedName(name)
+		if err != nil {
+			return err
+		}
+		return root.RemoveAll(relative)
+	}
+	rootSync := func(name string) error {
+		relative, err := p.managedName(name)
+		if err != nil {
+			return err
+		}
+		return syncRootDirectory(root, relative)
 	}
 	lockPath := filepath.Join(p.stateDir(), "write.lock")
 	if err := rejectLink(lockPath, true); err != nil {
-		return nil, err
+		return nil, errors.Join(err, root.Close())
 	}
 	fileLock := flock.New(lockPath, flock.SetPermissions(0o600))
 	locked, err := fileLock.TryLockContext(ctx, 10*time.Millisecond)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("acquire project writer lock: %w", err), fileLock.Close())
+		return nil, errors.Join(fmt.Errorf("acquire project writer lock: %w", err), fileLock.Close(), root.Close())
 	}
 	if !locked {
-		return nil, errors.Join(errBusy, fileLock.Close())
+		return nil, errors.Join(errBusy, fileLock.Close(), root.Close())
 	}
-	writer := &projectWriter{project: p, lock: fileLock, staging: make(map[string]struct{}), syncDirectory: syncDirectory, rename: os.Rename}
+	writer := &projectWriter{project: p, root: root, lock: fileLock, staging: make(map[string]struct{}), syncDirectory: rootSync, rename: rootRename, removeAll: rootRemoveAll}
 	if err := writer.sweepLitter(ctx); err != nil {
 		return nil, errors.Join(err, writer.close())
 	}
@@ -99,12 +159,16 @@ func (w *projectWriter) close() error {
 	}
 	var err error
 	for path := range w.staging {
-		err = errors.Join(err, os.RemoveAll(path))
+		err = errors.Join(err, w.removeAll(path))
 	}
 	w.staging = nil
 	if w.lock != nil {
 		err = errors.Join(err, w.lock.Close())
 		w.lock = nil
+	}
+	if w.root != nil {
+		err = errors.Join(err, w.root.Close())
+		w.root = nil
 	}
 	w.closed = true
 	return err
@@ -125,7 +189,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return errors.Join(sweepErr, err)
 		}
-		entries, err := os.ReadDir(location.parent)
+		entries, err := w.readDir(location.parent)
 		if err != nil {
 			sweepErr = errors.Join(sweepErr, fmt.Errorf("read install litter: %w", err))
 			continue
@@ -142,7 +206,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 				continue
 			}
 			path := filepath.Join(location.parent, entry.Name())
-			info, statErr := os.Lstat(path)
+			info, statErr := w.lstat(path)
 			if statErr != nil {
 				sweepErr = errors.Join(sweepErr, statErr)
 				continue
@@ -151,12 +215,12 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("install litter %q has an unsafe shape", path))
 				continue
 			}
-			if err := os.RemoveAll(path); err != nil {
+			if err := w.removeAll(path); err != nil {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("remove install litter %q: %w", path, err))
 			}
 		}
 	}
-	entries, err := os.ReadDir(w.project.skillsDir())
+	entries, err := w.readDir(w.project.skillsDir())
 	if err != nil {
 		return errors.Join(sweepErr, fmt.Errorf("read install litter: %w", err))
 	}
@@ -191,7 +255,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 				continue
 			}
 			if stale.removeDestination {
-				if err := os.RemoveAll(w.project.destination(stale.skill.Name().String())); err != nil {
+				if err := w.removeAll(w.project.destination(stale.skill.Name().String())); err != nil {
 					sweepErr = errors.Join(sweepErr, fmt.Errorf("remove uncommitted install destination: %w", err))
 					continue
 				}
@@ -204,7 +268,7 @@ func (w *projectWriter) sweepLitter(ctx context.Context) error {
 				}
 				continue
 			}
-			if err := os.RemoveAll(path); err != nil {
+			if err := w.removeAll(path); err != nil {
 				sweepErr = errors.Join(sweepErr, fmt.Errorf("remove install litter %q: %w", path, err))
 			}
 		}
@@ -224,7 +288,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	record, skill, err := readTrashRecord(path)
+	record, skill, err := w.readTrashRecord(path)
 	if err != nil || !record.HadDestination {
 		return false, nil
 	}
@@ -247,7 +311,11 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 	if state.exists && state.digest != inFlight {
 		return false, nil
 	}
-	digest, err := registry.SumTree(ctx, os.DirFS(filepath.Join(path, trashTreeName)), ".")
+	trashTree, err := w.managedFS(filepath.Join(path, trashTreeName))
+	if err != nil {
+		return false, err
+	}
+	digest, err := registry.SumTree(ctx, trashTree, ".")
 	if err != nil {
 		if ctx.Err() != nil {
 			return false, err
@@ -267,7 +335,7 @@ func (w *projectWriter) recoverLockedTrash(ctx context.Context, path string) (bo
 		}
 	}
 	if state.exists {
-		if err := os.RemoveAll(w.project.destination(skill.Name().String())); err != nil {
+		if err := w.removeAll(w.project.destination(skill.Name().String())); err != nil {
 			return false, err
 		}
 	}
@@ -289,17 +357,17 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := os.Lstat(path)
+	info, err := w.lstat(path)
 	if err != nil {
 		return nil, err
 	}
 	if pathInfoIsLink(info) || !info.IsDir() {
 		return nil, fmt.Errorf("install litter %q has an unsafe shape", path)
 	}
-	record, skill, err := readTrashRecord(path)
+	record, skill, err := w.readTrashRecord(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			if _, treeErr := os.Lstat(filepath.Join(path, trashTreeName)); errors.Is(treeErr, fs.ErrNotExist) {
+			if _, treeErr := w.lstat(filepath.Join(path, trashTreeName)); errors.Is(treeErr, fs.ErrNotExist) {
 				return &staleTrash{}, nil
 			} else if treeErr != nil {
 				return nil, fmt.Errorf("inspect install trash %q tree: %w", path, treeErr)
@@ -335,7 +403,7 @@ func (w *projectWriter) trashIsStale(ctx context.Context, path string) (*staleTr
 	return &staleTrash{skill: skill, removeDestination: true}, nil
 }
 
-func readTrashRecord(path string) (trashRecord, registry.SkillID, error) {
+func (w *projectWriter) readTrashRecord(path string) (trashRecord, registry.SkillID, error) {
 	recordPath := filepath.Join(path, trashRecordName)
 	if err := rejectLink(recordPath, false); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -343,7 +411,11 @@ func readTrashRecord(path string) (trashRecord, registry.SkillID, error) {
 		}
 		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
 	}
-	contents, err := os.ReadFile(recordPath)
+	recordName, err := w.project.managedName(recordPath)
+	if err != nil {
+		return trashRecord{}, registry.SkillID{}, fmt.Errorf("%w: %w", errUnreadableTrashRecord, err)
+	}
+	contents, err := w.root.ReadFile(recordName)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return trashRecord{}, registry.SkillID{}, err
@@ -362,11 +434,8 @@ func readTrashRecord(path string) (trashRecord, registry.SkillID, error) {
 }
 
 func (w *projectWriter) createTrash(publication registry.PublicationID, hadDestination bool) (string, error) {
-	path, err := temporaryPath(w.project.skillsDir(), installTrashPendingPrefix)
+	path, err := w.mkdirTemp(w.project.skillsDir(), installTrashPendingPrefix)
 	if err != nil {
-		return "", err
-	}
-	if err := os.Mkdir(path, 0o700); err != nil {
 		return "", err
 	}
 	// The record is written before a prior destination can move into tree, so
@@ -375,11 +444,11 @@ func (w *projectWriter) createTrash(publication registry.PublicationID, hadDesti
 	if err != nil {
 		return "", err
 	}
-	if err := writeSyncedFile(filepath.Join(path, trashRecordName), contents, 0o600); err != nil {
-		return "", errors.Join(err, os.RemoveAll(path))
+	if err := w.writeSyncedFile(filepath.Join(path, trashRecordName), contents, 0o600); err != nil {
+		return "", errors.Join(err, w.removeAll(path))
 	}
 	if err := w.syncDirectory(path); err != nil {
-		return "", errors.Join(err, os.RemoveAll(path))
+		return "", errors.Join(err, w.removeAll(path))
 	}
 	if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 		return "", err
@@ -406,7 +475,11 @@ func (w *projectWriter) readLock() (lock, []byte, bool, error) {
 	if err := rejectLink(w.project.lockPath(), true); err != nil {
 		return lock{}, nil, false, fmt.Errorf("inspect project lock: %w", err)
 	}
-	contents, err := os.ReadFile(w.project.lockPath())
+	lockName, err := w.project.managedName(w.project.lockPath())
+	if err != nil {
+		return lock{}, nil, false, fmt.Errorf("resolve project lock: %w", err)
+	}
+	contents, err := w.root.ReadFile(lockName)
 	if errors.Is(err, fs.ErrNotExist) {
 		lock, lockErr := newLock(nil)
 		return lock, nil, false, lockErr
@@ -425,15 +498,33 @@ type destinationState struct {
 
 func (w *projectWriter) destinationState(ctx context.Context, skill registry.SkillID) (destinationState, error) {
 	destination := w.project.destination(skill.Name().String())
-	exists, err := inspectDestination(destination)
+	exists, err := w.inspectDestination(destination)
 	if err != nil || !exists {
 		return destinationState{exists: exists}, err
 	}
-	digest, err := registry.SumTree(ctx, os.DirFS(destination), ".")
+	destinationFS, err := w.managedFS(destination)
+	if err != nil {
+		return destinationState{}, fmt.Errorf("open installed skill %s: %w", skill.String(), err)
+	}
+	digest, err := registry.SumTree(ctx, destinationFS, ".")
 	if err != nil {
 		return destinationState{}, fmt.Errorf("verify installed skill %s: %w", skill.String(), err)
 	}
 	return destinationState{exists: true, digest: digest}, nil
+}
+
+func (w *projectWriter) inspectDestination(destination string) (bool, error) {
+	if err := rejectPathComponents(destination, true); err != nil {
+		return false, fmt.Errorf("inspect skill destination: %w", err)
+	}
+	info, err := w.lstat(destination)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || pathInfoIsLink(info) || !info.IsDir() {
+		return false, fmt.Errorf("inspect skill destination %q: must be a real directory", destination)
+	}
+	return true, nil
 }
 
 func sameDestination(a, b destinationState) bool {

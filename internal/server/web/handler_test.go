@@ -86,9 +86,8 @@ func TestPageTemplateOwnsCompleteDocumentStructure(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rendered strings.Builder
-	const token = "csrf-token-value"
 	err = pages["upload"].ExecuteTemplate(&rendered, "page", pageView{
-		Title: "Upload a skill", CSRFToken: token,
+		Title: "Upload a skill",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,11 +97,6 @@ func TestPageTemplateOwnsCompleteDocumentStructure(t *testing.T) {
 		if count := strings.Count(body, element); count != 1 {
 			t.Errorf("%q count = %d, want 1", element, count)
 		}
-	}
-	meta := strings.Index(body, `name="csrf-token" content="`+token+`"`)
-	headEnd := strings.Index(body, "</head>")
-	if meta == -1 || headEnd == -1 || meta > headEnd {
-		t.Fatalf("CSRF metadata is not inside the complete head: %q", body)
 	}
 }
 

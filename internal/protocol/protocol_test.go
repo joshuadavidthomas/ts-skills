@@ -87,8 +87,8 @@ func TestFailureHTTPRoundTripValidatesAndSanitizes(t *testing.T) {
 	response := recorder.Result()
 	defer func() { _ = response.Body.Close() }()
 	err := ReadFailure(response)
-	var failure *Failure
-	if !errors.As(err, &failure) || failure.Code != CodeUnavailable || failure.Message != "busy" {
+	failure, ok := errors.AsType[*Failure](err)
+	if !ok || failure.Code != CodeUnavailable || failure.Message != "busy" {
 		t.Fatalf("ReadFailure = %#v, want unavailable/busy", err)
 	}
 
@@ -99,7 +99,8 @@ func TestFailureHTTPRoundTripValidatesAndSanitizes(t *testing.T) {
 		ContentLength: -1,
 	}
 	err = ReadFailure(response)
-	if !errors.As(err, &failure) || failure.Message != "registry rejected the request" {
+	failure, ok = errors.AsType[*Failure](err)
+	if !ok || failure.Message != "registry rejected the request" {
 		t.Fatalf("sanitized failure = %#v", err)
 	}
 

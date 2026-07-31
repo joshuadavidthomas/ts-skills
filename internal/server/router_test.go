@@ -41,13 +41,10 @@ type webFixture struct {
 	t             *testing.T
 	server        *httptest.Server
 	client        *http.Client
-	cookie        *http.Cookie
-	token         string
 	storage       *servercatalog.Catalog
 	state         string
 	staging       string
 	resolver      *fixedCuratorResolver
-	key           csrfKey
 	logger        *slog.Logger
 	limits        tree.Limits
 	treeWork      *semaphore.Weighted
@@ -84,18 +81,13 @@ func newWebFixtureWithTreeWork(t *testing.T, limits tree.Limits, logger *slog.Lo
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyBytes := bytes.Repeat([]byte{0x5a}, 32)
-	key, err := newCSRFKey(keyBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
 	resolver := &fixedCuratorResolver{curator: servercatalog.Curator{Actor: actor}}
 	var work *semaphore.Weighted
 	if treeWork != 0 {
 		work = semaphore.NewWeighted(int64(treeWork))
 	}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: staging, Limits: limits, MaxTreeWork: treeWork, CSRFKey: key, SecureCookies: false, Logger: logger, treeWork: work,
+		StagingParent: staging, Limits: limits, MaxTreeWork: treeWork, Logger: logger, treeWork: work,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -104,26 +96,9 @@ func newWebFixtureWithTreeWork(t *testing.T, limits tree.Limits, logger *slog.Lo
 	server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
 	server.Start()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	response, err := client.Get(server.URL + "/upload")
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	token := response.Header.Get("X-CSRF-Token")
-	if token == "" {
-		t.Fatalf("CSRF token not found in upload response: %s", body)
-	}
-	cookies := response.Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("cookies = %v", cookies)
-	}
 	fixture := &webFixture{
-		t: t, server: server, client: client, cookie: cookies[0], token: token, storage: records,
-		state: state, staging: staging, resolver: resolver, key: key, logger: logger, limits: limits, treeWork: work, treeWorkLimit: treeWork,
+		t: t, server: server, client: client, storage: records,
+		state: state, staging: staging, resolver: resolver, logger: logger, limits: limits, treeWork: work, treeWorkLimit: treeWork,
 	}
 	t.Cleanup(func() {
 		fixture.server.Close()
@@ -150,7 +125,7 @@ func (f *webFixture) restart() {
 		work = semaphore.NewWeighted(int64(f.treeWorkLimit))
 	}
 	handler, err := newHandler(catalog, f.resolver.resolve, handlerOptions{
-		StagingParent: f.staging, Limits: f.limits, MaxTreeWork: f.treeWorkLimit, CSRFKey: f.key, SecureCookies: false, Logger: f.logger, treeWork: work,
+		StagingParent: f.staging, Limits: f.limits, MaxTreeWork: f.treeWorkLimit, Logger: f.logger, treeWork: work,
 	})
 	if err != nil {
 		f.t.Fatal(err)
@@ -160,18 +135,6 @@ func (f *webFixture) restart() {
 	f.server = httptest.NewUnstartedServer(nil)
 	f.server.Config = newHTTPServer(context.Background(), handler, newHandlerGate(nil))
 	f.server.Start()
-	response, err := f.client.Get(f.server.URL + "/upload")
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	_, _ = io.Copy(io.Discard, response.Body)
-	_ = response.Body.Close()
-	cookies := response.Cookies()
-	if len(cookies) != 1 || response.Header.Get("X-CSRF-Token") == "" {
-		f.t.Fatalf("restarted CSRF response is incomplete")
-	}
-	f.cookie = cookies[0]
-	f.token = response.Header.Get("X-CSRF-Token")
 }
 
 type formPart struct {
@@ -229,11 +192,12 @@ func skillDirectoryParts(instructions string) []formPart {
 	}
 }
 
-func (f *webFixture) do(request *http.Request, csrf bool) *http.Response {
+func (f *webFixture) do(request *http.Request, sameOrigin bool) *http.Response {
 	f.t.Helper()
-	request.AddCookie(f.cookie)
-	if csrf {
-		request.Header.Set("X-CSRF-Token", f.token)
+	if sameOrigin {
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+	} else {
+		request.Header.Set("Sec-Fetch-Site", "cross-site")
 	}
 	response, err := f.client.Do(request)
 	if err != nil {
@@ -448,7 +412,7 @@ func TestAPIReportsNotFound(t *testing.T) {
 	assertAPIError(t, response, http.StatusNotFound, protocol.CodeNotFound)
 }
 
-func TestAPIRoutesAreOutsidePortalCSRF(t *testing.T) {
+func TestAPIRoutesAreOutsidePortalCrossOriginProtection(t *testing.T) {
 	fixture := newWebFixture(t)
 	request := mustNewRequest(
 		t,
@@ -945,13 +909,13 @@ func TestUploadBodyCapLetsTreeLimitsDecideAtSmallScale(t *testing.T) {
 	}
 }
 
-func TestUploadRequiresCSRFAndRejectsExtraParts(t *testing.T) {
+func TestUploadRejectsCrossOriginRequestsAndExtraParts(t *testing.T) {
 	fixture := newWebFixture(t)
 	validParts := skillDirectoryParts("Safe.\n")
 	response := fixture.do(multipartRequest(t, fixture.server.URL+"/candidates", validParts), false)
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusForbidden {
-		t.Fatalf("missing CSRF status = %d", response.StatusCode)
+		t.Fatalf("cross-origin upload status = %d", response.StatusCode)
 	}
 
 	extra := append(append([]formPart{}, validParts...), formPart{name: "extra", body: []byte("x")})
@@ -1010,10 +974,6 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	slog.SetDefault(slog.New(captured))
 	defer slog.SetDefault(restore)
 
-	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
 	catalog, err := servercatalog.Open(context.Background(), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1021,7 +981,7 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	t.Cleanup(func() { _ = catalog.Close() })
 	resolver := &fixedCuratorResolver{}
 	handler, err := newHandler(catalog, resolver.resolve, handlerOptions{
-		StagingParent: t.TempDir(), Limits: tree.PrototypeLimits(), CSRFKey: key, SecureCookies: false,
+		StagingParent: t.TempDir(), Limits: tree.PrototypeLimits(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1038,18 +998,5 @@ func TestNewHandlerDefaultsLogger(t *testing.T) {
 	}
 	if !captured.contains("registry storage is closed") {
 		t.Error("nil option logger did not fall through to slog.Default()")
-	}
-}
-
-func TestNewHandlerValidatesCSRFAndOptions(t *testing.T) {
-	if _, err := newCSRFKey(make([]byte, 31)); err == nil {
-		t.Fatal("short CSRF key accepted")
-	}
-	if _, err := newCSRFKey(make([]byte, 32)); err == nil {
-		t.Fatal("zero CSRF key accepted")
-	}
-	key, err := newCSRFKey(bytes.Repeat([]byte{1}, 32))
-	if err != nil || key == (csrfKey{}) {
-		t.Fatalf("valid key = %x, %v", key, err)
 	}
 }

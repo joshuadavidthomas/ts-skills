@@ -1,8 +1,6 @@
 package client
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -46,12 +44,37 @@ func (p project) lockPath() string               { return filepath.Join(p.root, 
 func (p project) stateDir() string               { return filepath.Join(p.root, ".agents", ".ts-skills") }
 func (p project) destination(name string) string { return filepath.Join(p.skillsDir(), name) }
 
-func prepareManagedDirectories(project project) error {
+func (p project) managedName(name string) (string, error) {
+	relative, err := filepath.Rel(p.root, name)
+	if err != nil || !filepath.IsLocal(relative) {
+		return "", fmt.Errorf("managed path %q is outside project root", name)
+	}
+	return relative, nil
+}
+
+func prepareManagedDirectories(project project, root *os.Root) error {
 	if err := ensureRealDirectory(project.root, false); err != nil {
 		return err
 	}
-	for _, directory := range []string{filepath.Join(project.root, ".agents"), project.skillsDir(), project.stateDir()} {
-		if err := ensureRealDirectory(directory, true); err != nil {
+	for _, name := range []string{".agents", filepath.Join(".agents", "skills"), filepath.Join(".agents", ".ts-skills")} {
+		directory := filepath.Join(project.root, name)
+		if err := rejectPathComponents(directory, true); err != nil {
+			return err
+		}
+		info, err := root.Lstat(name)
+		if err == nil {
+			if pathInfoIsLink(info) || !info.IsDir() {
+				return fmt.Errorf("managed path %q must be a real directory", directory)
+			}
+			continue
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("inspect managed path %q: %w", directory, err)
+		}
+		if err := root.Mkdir(name, 0o755); err != nil {
+			return fmt.Errorf("create managed directory %q: %w", directory, err)
+		}
+		if err := syncRootDirectory(root, filepath.Dir(name)); err != nil {
 			return err
 		}
 	}
@@ -79,14 +102,6 @@ func ensureRealDirectory(name string, create bool) error {
 		return fmt.Errorf("create managed directory %q: %w", name, err)
 	}
 	return syncDirectory(filepath.Dir(name))
-}
-
-func temporaryPath(parent, prefix string) (string, error) {
-	var bytes [16]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
-		return "", err
-	}
-	return filepath.Join(parent, prefix+hex.EncodeToString(bytes[:])), nil
 }
 
 func rejectPathComponents(name string, allowMissing bool) error {
@@ -118,18 +133,4 @@ func rejectPathComponents(name string, allowMissing bool) error {
 
 func rejectLink(name string, allowMissing bool) error {
 	return rejectPathComponents(name, allowMissing)
-}
-
-func inspectDestination(destination string) (bool, error) {
-	if err := rejectPathComponents(destination, true); err != nil {
-		return false, fmt.Errorf("inspect skill destination: %w", err)
-	}
-	info, err := os.Lstat(destination)
-	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil || pathInfoIsLink(info) || !info.IsDir() {
-		return false, fmt.Errorf("inspect skill destination %q: must be a real directory", destination)
-	}
-	return true, nil
 }

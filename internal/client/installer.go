@@ -236,11 +236,11 @@ func (w *projectWriter) stageAndVerify(ctx context.Context, requirement requirem
 	}
 	inspection, err := registry.Inspect(ctx, os.DirFS(staged), ".")
 	if err != nil {
-		_ = os.RemoveAll(staged)
+		_ = w.removeAll(staged)
 		return nil, fmt.Errorf("validate staged Agent Skill: %w", err)
 	}
 	if err := inspection.Verify(publication); err != nil {
-		_ = os.RemoveAll(staged)
+		_ = w.removeAll(staged)
 		return nil, fmt.Errorf("%w: staged tree: %v", protocol.ErrInvalidResponse, err)
 	}
 	w.staging[staged] = struct{}{}
@@ -264,7 +264,7 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 		return err
 	}
 	destination := w.project.destination(verified.publication.Skill().Name().String())
-	exists, err := inspectDestination(destination)
+	exists, err := w.inspectDestination(destination)
 	if err != nil {
 		return err
 	}
@@ -274,7 +274,7 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 	}
 	if exists {
 		if err := w.rename(destination, filepath.Join(trash, trashTreeName)); err != nil {
-			return errors.Join(fmt.Errorf("move old skill aside: %w", err), os.RemoveAll(trash))
+			return errors.Join(fmt.Errorf("move old skill aside: %w", err), w.removeAll(trash))
 		}
 		if err := w.syncDirectory(trash); err != nil {
 			return w.rollbackReplacement(destination, trash, err, exists, false)
@@ -288,7 +288,7 @@ func (w *projectWriter) replace(ctx context.Context, verified *verifiedTree, loc
 		return w.rollbackReplacement(destination, trash, err, exists, false)
 	}
 	if err := w.rename(staged, destination); err != nil {
-		return errors.Join(w.rollbackReplacement(destination, trash, fmt.Errorf("replace skill destination: %w", err), exists, false), os.RemoveAll(staged))
+		return errors.Join(w.rollbackReplacement(destination, trash, fmt.Errorf("replace skill destination: %w", err), exists, false), w.removeAll(staged))
 	}
 	if err := w.syncDirectory(w.project.skillsDir()); err != nil {
 		return w.rollbackReplacement(destination, trash, err, exists, true)
@@ -315,7 +315,7 @@ func (w *projectWriter) rollbackReplacement(destination, trash string, cause err
 	}
 	var rollbackErr error
 	if removeDestination {
-		rollbackErr = os.RemoveAll(destination)
+		rollbackErr = w.removeAll(destination)
 	}
 	if rollbackErr == nil && hadDestination {
 		rollbackErr = w.rename(filepath.Join(trash, trashTreeName), destination)
@@ -341,7 +341,7 @@ func (w *projectWriter) discardTrash(trash string) error {
 	if err != nil {
 		return err
 	}
-	_ = os.RemoveAll(garbage)
+	_ = w.removeAll(garbage)
 	return nil
 }
 
@@ -352,15 +352,26 @@ func (w *projectWriter) writeLock(lock lock) (committed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	temporary, err := temporaryPath(filepath.Dir(w.project.lockPath()), lockTemporaryPrefix)
+	temporaryFile, temporary, err := w.createTemp(filepath.Dir(w.project.lockPath()), lockTemporaryPrefix)
 	if err != nil {
 		return false, err
 	}
-	if err := writeSyncedFile(temporary, contents, 0o600); err != nil {
-		return false, errors.Join(err, os.Remove(temporary))
+	temporaryName, err := w.project.managedName(temporary)
+	if err != nil {
+		return false, errors.Join(err, temporaryFile.Close(), os.Remove(temporary))
+	}
+	writeErr := func() error {
+		_, err := temporaryFile.Write(contents)
+		if err == nil {
+			err = temporaryFile.Sync()
+		}
+		return errors.Join(err, temporaryFile.Close())
+	}()
+	if writeErr != nil {
+		return false, errors.Join(fmt.Errorf("write temporary project lock: %w", writeErr), w.root.Remove(temporaryName))
 	}
 	if err := w.rename(temporary, w.project.lockPath()); err != nil {
-		return false, errors.Join(fmt.Errorf("replace project lock: %w", err), os.Remove(temporary))
+		return false, errors.Join(fmt.Errorf("replace project lock: %w", err), w.root.Remove(temporaryName))
 	}
 	if err := w.syncDirectory(filepath.Dir(w.project.lockPath())); err != nil {
 		return true, err

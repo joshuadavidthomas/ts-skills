@@ -10,9 +10,7 @@ type candidateID struct{ id [16]byte }
 
 func newCandidateID() (candidateID, error) {
 	var id candidateID
-	if _, err := rand.Read(id.id[:]); err != nil {
-		return candidateID{}, fmt.Errorf("generate candidate identity: %w", err)
-	}
+	_, _ = rand.Read(id.id[:])
 	return id, nil
 }
 

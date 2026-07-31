@@ -207,8 +207,8 @@ func TestRemoteReturnsProtocolFailures(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = remote.fetch(context.Background(), requirement)
-			var failure *protocol.Failure
-			if !errors.As(err, &failure) || failure.Code != test.code {
+			failure, ok := errors.AsType[*protocol.Failure](err)
+			if !ok || failure.Code != test.code {
 				t.Fatalf("Fetch error = %v, want protocol failure %q", err, test.code)
 			}
 			if test.code == protocol.CodeTooLarge && errors.Is(err, tree.ErrLimitExceeded) {

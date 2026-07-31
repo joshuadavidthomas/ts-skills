@@ -62,7 +62,6 @@ registry.sqlite    registry metadata
 registry.lock      process lifetime lock
 trees/             immutable published and candidate trees
 tmp/               bounded upload staging
-csrf.key           persistent CSRF key (0600)
 tsnet/             embedded-node keys and state
 ```
 
@@ -181,7 +180,7 @@ Use machine A for curation and machine B for installation.
 
 **Browser can't reach the daemon.** The node is unapproved, unsigned (Tailnet Lock), or your ACLs don't allow the source user or machine to reach it on port 443.
 
-**CSRF error on upload.** Reload `/upload` and resubmit; tokens are tied to the browser session and the daemon's persistent key.
+**Request verification error on upload.** Reload `/upload` and resubmit from the registry page. The daemon rejects unsafe cross-origin browser requests using Go's standard `http.CrossOriginProtection` handler.
 
 **"Registry is busy."** Another daemon holds the state-directory lock. One state directory, one daemon.
 

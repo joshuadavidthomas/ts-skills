@@ -4,7 +4,6 @@ go 1.26.5
 
 require (
 	github.com/gofrs/flock v0.13.0
-	github.com/gorilla/csrf v1.7.3
 	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/sync v0.22.0
 	golang.org/x/text v0.40.0
@@ -29,7 +28,6 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect
 	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/jsimonetti/rtnetlink v1.4.1 // indirect

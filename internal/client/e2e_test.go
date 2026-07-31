@@ -45,16 +45,6 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 
 	base := "http://" + addr.String()
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	upload, err := client.Get(base + "/upload")
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, cookie := upload.Header.Get("X-CSRF-Token"), upload.Cookies()[0]
-	_ = upload.Body.Close()
-	if token == "" {
-		t.Fatal("upload page did not provide a CSRF token")
-	}
-
 	body := "---\nname: sample\ndescription: End-to-end test\n---\nInstall this through HTTP.\n"
 	var form bytes.Buffer
 	writer := multipart.NewWriter(&form)
@@ -79,8 +69,7 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", writer.FormDataContentType())
-	request.Header.Set("X-CSRF-Token", token)
-	request.AddCookie(cookie)
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	created, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -115,9 +104,8 @@ func TestInstallThroughDevDaemon(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("X-CSRF-Token", token)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.AddCookie(cookie)
 		response, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)

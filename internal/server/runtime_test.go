@@ -843,57 +843,6 @@ func TestConfigFromEnvResolvesEnrollmentCredentials(t *testing.T) {
 	})
 }
 
-func TestPersistentcsrfKey(t *testing.T) {
-	stateDir := t.TempDir()
-	first, err := loadOrCreateCSRFKey(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(stateDir, "csrf.key")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if permission := info.Mode().Perm(); permission != 0o600 {
-		t.Fatalf("CSRF key permissions = %o, want 600", permission)
-	}
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(contents) != 32 {
-		t.Fatalf("CSRF key size = %d, want 32", len(contents))
-	}
-
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	second, err := loadOrCreateCSRFKey(stateDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second {
-		t.Fatal("CSRF key changed between loads")
-	}
-	info, err = os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if permission := info.Mode().Perm(); permission != 0o600 {
-		t.Fatalf("reloaded CSRF key permissions = %o, want 600", permission)
-	}
-}
-
-func TestPersistentcsrfKeyRejectsMalformedFile(t *testing.T) {
-	stateDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stateDir, "csrf.key"), []byte("short"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := loadOrCreateCSRFKey(stateDir); err == nil {
-		t.Fatal("malformed CSRF key was accepted")
-	}
-}
-
 func TestRunDevRejectsInvalidConfigBeforeRuntimeConstruction(t *testing.T) {
 	started := false
 	err := RunDev(context.Background(), DevConfig{
@@ -1049,11 +998,6 @@ func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
 	if uploadPage.StatusCode != http.StatusOK {
 		t.Fatalf("GET /upload status = %d", uploadPage.StatusCode)
 	}
-	token := uploadPage.Header.Get("X-CSRF-Token")
-	cookies := uploadPage.Cookies()
-	if token == "" || len(cookies) != 1 {
-		t.Fatalf("upload page did not provide CSRF material: token=%q cookies=%v", token, cookies)
-	}
 
 	var form bytes.Buffer
 	formWriter := multipart.NewWriter(&form)
@@ -1079,8 +1023,7 @@ func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", formWriter.FormDataContentType())
-	request.Header.Set("X-CSRF-Token", token)
-	request.AddCookie(cookies[0])
+	request.Header.Set("Sec-Fetch-Site", "same-origin")
 	created, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -1095,7 +1038,6 @@ func TestDevRuntimeServesLoopbackHTTPAsDevActor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reviewRequest.AddCookie(cookies[0])
 	review, err := client.Do(reviewRequest)
 	if err != nil {
 		t.Fatal(err)

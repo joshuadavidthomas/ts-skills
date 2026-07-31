@@ -21,7 +21,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/gorilla/csrf"
 	"github.com/joshuadavidthomas/ts-skills/internal/agentskill"
 	"github.com/joshuadavidthomas/ts-skills/internal/protocol"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
@@ -38,25 +37,9 @@ var staticFS embed.FS
 
 const maxPreviewBytes = 256 << 10
 
-type CSRFKey [32]byte
-
-func NewCSRFKey(src []byte) (CSRFKey, error) {
-	var key CSRFKey
-	if len(src) != len(key) {
-		return key, fmt.Errorf("CSRF key must contain exactly %d bytes", len(key))
-	}
-	copy(key[:], src)
-	if key == (CSRFKey{}) {
-		return CSRFKey{}, fmt.Errorf("CSRF key must not be all zero")
-	}
-	return key, nil
-}
-
 type Options struct {
 	StagingParent string
 	Limits        tree.Limits
-	CSRFKey       CSRFKey
-	SecureCookies bool
 	Logger        *slog.Logger
 	TreeWork      *semaphore.Weighted
 }
@@ -71,9 +54,8 @@ type webHandler struct {
 }
 
 type pageView struct {
-	Title     string
-	CSRFToken string
-	Content   any
+	Title   string
+	Content any
 }
 
 var pageNames = [...]string{"catalog", "error", "review", "skill", "upload"}
@@ -101,9 +83,6 @@ func New(catalog *servercatalog.Catalog, resolveCurator func(*http.Request) (ser
 	}
 	if resolveCurator == nil {
 		return nil, fmt.Errorf("web curator resolver must be provided")
-	}
-	if options.CSRFKey == (CSRFKey{}) {
-		return nil, fmt.Errorf("web CSRF key must be provided")
 	}
 	if err := tree.ValidateLimits(options.Limits); err != nil {
 		return nil, fmt.Errorf("web upload limits: %w", err)
@@ -142,20 +121,9 @@ func New(catalog *servercatalog.Catalog, resolveCurator func(*http.Request) (ser
 	csrfFailure := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h.renderError(w, http.StatusForbidden, "Request could not be verified", "Reload the page and try again.")
 	})
-	protected := csrf.Protect(
-		options.CSRFKey[:],
-		csrf.Secure(options.SecureCookies),
-		csrf.SameSite(csrf.SameSiteLaxMode),
-		csrf.Path("/"),
-		csrf.HttpOnly(true),
-		csrf.ErrorHandler(csrfFailure),
-	)(routes)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !options.SecureCookies {
-			r = csrf.PlaintextHTTPRequest(r)
-		}
-		protected.ServeHTTP(w, r)
-	}), nil
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(csrfFailure)
+	return protection.Handler(routes), nil
 }
 
 type catalogPageData struct {
@@ -265,10 +233,8 @@ func (h *webHandler) skillPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *webHandler) uploadPage(w http.ResponseWriter, r *http.Request) {
-	token := csrf.Token(r)
-	w.Header().Set("X-CSRF-Token", token)
 	h.render(w, http.StatusOK, "upload", pageView{
-		Title: "Upload a skill", CSRFToken: token,
+		Title: "Upload a skill",
 	})
 }
 
@@ -337,7 +303,6 @@ type reviewPageData struct {
 	SelectedBinary    bool
 	SelectedTruncated bool
 	Published         bool
-	CSRFField         template.HTML
 }
 
 func (h *webHandler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
@@ -395,7 +360,7 @@ func (h *webHandler) reviewCandidate(w http.ResponseWriter, r *http.Request) {
 		Source: provenance.Source, SubmittedBy: provenance.SubmittedBy.Display,
 		SubmittedAt: provenance.SubmittedAt.Format(time.RFC3339), FileTree: selected.Tree,
 		SelectedPath: selected.Path, SelectedContent: selected.Content, SelectedBinary: selected.Binary, SelectedTruncated: selected.Truncated,
-		Published: published, CSRFField: csrf.TemplateField(r),
+		Published: published,
 	}
 	h.render(w, http.StatusOK, "review", pageView{
 		Title: "Review " + data.Skill, Content: data,
