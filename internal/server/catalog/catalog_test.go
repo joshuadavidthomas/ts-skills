@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -443,8 +444,10 @@ func TestOpenCatalogRequiresPrivateRealStateDirectory(t *testing.T) {
 		if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 			t.Fatalf("state mode = %v, want real directory", info.Mode())
 		}
-		if got := info.Mode().Perm(); got != 0o700 {
-			t.Fatalf("state permissions = %04o, want 0700", got)
+		if runtime.GOOS != "windows" {
+			if got := info.Mode().Perm(); got != 0o700 {
+				t.Fatalf("state permissions = %04o, want 0700", got)
+			}
 		}
 	})
 

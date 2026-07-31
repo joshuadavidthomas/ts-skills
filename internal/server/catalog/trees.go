@@ -25,7 +25,7 @@ func ensureStateDirectory(stateDir string) error {
 	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%q is not a real directory", stateDir)
 	}
-	if err := os.Chmod(stateDir, 0o700); err != nil {
+	if err := setPrivateDirectoryPermissions(stateDir); err != nil {
 		return fmt.Errorf("set private directory permissions: %w", err)
 	}
 	info, err = os.Lstat(stateDir)
@@ -35,8 +35,8 @@ func ensureStateDirectory(stateDir string) error {
 	if !info.IsDir() || info.Mode()&fs.ModeSymlink != 0 {
 		return fmt.Errorf("%q is not a real directory", stateDir)
 	}
-	if info.Mode().Perm() != 0o700 {
-		return fmt.Errorf("%q has mode %04o, want 0700", stateDir, info.Mode().Perm())
+	if err := verifyPrivateDirectoryPermissions(stateDir, info); err != nil {
+		return err
 	}
 	return nil
 }
@@ -184,16 +184,6 @@ func verifyTree(ctx context.Context, directory string, expected registry.TreeDig
 		return fmt.Errorf("%w: digest path says %s, tree hashes to %s", errTreeMismatch, expected, actual)
 	}
 	return nil
-}
-
-func syncDirectory(directory string) error {
-	file, err := os.Open(directory)
-	if err != nil {
-		return err
-	}
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	return errors.Join(syncErr, closeErr)
 }
 
 func (c *catalog) step(name string) error {

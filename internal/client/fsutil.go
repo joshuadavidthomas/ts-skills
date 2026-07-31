@@ -16,26 +16,14 @@ func syncDirectory(path string) error {
 	if err := rejectPathComponents(path, false); err != nil {
 		return err
 	}
-	directory, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open directory for sync: %w", err)
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if err := errors.Join(syncErr, closeErr); err != nil {
+	if err := syncDirectoryPath(path); err != nil {
 		return fmt.Errorf("sync directory: %w", err)
 	}
 	return nil
 }
 
 func syncRootDirectory(root *os.Root, name string) error {
-	directory, err := root.Open(name)
-	if err != nil {
-		return fmt.Errorf("open directory for sync: %w", err)
-	}
-	syncErr := directory.Sync()
-	closeErr := directory.Close()
-	if err := errors.Join(syncErr, closeErr); err != nil {
+	if err := syncRootDirectoryPath(root, name); err != nil {
 		return fmt.Errorf("sync directory: %w", err)
 	}
 	return nil

@@ -100,13 +100,10 @@ func Sync(ctx context.Context, root string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("refuse to sync non-regular file %q", name)
 		}
-		file, err := os.Open(name)
-		if err != nil {
+		if err := syncFile(name); err != nil {
 			return err
 		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		return errors.Join(syncErr, closeErr)
+		return nil
 	})
 	if err != nil {
 		return err
@@ -123,13 +120,7 @@ func Sync(ctx context.Context, root string) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		file, err := os.Open(directory)
-		if err != nil {
-			return err
-		}
-		syncErr := file.Sync()
-		closeErr := file.Close()
-		if err := errors.Join(syncErr, closeErr); err != nil {
+		if err := syncDirectory(directory); err != nil {
 			return err
 		}
 	}
