@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"sync"
-	"syscall"
 
 	servercatalog "github.com/joshuadavidthomas/ts-skills/internal/server/catalog"
 	"github.com/joshuadavidthomas/ts-skills/internal/tree"
@@ -189,7 +188,7 @@ func buildDevRuntime(ctx context.Context, config DevConfig) (_ runtime, err erro
 	}
 
 	listener, err := net.Listen("tcp", config.Listen)
-	if err != nil && config.EphemeralFallback && errors.Is(err, syscall.EADDRINUSE) {
+	if err != nil && config.EphemeralFallback && isAddressInUse(err) {
 		host, _, splitErr := net.SplitHostPort(config.Listen)
 		if splitErr != nil {
 			return runtime{}, fmt.Errorf("listen on loopback address %q: %w", config.Listen, err)

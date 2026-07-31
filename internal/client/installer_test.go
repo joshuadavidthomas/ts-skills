@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -958,7 +959,7 @@ func TestWriterRejectsRecordlessTrashWithTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(trash, trashTreeName, "SKILL.md"), []byte("previous skill"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), trash) {
+	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", trash)) {
 		t.Fatalf("acquireWriter() error = %v, want error naming %q", err, trash)
 	}
 	if _, err := os.Stat(trash); err != nil {
@@ -985,7 +986,7 @@ func TestWriterRejectsCorruptTrashRecord(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(trash, trashRecordName), []byte("not JSON"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), trash) {
+	if _, err := project.acquireWriter(context.Background()); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", trash)) {
 		t.Fatalf("acquireWriter() error = %v, want error naming %q", err, trash)
 	}
 	if _, err := os.Stat(trash); err != nil {
