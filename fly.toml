@@ -1,0 +1,16 @@
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "immediate"
+
+[env]
+  TS_SKILLSD_HOSTNAME = "ts-skillsd"
+
+[[mounts]]
+  source = "ts_skillsd_data"
+  destination = "/state"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
