@@ -3,8 +3,8 @@ module github.com/joshuadavidthomas/ts-skills
 go 1.26.5
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/gofrs/flock v0.13.0
-	github.com/pelletier/go-toml/v2 v2.4.3
 	golang.org/x/sync v0.22.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.40.0

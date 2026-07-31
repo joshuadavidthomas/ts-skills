@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/BurntSushi/toml"
 	"github.com/joshuadavidthomas/ts-skills/internal/registry"
-	"github.com/pelletier/go-toml/v2"
 )
 
 type lock struct {
@@ -85,10 +85,12 @@ func decodeLock(source io.Reader) (lock, error) {
 		return lock{}, fmt.Errorf("decode project lock: reader is nil")
 	}
 	var document lockDocument
-	decoder := toml.NewDecoder(source)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&document); err != nil {
+	metadata, err := toml.NewDecoder(source).Decode(&document)
+	if err != nil {
 		return lock{}, fmt.Errorf("decode project lock: %w", err)
+	}
+	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+		return lock{}, fmt.Errorf("decode project lock: unknown field %q", undecoded[0].String())
 	}
 	if document.Schema == nil {
 		return lock{}, fmt.Errorf("decode project lock: schema is required")

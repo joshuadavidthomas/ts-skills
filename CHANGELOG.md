@@ -20,6 +20,10 @@ and this project attempts to adhere to [Semantic Versioning](https://semver.org/
 
 ## [Unreleased]
 
+### Changed
+
+- Switched TOML parsing to BurntSushi's Go package.
+
 ## [0.1.0]
 
 ### Added

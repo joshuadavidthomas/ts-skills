@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pelletier/go-toml/v2"
+	"github.com/BurntSushi/toml"
 )
 
 type config struct {
@@ -37,10 +37,12 @@ func load(path string) (config, error) {
 	}
 	defer func() { _ = file.Close() }()
 	var raw document
-	decoder := toml.NewDecoder(file)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&raw); err != nil {
+	metadata, err := toml.NewDecoder(file).Decode(&raw)
+	if err != nil {
 		return config{}, fmt.Errorf("decode config %q: %w", path, err)
+	}
+	if undecoded := metadata.Undecoded(); len(undecoded) > 0 {
+		return config{}, fmt.Errorf("decode config %q: unknown field %q", path, undecoded[0].String())
 	}
 	if raw.Registry == nil || *raw.Registry == "" {
 		return config{}, fmt.Errorf("decode config %q: registry is required", path)
