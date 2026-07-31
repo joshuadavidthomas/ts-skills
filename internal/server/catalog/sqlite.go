@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path/filepath"
 
 	"modernc.org/sqlite"
 )
@@ -65,11 +64,7 @@ func openDatabase(ctx context.Context, databasePath string) (_ *sql.DB, err erro
 	values.Add("_pragma", "synchronous(FULL)")
 	values.Add("_pragma", "busy_timeout(5000)")
 	values.Set("_txlock", "immediate")
-	dsn := (&url.URL{
-		Scheme:   "file",
-		Path:     filepath.ToSlash(databasePath),
-		RawQuery: values.Encode(),
-	}).String()
+	dsn := sqliteDSN(databasePath, values)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

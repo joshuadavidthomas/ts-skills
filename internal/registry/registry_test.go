@@ -88,8 +88,12 @@ func TestInspectBindsDocumentAndDigest(t *testing.T) {
 	if got := inspection.Document().Name.String(); got != "right" {
 		t.Fatalf("Inspect document name = %q, want %q", got, "right")
 	}
-	if _, err := inspection.Directory().FS().Open("scripts/run.sh"); err != nil {
+	file, err := inspection.Directory().FS().Open("scripts/run.sh")
+	if err != nil {
 		t.Fatalf("Inspect directory FS open tree file: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close inspected tree file: %v", err)
 	}
 	skill, err := ParseSkillID("team/right")
 	if err != nil {
