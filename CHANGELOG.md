@@ -20,6 +20,10 @@ and this project attempts to adhere to [Semantic Versioning](https://semver.org/
 
 ## [Unreleased]
 
+### Added
+
+- Added checksum- and provenance-aware install scripts for macOS, Linux, and Windows.
+
 ### Changed
 
 - Switched TOML parsing to BurntSushi's Go package.

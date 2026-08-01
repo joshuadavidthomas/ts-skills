@@ -10,6 +10,22 @@ A private [Agent Skills](docs/research/agentskills-spec.md) registry for your ta
 
 ## Installation
 
+### Quick install
+
+macOS, Linux, and Windows Subsystem for Linux (WSL):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/joshuadavidthomas/ts-skills/main/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/joshuadavidthomas/ts-skills/main/install.ps1 -useb | iex
+```
+
+The scripts install `ts-skills` and `ts-skillsd` in `~/.local/bin`. Set `TS_SKILLS_INSTALL_DIR` to choose another directory, and ensure the chosen directory is on `PATH`. They verify the release checksum and use an authenticated `gh` CLI to verify GitHub build provenance when the release attestation is available.
+
 ### Homebrew
 
 ```bash
