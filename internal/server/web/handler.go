@@ -58,7 +58,7 @@ type pageView struct {
 	Content any
 }
 
-var pageNames = [...]string{"catalog", "error", "review", "skill", "upload"}
+var pageNames = [...]string{"catalog", "error", "import", "review", "skill", "upload"}
 
 func parsePages() (map[string]*template.Template, error) {
 	pages := make(map[string]*template.Template, len(pageNames))

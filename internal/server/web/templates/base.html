@@ -13,7 +13,10 @@
       <h1 class="text-2xl font-bold"><a href="/">ts-skills/</a></h1>
       <p class="mt-1 text-sm text-gray-500">A private Agent Skills registry for your tailnet</p>
     </div>
-    <a href="/upload" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Upload a skill</a>
+    <div class="flex items-center gap-3">
+      <a href="/import" class="rounded-md px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Import repository</a>
+      <a href="/upload" class="rounded-md bg-blue-500 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Upload a skill</a>
+    </div>
   </div>
 </header>
 {{template "content" .Content}}
