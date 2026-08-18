@@ -10,7 +10,7 @@ require (
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
-	tailscale.com v1.102.1
+	tailscale.com v1.102.2
 )
 
 require (
