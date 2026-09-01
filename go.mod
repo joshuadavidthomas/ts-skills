@@ -1,6 +1,6 @@
 module github.com/joshuadavidthomas/ts-skills
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -10,7 +10,7 @@ require (
 	golang.org/x/text v0.40.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.56.0
-	tailscale.com v1.102.1
+	tailscale.com v1.102.3
 )
 
 require (
