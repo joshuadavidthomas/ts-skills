@@ -3,7 +3,7 @@
     "build:css": "tailwindcss -i internal/server/web/tailwind.css -o internal/server/web/static/style.css --minify"
   },
   "devDependencies": {
-    "@tailwindcss/cli": "4.3.3",
+    "@tailwindcss/cli": "4.3.4",
     "tailwindcss": "4.3.3"
   }
 }
